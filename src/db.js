@@ -254,6 +254,25 @@ const MIGRATIONS = [
   ALTER TABLE referrals ADD COLUMN lead_priority TEXT NOT NULL DEFAULT 'Standard';
   ALTER TABLE referrals ADD COLUMN est_monthly_value REAL NOT NULL DEFAULT 0.0;
   `,
+  // v7: invite links for self sign-up
+  `
+  ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN invite_id INTEGER;
+
+  CREATE TABLE invites (
+    id INTEGER PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin','manager','dispatch','rep')),
+    team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    uses INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 
