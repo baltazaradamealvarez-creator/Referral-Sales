@@ -67,6 +67,24 @@
   const worksLeads = () => seesAll() || isManager();
   const managesUsers = () => isAdmin() || isManager();
   const canMoveCard = (r) => seesAll() || (isManager() && r.team_id === state.me.team_id);
+  // The E&O mark, inline so its colors follow light/dark mode. Each copy needs its own ids.
+  let markSeq = 0;
+  function markSvg(cls = 'brand-mark') {
+    const n = ++markSeq;
+    return `<svg class="${cls}" viewBox="0 0 212 110" role="img" aria-label="E&amp;O Sales">
+      <defs><linearGradient id="eog${n}" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="212" y2="70">
+        <stop offset="0" class="eo-s1"/><stop offset="0.5" class="eo-s2"/><stop offset="1" class="eo-s3"/></linearGradient>
+        <mask id="eom${n}" maskUnits="userSpaceOnUse" x="0" y="0" width="212" height="110"><rect width="212" height="110" fill="#fff"/>
+        <path d="M110 -2 H150 V26 H86 Z" fill="#000"/><path d="M90 80 H150 V110 H114 Z" fill="#000"/></mask></defs>
+      <path d="M120 13 H55 A40 40 0 0 0 55 93 H120" fill="none" stroke="url(#eog${n})" stroke-width="22" mask="url(#eom${n})"/>
+      <path d="M26 53 H82 C102 53 112 70 128 92" fill="none" stroke="url(#eog${n})" stroke-width="24"/>
+      <circle cx="157" cy="55" r="44" fill="none" stroke="url(#eog${n})" stroke-width="22"/>
+      <g fill="none" class="eo-waves" stroke-width="7" stroke-linecap="round">
+        <path d="M141 51 A9 9 0 0 1 146 64"/><path d="M144 40 A20 20 0 0 1 156 70"/><path d="M149 29 A31 31 0 0 1 165 76"/></g></svg>`;
+  }
+  const wordmark = (sub = 'Spectrum Referrals') => `<span class="wm"><b>E&amp;O</b> Sales</span>${sub ? `<small>${sub}</small>` : ''}`;
+  const lockup = () => `<div class="lockup">${markSvg('lockup-mark')}<div>${wordmark()}</div></div>`;
+
   const defaultRoute = () => (role() === 'rep' ? '#/new' : '#/home');
   const roleLabel = (r) => ({ admin: 'Admin', manager: 'Manager', dispatch: 'Dispatch', rep: 'Rep' }[r] || r);
 
@@ -211,7 +229,7 @@
     const more = links.filter((l) => !TAB_KEYS.includes(l[2]));
     $app.innerHTML = `
       <header class="topbar"><div class="topbar-inner ${opts.wide ? 'wide' : ''}">
-        <a class="brand" href="#/home"><span class="logo">E&amp;O</span><span class="brand-text">E&amp;O Spectrum Referrals<small>${esc(me.team_name || (seesAll() ? 'All teams' : ''))}</small></span></a>
+        <a class="brand" href="#/home" aria-label="E&amp;O Sales home">${markSvg()}<span class="brand-text">${wordmark(esc(me.team_name || (seesAll() ? 'All teams' : 'Spectrum Referrals')))}</span></a>
         <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
         <div class="search">
           <button class="icon-btn search-toggle" id="searchToggle" aria-label="Search">🔍</button>
@@ -318,9 +336,8 @@
   function renderLogin() {
     $app.innerHTML = `
       <div class="login-wrap"><form class="card login" id="loginForm">
-        <div class="logo">E&amp;O</div>
-        <h1>E&amp;O Spectrum Referrals</h1>
-        <p class="muted" style="margin-top:0">Sign in to enter and track referrals.</p>
+        ${lockup()}
+        <p class="muted" style="margin:.2rem 0 1rem">Sign in to enter and track referrals.</p>
         <div class="field"><label for="u">Username</label><input id="u" autocomplete="username" autocapitalize="none" required></div>
         <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
         <div id="loginErr" style="margin-top:.8rem"></div>
@@ -348,7 +365,7 @@
   function renderForgot(prefill = '', step = 1, note = '') {
     $app.innerHTML = `
       <div class="login-wrap"><form class="card login" id="fpForm">
-        <div class="logo">E&amp;O</div>
+        ${lockup()}
         <h1>${step === 1 ? 'Reset your password' : 'Check your email'}</h1>
         ${step === 1 ? `
           <p class="muted" style="margin-top:0">Enter your username or email. If your account has an email address, we'll send you a 6-digit code.</p>
