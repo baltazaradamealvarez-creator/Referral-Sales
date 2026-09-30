@@ -111,27 +111,57 @@
 
   // ---------- shell ----------
 
+  // Main navigation: the day-to-day pages. Everything else lives in one hub:
+  // "Admin" for admins, "Account" for everyone else, with sub-tabs across the top.
+  const isDispatch = () => role() === 'dispatch';
+
   function navLinks() {
     const links = [['#/home', 'Home', 'home', '🏠']];
     links.push(['#/new', 'New Referral', 'new', '➕']);
-    if (seesAll()) links.push(['#/referrals?scope=assigned', 'My Queue', 'queue', '🎧']);
+    if (isDispatch()) links.push(['#/referrals?scope=assigned', 'My Queue', 'queue', '🎧']);
     links.push(['#/board', 'Board', 'board', '🗂']);
     links.push(['#/referrals', worksLeads() ? 'Customers' : 'My Referrals', 'customers', '👥']);
     links.push(['#/analytics', 'Analytics', 'analytics', '📊']);
-    if (seesAll()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
     links.push(['#/sales', 'Sales', 'sales', '📈']);
-    if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
-    if (state.me.payments) links.push(['#/payments', 'Payments', 'payments', '💳']);
-    if (state.me.affiliate || isAdmin()) links.push(['#/affiliate', 'Affiliate', 'affiliate', '💸']);
-    if (isAdmin()) links.push(['#/audit-logs', 'Audit Logs', 'audit', '🔒']);
-    links.push(['#/help', 'Help', 'help', '❓']);
+    if (isDispatch()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
+    if (isManager()) links.push(['#/team', 'My Team', 'team', '👥']);
+    links.push(isAdmin() ? ['#/team', 'Admin', 'hub', '⚙'] : ['#/account', 'Account', 'hub', '👤']);
     return links;
+  }
+
+  // Sub-tabs of the hub: [href, label].
+  function hubTabs() {
+    if (isAdmin()) {
+      return [['#/team', 'Users & teams'], ['#/team?tab=invites', 'Invite links'], ['#/team?tab=past-sales', 'Past sales'],
+        ['#/payments', 'Payments'], ['#/affiliate', 'Affiliate'], ['#/duplicates', 'Duplicates'], ['#/audit-logs', 'Audit log'],
+        ['#/team?tab=settings', 'Settings'], ['#/account', 'My account']];
+    }
+    const t = [['#/account', 'Profile']];
+    if (state.me.payments) t.push(['#/payments', 'Payments']);
+    if (state.me.affiliate) t.push(['#/affiliate', 'Affiliate']);
+    t.push(['#/help', 'Help']);
+    return t;
+  }
+  const hubRoutes = () => new Set(hubTabs().map(([h]) => h.split('?')[0]));
+  const inHub = () => hubRoutes().has(location.hash.split('?')[0] || defaultRoute());
+
+  // The current sub-tab: same route, and the same ?tab= (none counts as the first).
+  function hubActive(href) {
+    const [route, qs] = location.hash.split('?');
+    const [hRoute, hQs] = href.split('?');
+    return route === hRoute && (new URLSearchParams(qs || '').get('tab') || '') === (new URLSearchParams(hQs || '').get('tab') || '');
+  }
+
+  function subTabsHtml() {
+    if (!inHub()) return '';
+    return `<nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}">${l}</a>`).join('')}</nav>`;
   }
 
   // The phone tab bar shows these four; the rest go under "More".
   const TAB_KEYS = ['home', 'new', 'board', 'customers'];
 
-  function isActive(href) {
+  function isActive(href, key) {
+    if (key === 'hub') return inHub();
     const [route, qs] = location.hash.split('?');
     const [hRoute, hQs] = href.split('?');
     if (hRoute === '#/referrals') {
@@ -236,7 +266,7 @@
     $app.innerHTML = `
       <header class="topbar"><div class="topbar-inner ${opts.wide ? 'wide' : ''}">
         <a class="brand" href="#/home" aria-label="E&amp;O Sales home">${markSvg()}<span class="brand-text">${wordmark(esc(me.team_name || (seesAll() ? 'All teams' : 'Spectrum Referrals')))}</span></a>
-        <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
+        <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
         <div class="search">
           <button class="icon-btn search-toggle" id="searchToggle" aria-label="Search">🔍</button>
           <input id="gsearch" type="search" placeholder="Search customers…  /" autocomplete="off" aria-label="Search customers">
@@ -257,13 +287,13 @@
           </div>
         </div>
       </div></header>
-      <main class="${opts.wide ? 'wide' : ''}">${content}</main>
+      <main class="${opts.wide ? 'wide' : ''}">${subTabsHtml()}${content}</main>
       <nav class="tabbar" aria-label="Main">
-        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
-        <button data-more class="${more.some(([h]) => isActive(h)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
+        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
+        <button data-more class="${more.some(([h, , key]) => isActive(h, key)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
       </nav>
       <div class="sheet" id="moreSheet">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}"><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
-        <a href="#/account"><span class="ti">👤</span><span>My account</span></a></div>`;
+        <a href="#/help"><span class="ti">❓</span><span>Help</span></a></div>`;
     badges();
 
     const pop = document.getElementById('menuPop');
@@ -627,7 +657,8 @@
   // ---------- referrals / customers list ----------
 
   function scopesFor() {
-    if (seesAll()) return [['all', 'Everyone'], ['assigned', 'My queue'], ['unassigned', 'Unassigned'], ['mine', 'Entered by me']];
+    if (isDispatch()) return [['all', 'Everyone'], ['assigned', 'My queue'], ['unassigned', 'Unassigned'], ['mine', 'Entered by me']];
+    if (isAdmin()) return [['all', 'Everyone'], ['unassigned', 'Unassigned'], ['mine', 'Entered by me']];
     if (isManager()) return [['team', 'My team'], ['mine', 'Mine']];
     return [];
   }
@@ -1357,6 +1388,8 @@
     const flash = state.flash; state.flash = null;
     const roles = ['rep', 'manager', 'dispatch', 'admin'];
     const q = query();
+    // Admins see one section at a time (sub-tabs); managers see their one page.
+    const tab = isAdmin() ? (['invites', 'past-sales', 'settings'].includes(q.tab) ? q.tab : 'users') : 'users';
     const filter = q.show || 'active';
     const shown = users.filter((u) => (filter === 'all' ? true : filter === 'inactive' ? !u.active : u.active));
 
@@ -1367,7 +1400,7 @@
           : `${flash.emailError ? `<div class="alert warn small" style="margin-bottom:.6rem">The email didn't go out: ${esc(flash.emailError)}</div>` : ''}
             <p style="margin:0 0 .4rem">Give <b>${esc(flash.username)}</b> this temporary password. They'll pick their own when they sign in:</p>
             <span class="secret">${esc(flash.password)}</span> <button class="btn small" id="copyPw">Copy</button>`}</div>` : ''}
-      ${isAdmin() ? `
+      ${isAdmin() && tab === 'users' ? `
       <div class="card">
         <div class="row between"><h2 style="margin:0">Account activity</h2><span class="small muted">Signed-in = used the app in that window</span></div>
         <div class="stats sec-stats" style="margin-top:.8rem">
@@ -1383,7 +1416,7 @@
           ${security.recent_failed.map((f) => `<tr><td data-label="When">${ago(f.created_at)}</td><td data-label="Tried as"><b>${esc(f.username)}</b>${f.full_name ? ` <span class="muted small">${esc(f.full_name)}</span>` : ''}</td><td data-label="Why">${esc(f.reason)}</td><td data-label="IP" class="small muted">${esc(f.ip)}</td></tr>`).join('')}
           </tbody></table></div></details>` : ''}
       </div>` : ''}
-      ${isAdmin() ? `
+      ${isAdmin() && tab === 'invites' ? `
       <div class="card" id="invitesCard">
         <div class="row between"><h2 style="margin:0">Invite links</h2><span class="small muted">People sign themselves up; you pick their role and team.</span></div>
         <form class="invite-form" id="inviteForm">
@@ -1399,7 +1432,8 @@
         </form>
         <div id="inviteNew"></div>
         <div id="inviteList" class="small muted">Loading invites…</div>
-      </div>
+      </div>` : ''}
+      ${isAdmin() && tab === 'past-sales' ? `
       <div class="card" id="historyCard">
         <div class="row between"><h2 style="margin:0">Past sales</h2><span class="small muted">Blocks old customers as duplicates. Never shown in the portal.</span></div>
         <p class="small muted" style="margin:.4rem 0 .8rem">Upload old sales spreadsheets (.xlsx or .csv). Every phone number and street address in them is added to the duplicate check, so nobody can enter those customers again. Only the phone and address are kept — no names, account numbers or amounts — and they don't appear in customer lists, search or reports.</p>
@@ -1411,6 +1445,7 @@
         <div id="historyPreview"></div>
         <div id="historyList" class="small muted">Loading uploads…</div>
       </div>` : ''}
+      ${tab === 'users' ? `
       <div class="grid-2">
         <form class="card" id="addUser">
           <h2>Add a ${isAdmin() ? 'user' : 'rep to ' + esc(state.me.team_name || 'your team')}</h2>
@@ -1433,8 +1468,8 @@
           <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
         </div>` : `
         <div class="card"><h2>Tips</h2><p class="muted small">Add each rep's email so they get a welcome email, alerts, and can reset their own password with an emailed code.<br><br>If someone is locked out, hit <b>Reset password</b>. You can email them the new temporary password or read it to them.<br><br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
-      </div>
-      ${isAdmin() ? `
+      </div>` : ''}
+      ${isAdmin() && tab === 'settings' ? `
       <div class="grid-2">
         <form class="card" id="settingsForm">
           <h2>Settings</h2>
@@ -1459,6 +1494,7 @@
           <div class="row"><a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a><a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals (CSV)</a></div>
         </form>
       </div>` : ''}
+      ${tab === 'users' ? `
       <div class="card">
         <div class="row between"><h2 style="margin:0">${isAdmin() ? 'All users' : 'Team members'}</h2>
           <div class="seg" id="showSeg">${[['active', 'Active'], ['inactive', 'Deactivated'], ['all', 'All']].map(([k, l]) => `<button data-k="${k}" class="${filter === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -1484,7 +1520,7 @@
             </tr>`;
           }).join('') || `<tr><td colspan="8" class="muted">Nobody here.</td></tr>`}</tbody>
         </table></div>
-      </div>`);
+      </div>` : ''}`);
 
     document.querySelectorAll('#showSeg button').forEach((b) => { b.onclick = () => { location.hash = `#/team?show=${b.dataset.k}`; }; });
     const copy = document.getElementById('copyPw');
@@ -1502,9 +1538,11 @@
       roleSel.onchange = upd; upd();
     }
 
-    if (isAdmin()) { setupInvites(teams); setupHistory(); }
+    if (tab === 'invites') setupInvites(teams);
+    if (tab === 'past-sales') setupHistory();
 
-    document.getElementById('addUser').onsubmit = async (e) => {
+    const addUser = document.getElementById('addUser');
+    if (addUser) addUser.onsubmit = async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target));
       body.send_welcome = document.getElementById('au_welcome').checked;
@@ -2517,7 +2555,7 @@
       <li>${r === 'rep' ? 'You can edit your own lead while it is still New. Status changes are made by your manager or dispatch.' : 'Edit details, change the status and add the account number and install date from the lead\'s page.'}</li></ul>` });
     S.push({ id: 'board', title: 'The Board', roles: 'all', body: `
       <p><a href="#/board"><b>Board</b></a> shows leads as cards in a column per status. ${worksLeads() ? 'Drag a card to another column to change its status; tap a card to open it.' : 'Tap a card to open it. (Your manager or dispatch moves cards between columns.)'} Pick how far back closed leads go with <b>Closed: last 7/30/90 days</b>.</p>` });
-    if (r === 'dispatch' || r === 'admin') {
+    if (r === 'dispatch') {
       S.push({ id: 'dispatch', title: 'Dispatch', roles: 'dispatch', body: `
         <ol><li>Open <a href="#/referrals?scope=assigned"><b>My Queue</b></a> for the open leads assigned to you.</li>
         <li>Tap <b>Take it</b> on the Board or a lead's page to claim an unassigned lead, or pick a dispatcher under <b>Dispatch</b> to hand it on.</li>
@@ -2558,7 +2596,7 @@
     }
     if (state.me.payments) {
       S.push({ id: 'payments', title: 'Payments', roles: 'all', body: `
-        <ol><li>Open <a href="#/payments"><b>Payments</b></a>.</li>
+        <ol><li>Open <a href="#/payments"><b>${isAdmin() ? 'Admin' : 'Account'} → Payments</b></a>.</li>
         <li>Pick <b>Bank account</b>, <b>Bit</b> or <b>Bitcoin wallet</b>, choose your <b>country</b> and enter the account holder's name.</li>
         <li>For a bank: enter the bank name and either your <b>IBAN</b> (most of Europe, the Middle East and more) or your <b>account number</b>. US accounts also need the 9-digit <b>routing number</b>.</li>
         <li>Enter your sign-in password and tap <b>Save payout details</b>.</li></ol>
@@ -2567,7 +2605,7 @@
     }
     if (state.me.affiliate || isAdmin()) {
       S.push({ id: 'affiliate', title: 'Affiliate program: invite friends, earn extra', roles: 'all', body: `
-        <ol><li>Open <a href="#/affiliate"><b>Affiliate</b></a> and copy <b>your personal sign-up link</b>, or tap Share, Text it or Email it.</li>
+        <ol><li>Open <a href="#/affiliate"><b>${isAdmin() ? 'Admin' : 'Account'} → Affiliate</b></a> and copy <b>your personal sign-up link</b>, or tap Share, Text it or Email it.</li>
         <li>Friends who sign up with it join as reps${state.me.team_name ? ` on ${esc(state.me.team_name)}` : ''}. You're recorded as the person who invited them.</li>
         <li>When one of them makes a sale and the customer <b>orders</b>, you earn a percentage of that sale's commission, <b>15%</b> by default. When the people <i>they</i> invite sell, you earn <b>5%</b>. This is on top of your own pay.</li></ol>
         <ul><li>You earn from sales only, never just for someone signing up.</li>

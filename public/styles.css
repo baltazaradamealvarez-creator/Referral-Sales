@@ -936,3 +936,11 @@ kbd { font: .8em ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px sol
 .aff-stats { margin-top: 1rem; }
 .aff-settings .field { margin-top: .8rem; max-width: 420px; }
 @media (max-width: 760px) { .aff-hero { grid-template-columns: 1fr; } }
+
+/* hub sub-tabs (Admin / Account) */
+.subtabs { display: flex; gap: .25rem; margin: 0 0 1rem; padding: .3rem; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.subtabs::-webkit-scrollbar { display: none; }
+.subtabs a { flex: 0 0 auto; padding: .45rem .8rem; border-radius: 9px; color: var(--muted); font-weight: 650; font-size: .9rem; white-space: nowrap; }
+.subtabs a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.subtabs a.on { background: var(--brand-soft); color: var(--brand); }
