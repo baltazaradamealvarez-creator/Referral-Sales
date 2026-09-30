@@ -195,3 +195,153 @@ test('health check and admin-only backup', async (t) => {
   assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM users').get().n, 6);
   copy.close();
 });
+
+test('dispatch role: sees all, assignment, auto-assign, credit, board filters, CSV, duplicate log', async (t) => {
+  const s = await setup();
+  t.after(() => s.server.close());
+
+  const d1 = await (async () => {
+    const r = await s.admin.post('/users', { username: 'disp1', full_name: 'Dee Spatch', role: 'dispatch' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const c = s.client();
+    await c.login('disp1', r.body.temp_password, 'disp1-pass-1');
+    return { c, id: r.body.id };
+  })();
+  const d2 = (await s.admin.post('/users', { username: 'disp2', full_name: 'Dos Patch', role: 'dispatch' })).body;
+  // Dispatch can't manage users.
+  assert.equal((await d1.c.get('/users')).status, 403);
+  assert.equal((await d1.c.post('/users', { username: 'x1', full_name: 'X' })).status, 403);
+
+  // Leads from both teams are visible to dispatch.
+  const a = (await s.repA.c.post('/referrals', { text: 'Amy A 512-555-1000' })).body;
+  const b = (await s.repB.c.post('/referrals', { text: 'Ben B 512-555-2000 wants tv' })).body;
+  assert.deepEqual(b.services, 'TV');
+  assert.equal((await d1.c.get('/referrals')).body.length, 2);
+  assert.equal((await d1.c.get(`/referrals/${a.id}`)).status, 200);
+
+  // Take it + assign; only dispatch/admin are valid assignees; managers can't assign.
+  assert.equal((await d1.c.patch(`/referrals/${a.id}`, { assigned_to: d1.id })).body.assigned_name, 'Dee Spatch');
+  assert.equal((await d1.c.patch(`/referrals/${b.id}`, { assigned_to: s.repA.id })).status, 400);
+  assert.equal((await s.mgrB.c.patch(`/referrals/${b.id}`, { assigned_to: d1.id })).status, 403);
+  assert.equal((await d1.c.patch(`/referrals/${b.id}`, { assigned_to: d2.id })).status, 200);
+  assert.equal((await d1.c.get('/referrals?scope=assigned')).body.length, 1);
+  assert.equal((await d1.c.get('/referrals?scope=unassigned')).body.length, 0);
+  assert.equal((await d1.c.get('/me')).body.queue, 1);
+
+  // Dispatch updates status, account #, install date.
+  const upd = await d1.c.patch(`/referrals/${a.id}`, { status: 'Ordered', account_number: 'A-1', install_date: '2026-10-15' });
+  assert.equal(upd.status, 200, JSON.stringify(upd.body));
+  assert.equal(upd.body.install_date, '2026-10-15');
+  assert.equal((await d1.c.patch(`/referrals/${a.id}`, { install_date: 'next tues' })).status, 400);
+
+  // Auto-assign: least-busy dispatcher gets new leads.
+  assert.equal((await d1.c.patch('/settings', { auto_assign: true })).status, 403);
+  assert.equal((await s.admin.patch('/settings', { auto_assign: true, entry_template: 'Name:\nPhone:' })).body.auto_assign, '1');
+  assert.equal((await s.repA.c.get('/settings')).body.entry_template, 'Name:\nPhone:');
+  const c = (await s.repA.c.post('/referrals', { text: 'Cam C 512-555-3000' })).body;
+  assert.equal(c.assigned_to, d1.id, 'd1 has 0 open (a is Ordered), d2 has 1');
+  assert.ok((await d1.c.get('/notifications')).body.some((n) => n.message.includes('assigned to you')));
+  // Reps can see leads assigned to... no: reps see their own; the assignee can comment and gets notified on comments.
+  await s.repA.c.post(`/referrals/${c.id}/comments`, { body: 'is this one ok?' });
+  assert.ok((await d1.c.get('/notifications')).body.some((n) => n.message.includes('commented')));
+
+  // Credit to a rep: dispatch enters it for rep B; manager A can only credit own team.
+  const cr = await d1.c.post('/referrals', { text: 'Dan D 512-555-4000', credit_to: s.repB.id });
+  assert.equal(cr.status, 201);
+  assert.equal(cr.body.created_by, s.repB.id);
+  assert.equal(cr.body.entered_by, d1.id);
+  assert.equal(cr.body.team_id, s.teamB);
+  assert.ok((await s.repB.c.get('/notifications')).body.some((n) => n.message.includes('for you')));
+  assert.equal((await s.mgrA.c.post('/referrals', { text: 'Eve E 512-555-5000', credit_to: s.repB.id })).status, 400);
+  assert.equal((await s.repA.c.post('/referrals', { text: 'Fay F 512-555-6000', credit_to: s.repA2.id })).status, 403);
+  const people = (await s.mgrA.c.get('/people')).body;
+  assert.ok(people.credit.every((p) => p.team_id === s.teamA));
+  assert.equal(people.dispatchers.length, 0);
+
+  // Name is optional now; a contact method is still required.
+  const noName = await s.repA.c.post('/referrals', { text: '77 Oak Ave Apt 2, Austin TX 78702' });
+  assert.equal(noName.status, 201, JSON.stringify(noName.body));
+  assert.equal(noName.body.customer_name, '');
+
+  // Duplicate attempts are logged for dispatch/admin, but the rep still sees only the generic message.
+  const dup = await s.repA2.c.post('/referrals', { text: 'Someone 512 555 2000' });
+  assert.equal(dup.status, 409);
+  assert.deepEqual(dup.body, { error: DUPLICATE_MESSAGE });
+  assert.equal((await s.mgrA.c.get('/duplicates')).status, 403);
+  const log = (await d1.c.get('/duplicates')).body;
+  assert.equal(log.length, 1);
+  assert.equal(log[0].matched_on, 'phone');
+  assert.equal(log[0].matched_referral_id, b.id);
+  assert.equal(log[0].attempted_by_name, 'REPA2');
+
+  // Board filter: closed leads older than N days are hidden; open ones always show.
+  s.db.prepare("UPDATE referrals SET updated_at = datetime('now', '-60 days') WHERE id = ?").run(a.id);
+  const board = (await d1.c.get('/referrals?closed_days=30')).body;
+  assert.ok(!board.some((r) => r.id === a.id));
+  assert.ok(board.some((r) => r.id === b.id));
+  assert.equal((await d1.c.get('/referrals?service=TV')).body.length, 1);
+
+  // CSV respects scope and neutralizes spreadsheet formulas.
+  await s.repA.c.patch(`/referrals/${noName.body.id}`, { notes: '=HYPERLINK("x")' });
+  const port = s.server.address().port;
+  const login = await fetch(`http://127.0.0.1:${port}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'repa', password: 'repa-pass-1' }),
+  });
+  const csvRes = await fetch(`http://127.0.0.1:${port}/api/referrals.csv`, { headers: { Cookie: login.headers.get('set-cookie').split(';')[0] } });
+  const csv = await csvRes.text();
+  assert.match(csvRes.headers.get('content-type'), /text\/csv/);
+  assert.ok(!csv.includes('Ben B'), 'rep A export excludes team B');
+  assert.ok(csv.includes('Amy A'));
+  assert.ok(csv.includes(`"'=HYPERLINK(""x"")"`));
+
+  // Stats for dispatch include every team and dispatcher workload.
+  const st = (await d1.c.get('/stats')).body;
+  assert.equal(st.teams.length, 2);
+  assert.ok(st.dispatchers.some((x) => x.username === 'disp1' && x.total === 3), JSON.stringify(st.dispatchers));
+  assert.ok(st.dispatchers.some((x) => x.username === 'disp2' && x.total === 2), 'auto-assign balances the load');
+  assert.equal(st.services.find((x) => x.service === 'TV').total, 1);
+});
+
+test('upgrades a database created by the first version without losing data', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { DatabaseSync } = require('node:sqlite');
+  const { openDb, SCHEMA_V1 } = require('../src/db');
+  const auth = require('../src/auth');
+
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eo-mig-')), 'old.db');
+  const old = new DatabaseSync(file);
+  old.exec('PRAGMA foreign_keys = ON;');
+  old.exec(SCHEMA_V1);
+  old.exec("INSERT INTO teams (name) VALUES ('T')");
+  old.prepare("INSERT INTO users (username, full_name, password_hash, role, team_id) VALUES ('boss', 'Boss', ?, 'admin', NULL)")
+    .run(auth.hashPassword('pw-12345678'));
+  old.prepare("INSERT INTO users (username, full_name, password_hash, role, team_id) VALUES ('r', 'R', ?, 'rep', 1)")
+    .run(auth.hashPassword('pw-12345678'));
+  old.exec(`INSERT INTO referrals (customer_name, phone, phone_key, created_by, team_id) VALUES ('Old Lead', '(512) 555-0000', '5125550000', 2, 1);
+    INSERT INTO comments (referral_id, user_id, body) VALUES (1, 1, 'hi');
+    INSERT INTO sessions (token, user_id, expires_at) VALUES ('tok', 2, 9999999999999);`);
+  assert.throws(() => old.exec("INSERT INTO users (username, full_name, password_hash, role) VALUES ('d', 'D', 'x', 'dispatch')"));
+  old.close();
+
+  const db = openDb(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM users').get().n, 2);
+  const ref = db.prepare('SELECT * FROM referrals').get();
+  assert.equal(ref.customer_name, 'Old Lead');
+  assert.equal(ref.assigned_to, null);
+  assert.equal(ref.services, '');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments').get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 1);
+  db.prepare("INSERT INTO users (username, full_name, password_hash, role) VALUES ('d', 'D', 'x', 'dispatch')").run();
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+  // Foreign keys are enforced again after the upgrade.
+  assert.throws(() => db.prepare('INSERT INTO comments (referral_id, user_id, body) VALUES (999, 1, ?)').run('x'));
+  db.close();
+
+  // Opening again is a no-op.
+  const again = openDb(file);
+  assert.equal(again.prepare('SELECT COUNT(*) AS n FROM referrals').get().n, 1);
+  again.close();
+});

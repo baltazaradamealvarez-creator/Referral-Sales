@@ -54,5 +54,22 @@ test('parses a single line', () => {
 
 test('parses labelled lines', () => {
   const p = parseLeadText('Name: Ana Ruiz\nPhone: 214 555 7788\nAddress: 9 Pine Ct\nNotes: call after 5');
-  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', notes: 'call after 5' });
+  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', notes: 'call after 5', services: [] });
+});
+
+test('finds an address in the middle of a sentence and keeps the rest as notes', () => {
+  const p = parseLeadText('jane smith 5125550142 wants internet and tv at 123 main st austin tx 78701 call after 5pm');
+  assert.equal(p.name, 'Jane Smith');
+  assert.equal(p.address, '123 main st austin tx 78701');
+  assert.equal(p.notes, 'wants internet and tv\ncall after 5pm');
+  assert.deepEqual(p.services, ['Internet', 'TV']);
+});
+
+test('keeps unknown labels, extra phones, and builds address from city/zip labels', () => {
+  const p = parseLeadText('Name: Ana Ruiz\nPhone: 214 555 7788\nAddress: 9 Pine Ct\nCity: Plano\nZip: 75023\n'
+    + 'Current provider: AT&T\nOther number 214-555-9999\nServices: internet, mobile');
+  assert.equal(p.address, '9 Pine Ct, Plano, 75023');
+  assert.match(p.notes, /Current provider: AT&T/);
+  assert.match(p.notes, /Alt phone: 214-555-9999/);
+  assert.deepEqual(p.services, ['Internet', 'Mobile']);
 });
