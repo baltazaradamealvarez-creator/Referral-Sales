@@ -158,6 +158,15 @@ function detectServices(text) {
 const SUFFIX_WORDS = Object.keys(STREET_SUFFIXES).join('|');
 const ADDRESS_IN_LINE_RE = new RegExp(`\\b\\d{1,6}[A-Za-z]?\\s+(?:[A-Za-z0-9'.-]+\\s+){1,4}?(?:${SUFFIX_WORDS})\\b\\.?`, 'i');
 
+// True when a whole cell looks like a street address ("123 Main St Apt 4"), used to
+// pick addresses out of spreadsheets that have no header row.
+function looksLikeStreet(text) {
+  const t = String(text || '').trim();
+  if (t.length < 6 || t.length > 150 || !/^\d{1,6}[A-Za-z]?\s+[A-Za-z0-9]/.test(t)) return false;
+  const m = ADDRESS_IN_LINE_RE.exec(t);
+  return !!m && m.index === 0;
+}
+
 const LABELS = {
   name: 'name', customer: 'name', 'customer name': 'name', client: 'name',
   phone: 'phone', cell: 'phone', mobile: 'phone', tel: 'phone', number: 'phone', 'phone number': 'phone', 'cell phone': 'phone',
@@ -313,6 +322,7 @@ module.exports = {
   normalizePhone,
   formatPhone,
   addressKey,
+  looksLikeStreet,
   parseLeadText,
   detectServices,
   normalizeState,

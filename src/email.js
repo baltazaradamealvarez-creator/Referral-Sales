@@ -177,4 +177,36 @@ function resetCodeEmail({ fullName, code, minutes }) {
   return { subject: `${code} is your E&O Referrals reset code`, text, html };
 }
 
-module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, quickStart, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };
+// An admin emails a sign-up link. The link is the only way in; it's single-person or limited-use.
+function inviteEmail({ url, roleLabel, teamName, invitedBy, expiresAt, message }, settings) {
+  const where = teamName ? ` on ${teamName}` : '';
+  const exp = expiresAt ? new Date(expiresAt.replace(' ', 'T') + 'Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : '';
+  const note = String(message || '').trim().slice(0, 500);
+  const text = `Hi,\n\n${invitedBy} invited you to join E&O Spectrum Referrals as a ${roleLabel}${where}.\n${note ? `\n"${note}"\n` : ''}`
+    + `\nSign up here (takes about a minute):\n${url}\n\nYou'll choose your own username and password.${exp ? ` The link works until ${exp}.` : ''}\n\n— E&O Spectrum Referrals`;
+  const html = layout({
+    greeting: 'Hi,',
+    bodyHtml: `<p>${esc(invitedBy)} invited you to join <b>E&amp;O Spectrum Referrals</b> as a ${esc(roleLabel)}${esc(where)}.</p>
+      ${note ? `<p style="background:#f0f3f8;border-radius:10px;padding:12px 14px;margin:16px 0">${esc(note)}</p>` : ''}
+      <p>Tap the button, fill in your name, email and phone, and pick a username and password. It takes about a minute.</p>`,
+    button: { href: url, label: 'Create my account' },
+    footer: `${exp ? `This link works until ${esc(exp)}. ` : ''}If the button doesn't work, paste this into your browser:<br><span style="word-break:break-all">${esc(url)}</span><br>Didn't expect this? You can ignore it.`,
+  });
+  return { subject: `${invitedBy} invited you to E&O Spectrum Referrals`, text, html };
+}
+
+function payoutChangedEmail({ fullName, summary }, settings) {
+  const { appUrl } = emailConfig(settings);
+  const text = `Hi ${fullName},\n\nYour payout details in E&O Spectrum Referrals were just saved: ${summary}.\n\n`
+    + 'If you didn\'t do this, change your password right away and tell your admin.\n\n— E&O Spectrum Referrals';
+  const html = layout({
+    greeting: `Hi ${fullName},`,
+    bodyHtml: `<p>Your payout details were just saved:</p><p style="background:#f0f3f8;border-radius:10px;padding:12px 14px;margin:16px 0"><b>${esc(summary)}</b></p>
+      <p>If you didn't do this, change your password right away and tell your admin.</p>`,
+    button: appUrl && { href: `${appUrl}/#/payments`, label: 'Check my payout details' },
+    footer: 'We send this every time payout details change.',
+  });
+  return { subject: 'Your payout details were changed', text, html };
+}
+
+module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, quickStart, inviteEmail, payoutChangedEmail, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };

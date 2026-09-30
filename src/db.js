@@ -273,6 +273,53 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // v8: emailed invites, past-sales block list, payout details
+  `
+  CREATE TABLE invite_emails (
+    id INTEGER PRIMARY KEY,
+    invite_id INTEGER NOT NULL REFERENCES invites(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ok INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_invite_emails_invite ON invite_emails(invite_id);
+
+  CREATE TABLE history_imports (
+    id INTEGER PRIMARY KEY,
+    file_name TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    rows_read INTEGER NOT NULL DEFAULT 0,
+    phones INTEGER NOT NULL DEFAULT 0,
+    addresses INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  -- Phones and addresses from past sales: used only to block duplicates, never listed.
+  CREATE TABLE history_contacts (
+    id INTEGER PRIMARY KEY,
+    import_id INTEGER NOT NULL REFERENCES history_imports(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('phone','address')),
+    key TEXT NOT NULL,
+    zip TEXT NOT NULL DEFAULT ''
+  );
+  CREATE UNIQUE INDEX idx_history_contacts_unique ON history_contacts(import_id, kind, key, zip);
+  CREATE INDEX idx_history_contacts_key ON history_contacts(kind, key);
+
+  ALTER TABLE users ADD COLUMN payments_enabled INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE payout_methods (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    method TEXT NOT NULL CHECK (method IN ('bank','bit','bitcoin')),
+    country TEXT NOT NULL DEFAULT '',
+    holder_name TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL,
+    key_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  );
+  `,
 ];
 
 
