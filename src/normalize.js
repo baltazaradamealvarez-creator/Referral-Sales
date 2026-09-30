@@ -257,6 +257,57 @@ function parseLeadText(text) {
   return result;
 }
 
+const STATE_MAP = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California',
+  CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia',
+  HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa',
+  KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri',
+  MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey',
+  NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio',
+  OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina',
+  SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont',
+  VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  DC: 'District of Columbia', PR: 'Puerto Rico',
+};
+
+const STATE_NAMES = Object.fromEntries(
+  Object.entries(STATE_MAP).map(([code, name]) => [name.toLowerCase(), code])
+);
+
+function normalizeState(input) {
+  if (!input) return null;
+  const cleaned = String(input).trim().toLowerCase();
+  if (STATE_MAP[cleaned.toUpperCase()]) {
+    const code = cleaned.toUpperCase();
+    return { code, name: STATE_MAP[code] };
+  }
+  if (STATE_NAMES[cleaned]) {
+    const code = STATE_NAMES[cleaned];
+    return { code, name: STATE_MAP[code] };
+  }
+  return null;
+}
+
+function extractStateFromAddress(address) {
+  if (!address) return null;
+  const str = String(address);
+  // Match state code e.g. "Austin, TX 78701" or "Dallas TX"
+  const codeMatch = str.match(/\b([A-Z]{2})\b(?:\s+\d{5})?/i);
+  if (codeMatch && STATE_MAP[codeMatch[1].toUpperCase()]) {
+    const code = codeMatch[1].toUpperCase();
+    return { code, name: STATE_MAP[code] };
+  }
+  // Match state full name
+  const lower = str.toLowerCase();
+  for (const [name, code] of Object.entries(STATE_NAMES)) {
+    if (new RegExp(`\\b${name}\\b`, 'i').test(lower)) {
+      return { code, name: STATE_MAP[code] };
+    }
+  }
+  return null;
+}
+
 module.exports = {
   normalizeEmail,
   normalizePhone,
@@ -264,4 +315,8 @@ module.exports = {
   addressKey,
   parseLeadText,
   detectServices,
+  normalizeState,
+  extractStateFromAddress,
+  STATE_MAP,
 };
+

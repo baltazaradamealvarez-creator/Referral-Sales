@@ -173,7 +173,78 @@ const MIGRATIONS = [
   CREATE INDEX idx_history_ref ON status_history(referral_id);
   CREATE INDEX idx_ref_created ON referrals(created_at);
   `,
+  // v5: reports, report schedules, schedule deliveries, saved filters, audit logs, referral state column
+  `
+  ALTER TABLE referrals ADD COLUMN state TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_ref_state ON referrals(state);
+
+  CREATE TABLE reports (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    data_source TEXT NOT NULL DEFAULT 'referrals',
+    created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_public INTEGER NOT NULL DEFAULT 0,
+    config TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE report_schedules (
+    id INTEGER PRIMARY KEY,
+    report_id INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    cadence TEXT NOT NULL CHECK (cadence IN ('daily', 'weekly', 'monthly')),
+    delivery_time TEXT NOT NULL DEFAULT '08:00',
+    timezone TEXT NOT NULL DEFAULT 'America/New_York',
+    day_of_week INTEGER DEFAULT 1,
+    day_of_month INTEGER DEFAULT 1,
+    recipients TEXT NOT NULL DEFAULT '[]',
+    format TEXT NOT NULL DEFAULT 'csv' CHECK (format IN ('csv', 'html', 'xlsx')),
+    skip_empty INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    next_run_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_run_at TEXT,
+    last_status TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE schedule_deliveries (
+    id INTEGER PRIMARY KEY,
+    schedule_id INTEGER NOT NULL REFERENCES report_schedules(id) ON DELETE CASCADE,
+    report_id INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    run_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL,
+    record_count INTEGER NOT NULL DEFAULT 0,
+    recipients_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    period_label TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE saved_filters (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    entity TEXT NOT NULL DEFAULT 'referrals',
+    filter_config TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE audit_logs (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT,
+    details TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_audit_created ON audit_logs(created_at);
+  `,
 ];
+
 
 function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get().user_version || 1;

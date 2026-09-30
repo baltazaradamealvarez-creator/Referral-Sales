@@ -841,6 +841,368 @@ function createApp(db) {
     return out;
   }));
 
+  // ---------- audit logging ----------
+
+  function logAudit(req, action, resourceType, resourceId, details = '') {
+    const u = req.user;
+    const userId = u ? u.id : null;
+    const username = u ? u.username : 'system';
+    const ip = String(req.ip || '').slice(0, 64);
+    db.prepare(`
+      INSERT INTO audit_logs (user_id, username, action, resource_type, resource_id, details, ip)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, username, action, resourceType, String(resourceId || ''), String(details).slice(0, 500), ip);
+  }
+
+  app.get('/api/audit-logs', wrap((req) => {
+    requireRole(req, 'admin');
+    return db.prepare(`
+      SELECT a.*, u.full_name
+      FROM audit_logs a
+      LEFT JOIN users u ON u.id = a.user_id
+      ORDER BY a.id DESC LIMIT 200
+    `).all();
+  }));
+
+  // ---------- filter options & saved filters ----------
+
+  app.get('/api/filter-options', wrap((req) => {
+    requireUser(req);
+    const { STATE_MAP } = require('./normalize');
+    const states = Object.entries(STATE_MAP).map(([code, name]) => ({ code, name }));
+    const teams = db.prepare('SELECT id, name FROM teams ORDER BY name').all();
+    const reps = db.prepare("SELECT id, full_name, team_id, username FROM users WHERE active = 1 AND role IN ('rep', 'manager') ORDER BY full_name").all();
+    const dispatchers = db.prepare("SELECT id, full_name, username FROM users WHERE active = 1 AND role IN ('dispatch', 'admin') ORDER BY full_name").all();
+    const datePresets = [
+      { id: 'today', name: 'Today' },
+      { id: 'yesterday', name: 'Yesterday' },
+      { id: 'this_week', name: 'This Week' },
+      { id: 'last_week', name: 'Last Week' },
+      { id: 'this_month', name: 'This Month' },
+      { id: 'last_month', name: 'Last Month' },
+      { id: 'qtd', name: 'Quarter to Date (QTD)' },
+      { id: 'ytd', name: 'Year to Date (YTD)' },
+      { id: 'rolling_30d', name: 'Rolling 30 Days' },
+      { id: 'rolling_90d', name: 'Rolling 90 Days' },
+    ];
+    return { states, teams, reps, dispatchers, services: SERVICES, statuses: STATUSES, date_presets: datePresets };
+  }));
+
+  app.get('/api/saved-filters', wrap((req) => {
+    const u = requireUser(req);
+    return db.prepare('SELECT * FROM saved_filters WHERE user_id = ? ORDER BY id DESC').all(u.id);
+  }));
+
+  app.post('/api/saved-filters', wrap((req, res) => {
+    const u = requireUser(req);
+    const name = String(req.body.name || '').trim().slice(0, 100);
+    if (!name) throw new HttpError(400, 'Filter name is required.');
+    const entity = String(req.body.entity || 'referrals');
+    const filterConfig = JSON.stringify(req.body.filter_config || {});
+    const r = db.prepare('INSERT INTO saved_filters (user_id, name, entity, filter_config) VALUES (?, ?, ?, ?)').run(u.id, name, entity, filterConfig);
+    res.status(201);
+    return { id: Number(r.lastInsertRowid), name, entity, filter_config: req.body.filter_config };
+  }));
+
+  app.delete('/api/saved-filters/:id', wrap((req) => {
+    const u = requireUser(req);
+    db.prepare('DELETE FROM saved_filters WHERE id = ? AND user_id = ?').run(Number(req.params.id), u.id);
+    return { ok: true };
+  }));
+
+  // ---------- custom report builder & analytics ----------
+
+  const { executeReportQuery, generateCSV, computeNextRun, runScheduledReport } = require('./scheduler');
+
+  app.get('/api/reports', wrap((req) => {
+    const u = requireUser(req);
+    return db.prepare(`
+      SELECT r.*, u.full_name AS creator_name,
+        (SELECT COUNT(*) FROM report_schedules s WHERE s.report_id = r.id AND s.active = 1) AS schedule_count
+      FROM reports r
+      JOIN users u ON u.id = r.created_by
+      WHERE r.created_by = ? OR r.is_public = 1 OR ? = 'admin'
+      ORDER BY r.updated_at DESC
+    `).all(u.id, u.role);
+  }));
+
+  app.post('/api/reports', wrap((req, res) => {
+    const u = requireUser(req);
+    const name = String(req.body.name || '').trim().slice(0, 150);
+    if (!name) throw new HttpError(400, 'Report name is required.');
+    const description = String(req.body.description || '').slice(0, 500);
+    const dataSource = String(req.body.data_source || 'referrals');
+    const isPublic = req.body.is_public ? 1 : 0;
+    const config = JSON.stringify(req.body.config || {});
+
+    const r = db.prepare(`
+      INSERT INTO reports (name, description, data_source, created_by, is_public, config)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(name, description, dataSource, u.id, isPublic, config);
+
+    const id = Number(r.lastInsertRowid);
+    logAudit(req, 'create_report', 'report', id, `Created report: ${name}`);
+    res.status(201);
+    return { id, name, description, data_source: dataSource, created_by: u.id, is_public: !!isPublic };
+  }));
+
+  app.get('/api/reports/:id', wrap((req) => {
+    const u = requireUser(req);
+    const report = db.prepare(`
+      SELECT r.*, u.full_name AS creator_name
+      FROM reports r JOIN users u ON u.id = r.created_by WHERE r.id = ?
+    `).get(Number(req.params.id));
+    if (!report) throw new HttpError(404, 'Report not found.');
+    if (report.created_by !== u.id && !report.is_public && u.role !== 'admin') {
+      throw new HttpError(403, 'Access denied to private report.');
+    }
+    const schedules = db.prepare('SELECT * FROM report_schedules WHERE report_id = ?').all(report.id);
+    return { ...report, config: JSON.parse(report.config || '{}'), schedules };
+  }));
+
+  app.patch('/api/reports/:id', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    if (!report) throw new HttpError(404, 'Report not found.');
+    if (report.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Only the report owner or admin can edit.');
+
+    const b = req.body || {};
+    const updates = {};
+    if (b.name !== undefined) {
+      const n = String(b.name).trim().slice(0, 150);
+      if (!n) throw new HttpError(400, 'Report name cannot be empty.');
+      updates.name = n;
+    }
+    if (b.description !== undefined) updates.description = String(b.description).slice(0, 500);
+    if (b.is_public !== undefined) updates.is_public = b.is_public ? 1 : 0;
+    if (b.config !== undefined) updates.config = JSON.stringify(b.config);
+    updates.updated_at = "datetime('now')";
+
+    const keys = Object.keys(updates);
+    if (keys.length) {
+      const setSql = keys.map((k) => (k === 'updated_at' ? `${k} = datetime('now')` : `${k} = ?`)).join(', ');
+      const valParams = keys.filter((k) => k !== 'updated_at').map((k) => updates[k]);
+      db.prepare(`UPDATE reports SET ${setSql} WHERE id = ?`).run(...valParams, id);
+    }
+    logAudit(req, 'update_report', 'report', id, `Updated report: ${updates.name || report.name}`);
+    return { ok: true };
+  }));
+
+  app.delete('/api/reports/:id', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    if (!report) throw new HttpError(404, 'Report not found.');
+    if (report.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
+    db.prepare('DELETE FROM reports WHERE id = ?').run(id);
+    logAudit(req, 'delete_report', 'report', id, `Deleted report: ${report.name}`);
+    return { ok: true };
+  }));
+
+  app.post('/api/reports/:id/run', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    let config = req.body.config;
+    let reportName = 'Ad-hoc Query';
+
+    if (id > 0) {
+      const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+      if (!report) throw new HttpError(404, 'Report not found.');
+      if (report.created_by !== u.id && !report.is_public && u.role !== 'admin') {
+        throw new HttpError(403, 'Access denied.');
+      }
+      reportName = report.name;
+      config = config || JSON.parse(report.config || '{}');
+    }
+
+    const rows = executeReportQuery(db, u, config || {});
+
+    // Compute aggregations & groupings
+    const primaryGroup = config?.group_by || null;
+    const secondaryGroup = config?.secondary_group_by || null;
+    const calcField = config?.calc_field || null;
+
+    let summary = null;
+    if (primaryGroup) {
+      const groupsMap = new Map();
+      for (const row of rows) {
+        const key = String(row[primaryGroup] || 'Unassigned');
+        const secKey = secondaryGroup ? String(row[secondaryGroup] || 'Unassigned') : null;
+
+        if (!groupsMap.has(key)) {
+          groupsMap.set(key, { name: key, count: 0, ordered: 0, dnq: 0, cancelled: 0, total_val: 0, sub: new Map() });
+        }
+        const grp = groupsMap.get(key);
+        grp.count++;
+        if (row.status === 'Ordered') grp.ordered++;
+        if (row.status === 'DNQ') grp.dnq++;
+        if (row.status === 'Cancelled') grp.cancelled++;
+        if (calcField && Number(row[calcField])) grp.total_val += Number(row[calcField]);
+
+        if (secKey) {
+          if (!grp.sub.has(secKey)) {
+            grp.sub.set(secKey, { name: secKey, count: 0, ordered: 0 });
+          }
+          const subGrp = grp.sub.get(secKey);
+          subGrp.count++;
+          if (row.status === 'Ordered') subGrp.ordered++;
+        }
+      }
+
+      summary = Array.from(groupsMap.values()).map((g) => ({
+        group: g.name,
+        count: g.count,
+        ordered: g.ordered,
+        dnq: g.dnq,
+        cancelled: g.cancelled,
+        conversion_rate: g.count ? Math.round((g.ordered / g.count) * 1000) / 10 : 0,
+        subgroups: Array.from(g.sub.values()).map((s) => ({
+          group: s.name,
+          count: s.count,
+          ordered: s.ordered,
+          conversion_rate: s.count ? Math.round((s.ordered / s.count) * 1000) / 10 : 0,
+        })),
+      }));
+    }
+
+    const totals = {
+      total_records: rows.length,
+      ordered_count: rows.filter((r) => r.status === 'Ordered').length,
+      conversion_rate: rows.length ? Math.round((rows.filter((r) => r.status === 'Ordered').length / rows.length) * 1000) / 10 : 0,
+    };
+
+    return { report_name: reportName, total_records: rows.length, totals, summary, rows: rows.slice(0, 1000) };
+  }));
+
+  app.get('/api/reports/:id/export', (req, res, next) => {
+    try {
+      const u = requireUser(req);
+      const id = Number(req.params.id);
+      const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+      if (!report) throw new HttpError(404, 'Report not found.');
+      if (report.created_by !== u.id && !report.is_public && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
+
+      const config = JSON.parse(report.config || '{}');
+      const rows = executeReportQuery(db, u, config);
+      const csv = generateCSV(rows, config.columns);
+
+      logAudit(req, 'export_report', 'report', id, `Exported CSV for report: ${report.name}`);
+      res.set('Content-Type', 'text/csv; charset=utf-8');
+      res.set('Content-Disposition', `attachment; filename="${report.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send('﻿' + csv);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ---------- scheduled reporting APIs ----------
+
+  app.get('/api/reports/:id/schedules', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    if (!report) throw new HttpError(404, 'Report not found.');
+    return db.prepare('SELECT * FROM report_schedules WHERE report_id = ?').all(id);
+  }));
+
+  app.post('/api/reports/:id/schedules', wrap((req, res) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    if (!report) throw new HttpError(404, 'Report not found.');
+
+    const cadence = String(req.body.cadence || 'daily');
+    if (!['daily', 'weekly', 'monthly'].includes(cadence)) throw new HttpError(400, 'Invalid cadence.');
+
+    const deliveryTime = String(req.body.delivery_time || '08:00');
+    const timezone = String(req.body.timezone || 'America/New_York');
+    const dayOfWeek = Number(req.body.day_of_week || 1);
+    const dayOfMonth = Number(req.body.day_of_month || 1);
+    const format = String(req.body.format || 'csv');
+    const skipEmpty = req.body.skip_empty !== false ? 1 : 0;
+    const recipients = JSON.stringify(Array.isArray(req.body.recipients) ? req.body.recipients : [u.email]);
+
+    const nextRun = computeNextRun(cadence, deliveryTime, dayOfWeek, dayOfMonth);
+
+    const r = db.prepare(`
+      INSERT INTO report_schedules (report_id, created_by, cadence, delivery_time, timezone, day_of_week, day_of_month, recipients, format, skip_empty, active, next_run_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `).run(id, u.id, cadence, deliveryTime, timezone, dayOfWeek, dayOfMonth, recipients, format, skipEmpty, nextRun);
+
+    const scheduleId = Number(r.lastInsertRowid);
+    logAudit(req, 'create_schedule', 'report_schedule', scheduleId, `Scheduled report #${id} (${cadence} at ${deliveryTime})`);
+    res.status(201);
+    return { id: scheduleId, report_id: id, cadence, delivery_time: deliveryTime, next_run_at: nextRun, recipients: JSON.parse(recipients) };
+  }));
+
+  app.patch('/api/schedules/:id', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const schedule = db.prepare('SELECT * FROM report_schedules WHERE id = ?').get(id);
+    if (!schedule) throw new HttpError(404, 'Schedule not found.');
+    if (schedule.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
+
+    const b = req.body || {};
+    const updates = {};
+    if (b.active !== undefined) updates.active = b.active ? 1 : 0;
+    if (b.cadence !== undefined) updates.cadence = b.cadence;
+    if (b.delivery_time !== undefined) updates.delivery_time = b.delivery_time;
+    if (b.recipients !== undefined) updates.recipients = JSON.stringify(b.recipients);
+    if (b.format !== undefined) updates.format = b.format;
+    if (b.skip_empty !== undefined) updates.skip_empty = b.skip_empty ? 1 : 0;
+
+    const cadence = updates.cadence || schedule.cadence;
+    const time = updates.delivery_time || schedule.delivery_time;
+    updates.next_run_at = computeNextRun(cadence, time, schedule.day_of_week, schedule.day_of_month);
+
+    const keys = Object.keys(updates);
+    if (keys.length) {
+      db.prepare(`UPDATE report_schedules SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => updates[k]), id);
+    }
+    logAudit(req, 'update_schedule', 'report_schedule', id, `Updated schedule #${id}`);
+    return { ok: true };
+  }));
+
+  app.delete('/api/schedules/:id', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const schedule = db.prepare('SELECT * FROM report_schedules WHERE id = ?').get(id);
+    if (!schedule) throw new HttpError(404, 'Schedule not found.');
+    if (schedule.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
+    db.prepare('DELETE FROM report_schedules WHERE id = ?').run(id);
+    logAudit(req, 'delete_schedule', 'report_schedule', id, `Deleted schedule #${id}`);
+    return { ok: true };
+  }));
+
+  app.post('/api/schedules/:id/test', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    const res = runScheduledReport(db, id);
+    if (!res) throw new HttpError(400, 'Could not run schedule test.');
+    logAudit(req, 'test_schedule', 'report_schedule', id, `Executed test delivery for schedule #${id}`);
+    return res;
+  }));
+
+  app.get('/api/schedules/:id/history', wrap((req) => {
+    const u = requireUser(req);
+    const id = Number(req.params.id);
+    return db.prepare('SELECT * FROM schedule_deliveries WHERE schedule_id = ? ORDER BY id DESC LIMIT 50').all(id);
+  }));
+
+  app.get('/api/analytics/schedules', wrap((req) => {
+    const u = requireUser(req);
+    return db.prepare(`
+      SELECT s.*, r.name AS report_name, u.full_name AS creator_name
+      FROM report_schedules s
+      JOIN reports r ON r.id = s.report_id
+      JOIN users u ON u.id = s.created_by
+      WHERE s.created_by = ? OR ? = 'admin'
+      ORDER BY s.id DESC
+    `).all(u.id, u.role);
+  }));
+
+
   // ---------- teams & users ----------
 
   app.get('/api/teams', wrap((req) => {

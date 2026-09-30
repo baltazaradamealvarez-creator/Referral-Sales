@@ -117,11 +117,14 @@
     if (seesAll()) links.push(['#/referrals?scope=assigned', 'My Queue', 'queue', '🎧']);
     links.push(['#/board', 'Board', 'board', '🗂']);
     links.push(['#/referrals', worksLeads() ? 'Customers' : 'My Referrals', 'customers', '👥']);
+    links.push(['#/analytics', 'Analytics', 'analytics', '📊']);
     if (seesAll()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
     links.push(['#/sales', 'Sales', 'sales', '📈']);
     if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
+    if (isAdmin()) links.push(['#/audit-logs', 'Audit Logs', 'audit', '🔒']);
     return links;
   }
+
   // The phone tab bar shows these four; the rest go under "More".
   const TAB_KEYS = ['home', 'new', 'board', 'customers'];
 
@@ -1723,7 +1726,588 @@
     });
   }
 
-  // ---------- router ----------
+  // ---------- analytics & report builder ----------
+
+  let filterOptsCache = null;
+  async function getFilterOpts() {
+    if (!filterOptsCache) filterOptsCache = await api('/filter-options');
+    return filterOptsCache;
+  }
+
+  async function renderAnalytics() {
+    const params = query();
+    const activeTab = params.tab || 'overview';
+    const [opts, reports, schedules] = await Promise.all([
+      getFilterOpts(),
+      api('/reports'),
+      api('/analytics/schedules'),
+    ]);
+
+    shell(`
+      <div class="breadcrumbs">
+        <a href="#/home">Home</a>
+        <span class="crumb-sep">/</span>
+        <span class="crumb-active">Analytics &amp; Custom Reports</span>
+      </div>
+      <div class="card" style="margin-bottom: 1.2rem;">
+        <div class="row between">
+          <div>
+            <h1 style="margin:0">Analytics &amp; Intelligence</h1>
+            <p class="muted small" style="margin:.2rem 0 0">Salesforce-inspired reporting engine, custom builder, and automated schedule deliveries.</p>
+          </div>
+          <div class="seg" id="analyticsTabSeg">
+            <button data-tab="overview" class="${activeTab === 'overview' ? 'on' : ''}">📊 Overview</button>
+            <button data-tab="library" class="${activeTab === 'library' ? 'on' : ''}">📁 Report Library (${reports.length})</button>
+            <button data-tab="builder" class="${activeTab === 'builder' ? 'on' : ''}">⚡ Report Builder</button>
+            <button data-tab="schedules" class="${activeTab === 'schedules' ? 'on' : ''}">📅 Scheduled (${schedules.length})</button>
+          </div>
+        </div>
+      </div>
+      <div id="analyticsBody"></div>
+    `, { wide: true });
+
+    document.querySelectorAll('#analyticsTabSeg button').forEach((b) => {
+      b.onclick = () => { location.hash = '#/analytics?' + new URLSearchParams({ ...params, tab: b.dataset.tab }).toString(); };
+    });
+
+    const bodyEl = document.getElementById('analyticsBody');
+    if (activeTab === 'overview') renderAnalyticsOverview(bodyEl, opts);
+    else if (activeTab === 'library') renderReportLibrary(bodyEl, reports);
+    else if (activeTab === 'builder') renderReportBuilder(bodyEl, opts, params.report_id);
+    else if (activeTab === 'schedules') renderScheduledReports(bodyEl, schedules, reports);
+  }
+
+  async function renderAnalyticsOverview(container, opts) {
+    const data = await api('/reports/0/run', {
+      method: 'POST',
+      body: { config: { group_by: 'state', date_field: 'created_at', relative_date: 'this_month' } },
+    });
+
+    container.innerHTML = `
+      <div class="stack">
+        <div class="card">
+          <h2>Executive Summary (This Month)</h2>
+          <div class="stats" style="margin-top:.8rem">
+            <div class="stat"><div class="n">${data.totals.total_records}</div><div class="l">Total Referrals</div></div>
+            <div class="stat Ordered"><div class="n">${data.totals.ordered_count}</div><div class="l">Orders Closed</div></div>
+            <div class="stat"><div class="n">${data.totals.conversion_rate}%</div><div class="l">Overall Conversion</div></div>
+            <div class="stat"><div class="n">${(data.summary || []).length}</div><div class="l">Active States</div></div>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="row between">
+              <h2>Performance by State</h2>
+              <button class="btn small" id="openStateReport">Build Full State Report ↗</button>
+            </div>
+            <div class="table-wrap" style="margin-top:.6rem">
+              <table class="matrix-table">
+                <thead><tr><th>State</th><th class="num">Leads</th><th class="num">Orders</th><th class="num">Conversion</th></tr></thead>
+                <tbody>
+                  ${(data.summary || []).map((g) => `
+                    <tr>
+                      <td><b>${esc(g.group)}</b></td>
+                      <td class="num">${g.count}</td>
+                      <td class="num"><b>${g.ordered}</b></td>
+                      <td class="num">${g.conversion_rate}%</td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="4" class="muted">No state data yet.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Quick Insights &amp; Bottlenecks</h2>
+            <div class="insights" style="margin-top:.8rem">
+              <div class="insight-card good">
+                <div class="insight-title">Top State Conversion</div>
+                <div class="insight-body">
+                  ${data.summary && data.summary.length ? `State <b>${esc(data.summary[0].group)}</b> leads with <b>${data.summary[0].conversion_rate}%</b> conversion rate.` : 'Gathering period data...'}
+                </div>
+              </div>
+              <div class="insight-card warn">
+                <div class="insight-title">Scheduled Delivery Health</div>
+                <div class="insight-body">Automated background scheduler is active and evaluating daily cron triggers.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('openStateReport').onclick = () => {
+      location.hash = '#/analytics?tab=builder&group_by=state&relative_date=this_month';
+    };
+  }
+
+  function renderReportLibrary(container, reports) {
+    const defaultReports = [
+      { id: 0, name: 'State Conversion & Regional Performance', description: 'Breakdown of referrals, orders, and conversion rates grouped by US state.', data_source: 'referrals', is_public: 1, creator_name: 'System Default', group_by: 'state' },
+      { id: -1, name: 'Monthly Sales Representative Leaderboard', description: 'Per-rep breakdown of total leads entered vs orders placed with conversion rate.', data_source: 'referrals', is_public: 1, creator_name: 'System Default', group_by: 'created_by_name' },
+      { id: -2, name: 'Service Product Mix & Demand Analysis', description: 'Distribution of requested Spectrum services (Internet, TV, Mobile, Voice).', data_source: 'referrals', is_public: 1, creator_name: 'System Default', group_by: 'services' },
+      { id: -3, name: 'Blocked Duplicate Attempts Audit Log', description: 'Log of all duplicate lead submissions rejected by multi-team matching.', data_source: 'duplicates', is_public: 1, creator_name: 'System Default', group_by: 'matched_on' },
+    ];
+
+    const allReports = [...defaultReports, ...reports];
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="row between" style="margin-bottom: 1rem;">
+          <h2>Report Library</h2>
+          <button class="btn primary" id="createNewReportBtn">⚡ Build Custom Report</button>
+        </div>
+        <div class="table-wrap">
+          <table class="rtable">
+            <thead>
+              <tr><th>Report Name</th><th>Owner</th><th>Visibility</th><th>Data Source</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${allReports.map((r) => `
+                <tr>
+                  <td data-label="Name">
+                    <b>${esc(r.name)}</b>
+                    <div class="small muted">${esc(r.description || '')}</div>
+                  </td>
+                  <td data-label="Owner" class="small">${esc(r.creator_name || 'Me')}</td>
+                  <td data-label="Visibility"><span class="badge-status ${r.is_public ? 'success' : 'skipped'}">${r.is_public ? 'Public' : 'Private'}</span></td>
+                  <td data-label="Data Source" class="small muted">${esc(r.data_source)}</td>
+                  <td data-label="Actions" class="actions">
+                    <button class="btn small primary" data-run-rep="${r.id}" data-grp="${r.group_by || ''}">Run</button>
+                    ${r.id > 0 ? `<button class="btn small" data-edit-rep="${r.id}">Edit</button>` : ''}
+                    ${r.id > 0 ? `<button class="btn small danger" data-del-rep="${r.id}">Delete</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('createNewReportBtn').onclick = () => {
+      location.hash = '#/analytics?tab=builder';
+    };
+
+    container.querySelectorAll('[data-run-rep]').forEach((b) => {
+      b.onclick = () => {
+        const id = Number(b.dataset.runRep);
+        if (id > 0) location.hash = `#/analytics?tab=builder&report_id=${id}`;
+        else location.hash = `#/analytics?tab=builder&group_by=${b.dataset.grp}`;
+      };
+    });
+
+    container.querySelectorAll('[data-edit-rep]').forEach((b) => {
+      b.onclick = () => {
+        location.hash = `#/analytics?tab=builder&report_id=${b.dataset.editRep}`;
+      };
+    });
+
+    container.querySelectorAll('[data-del-rep]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('Are you sure you want to delete this saved report?')) return;
+        try {
+          await api(`/reports/${b.dataset.delRep}`, { method: 'DELETE' });
+          toast('Report deleted');
+          renderAnalytics();
+        } catch (err) { toast(err.message); }
+      };
+    });
+  }
+
+  async function renderReportBuilder(container, opts, reportId) {
+    let report = null;
+    let config = {
+      group_by: query().group_by || 'state',
+      secondary_group_by: '',
+      relative_date: query().relative_date || 'this_month',
+      columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
+      filters: [],
+    };
+
+    if (reportId && Number(reportId) > 0) {
+      try {
+        report = await api(`/reports/${reportId}`);
+        config = report.config || config;
+      } catch (err) { toast(err.message); }
+    }
+
+    container.innerHTML = `
+      <div class="report-builder-layout">
+        <form class="report-config-panel" id="reportBuilderForm">
+          <h2>Report Configuration</h2>
+          <div class="field">
+            <label for="rb_name">Report Name</label>
+            <input id="rb_name" value="${esc(report ? report.name : 'Untitled Sales Report')}" required>
+          </div>
+          <div class="field">
+            <label for="rb_desc">Description</label>
+            <input id="rb_desc" value="${esc(report ? report.description : '')}" placeholder="Optional purpose notes">
+          </div>
+          <div class="field">
+            <label for="rb_group">Primary Grouping</label>
+            <select id="rb_group">
+              <option value="">None (Flat List)</option>
+              <option value="state" ${config.group_by === 'state' ? 'selected' : ''}>State / Territory</option>
+              <option value="status" ${config.group_by === 'status' ? 'selected' : ''}>Status</option>
+              <option value="created_by_name" ${config.group_by === 'created_by_name' ? 'selected' : ''}>Sales Representative</option>
+              <option value="team_name" ${config.group_by === 'team_name' ? 'selected' : ''}>Team</option>
+              <option value="services" ${config.group_by === 'services' ? 'selected' : ''}>Service Type</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="rb_sec_group">Secondary Grouping</label>
+            <select id="rb_sec_group">
+              <option value="">None</option>
+              <option value="status" ${config.secondary_group_by === 'status' ? 'selected' : ''}>Status</option>
+              <option value="state" ${config.secondary_group_by === 'state' ? 'selected' : ''}>State</option>
+              <option value="services" ${config.secondary_group_by === 'services' ? 'selected' : ''}>Service Type</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="rb_rel_date">Date Range Preset</label>
+            <select id="rb_rel_date">
+              <option value="">All Time</option>
+              ${opts.date_presets.map((p) => `<option value="${p.id}" ${config.relative_date === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <label class="check" style="margin-top:.8rem;">
+            <input type="checkbox" id="rb_public" ${report && report.is_public ? 'checked' : ''}> Make report visible to team (Public)
+          </label>
+          <div class="row" style="margin-top:1.2rem">
+            <button type="submit" class="btn primary">Run &amp; Update Preview</button>
+            <button type="button" class="btn" id="saveReportBtn">Save Report</button>
+          </div>
+        </form>
+        <div class="report-preview-panel">
+          <div class="row between" style="margin-bottom:1rem">
+            <div>
+              <h2 id="prevTitle" style="margin:0">${esc(report ? report.name : 'Report Preview')}</h2>
+              <span class="small muted" id="prevSubtitle">Run query to view matrix output</span>
+            </div>
+            <div class="row">
+              <button class="btn small" id="exportReportCsv">⬇ Export CSV</button>
+              ${report ? `<button class="btn small primary" id="scheduleReportBtn">📅 Schedule Delivery</button>` : ''}
+            </div>
+          </div>
+          <div id="reportPreviewResults">
+            <p class="muted">Click "Run &amp; Update Preview" to execute custom aggregation query.</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const form = document.getElementById('reportBuilderForm');
+    const prevResults = document.getElementById('reportPreviewResults');
+
+    const runPreview = async () => {
+      const cfg = {
+        group_by: document.getElementById('rb_group').value,
+        secondary_group_by: document.getElementById('rb_sec_group').value,
+        relative_date: document.getElementById('rb_rel_date').value,
+        columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
+      };
+
+      try {
+        const res = await api(reportId ? `/reports/${reportId}/run` : '/reports/0/run', {
+          method: 'POST',
+          body: { config: cfg },
+        });
+
+        document.getElementById('prevSubtitle').textContent = `Matched ${res.total_records} records · Overall Conversion: ${res.totals.conversion_rate}%`;
+
+        if (cfg.group_by && res.summary) {
+          prevResults.innerHTML = `
+            <div class="table-wrap">
+              <table class="matrix-table">
+                <thead>
+                  <tr>
+                    <th>${esc(cfg.group_by.toUpperCase())}</th>
+                    <th class="num">TOTAL LEADS</th>
+                    <th class="num">ORDERED</th>
+                    <th class="num">CONVERSION</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${res.summary.map((g) => `
+                    <tr>
+                      <td><b>${esc(g.group)}</b></td>
+                      <td class="num">${g.count}</td>
+                      <td class="num"><b>${g.ordered}</b></td>
+                      <td class="num">${g.conversion_rate}%</td>
+                    </tr>
+                    ${(g.subgroups || []).map((s) => `
+                      <tr class="matrix-subrow">
+                        <td style="padding-left: 1.8rem;">↳ ${esc(s.group)}</td>
+                        <td class="num">${s.count}</td>
+                        <td class="num">${s.ordered}</td>
+                        <td class="num">${s.conversion_rate}%</td>
+                      </tr>
+                    `).join('')}
+                  `).join('')}
+                  <tr class="matrix-total">
+                    <td>GRAND TOTAL</td>
+                    <td class="num">${res.totals.total_records}</td>
+                    <td class="num">${res.totals.ordered_count}</td>
+                    <td class="num">${res.totals.conversion_rate}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else {
+          prevResults.innerHTML = `
+            <div class="table-wrap">
+              <table class="rtable">
+                <thead><tr><th>Customer</th><th>Status</th><th>State</th><th>Rep</th><th>Services</th></tr></thead>
+                <tbody>
+                  ${res.rows.map((r) => `
+                    <tr>
+                      <td><b>${esc(leadName(r))}</b></td>
+                      <td>${pill(r.status)}</td>
+                      <td>${esc(r.state)}</td>
+                      <td>${esc(r.created_by_name)}</td>
+                      <td>${svcTags(r.services)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        }
+      } catch (err) {
+        prevResults.innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
+      }
+    };
+
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      runPreview();
+    };
+
+    document.getElementById('saveReportBtn').onclick = async () => {
+      const body = {
+        name: document.getElementById('rb_name').value,
+        description: document.getElementById('rb_desc').value,
+        is_public: document.getElementById('rb_public').checked,
+        config: {
+          group_by: document.getElementById('rb_group').value,
+          secondary_group_by: document.getElementById('rb_sec_group').value,
+          relative_date: document.getElementById('rb_rel_date').value,
+        },
+      };
+
+      try {
+        if (reportId) {
+          await api(`/reports/${reportId}`, { method: 'PATCH', body });
+          toast('Report updated');
+        } else {
+          const r = await api('/reports', { method: 'POST', body });
+          toast('Report created');
+          location.hash = `#/analytics?tab=builder&report_id=${r.id}`;
+        }
+      } catch (err) { toast(err.message); }
+    };
+
+    document.getElementById('exportReportCsv').onclick = () => {
+      if (reportId) location.href = `/api/reports/${reportId}/export`;
+      else toast('Please save the report first to export CSV.');
+    };
+
+    const schedBtn = document.getElementById('scheduleReportBtn');
+    if (schedBtn) {
+      schedBtn.onclick = () => {
+        openScheduleModal(reportId, opts);
+      };
+    }
+
+    runPreview();
+  }
+
+  function renderScheduledReports(container, schedules, reports) {
+    container.innerHTML = `
+      <div class="card">
+        <div class="row between" style="margin-bottom:1rem">
+          <h2>Automated Scheduled Report Deliveries</h2>
+          <button class="btn primary" id="addNewScheduleBtn">📅 Add New Schedule</button>
+        </div>
+        <div class="table-wrap">
+          <table class="rtable">
+            <thead>
+              <tr><th>Report</th><th>Cadence</th><th>Recipients</th><th>Next Run</th><th>Last Run Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${schedules.map((s) => {
+                let rec = [];
+                try { rec = JSON.parse(s.recipients || '[]'); } catch { rec = []; }
+                return `
+                  <tr>
+                    <td data-label="Report"><b>${esc(s.report_name)}</b></td>
+                    <td data-label="Cadence"><span class="tag">${esc(s.cadence)} at ${esc(s.delivery_time)}</span></td>
+                    <td data-label="Recipients" class="small">${esc(rec.join(', ') || 'Creator')}</td>
+                    <td data-label="Next Run" class="small">${esc(fullDate(s.next_run_at))}</td>
+                    <td data-label="Last Status">
+                      <span class="badge-status ${s.last_status === 'success' ? 'success' : s.last_status === 'skipped' ? 'skipped' : 'failed'}">
+                        ${esc(s.last_status || 'Pending')}
+                      </span>
+                    </td>
+                    <td data-label="Actions" class="actions">
+                      <button class="btn small primary" data-test-sched="${s.id}">Test Now</button>
+                      <button class="btn small" data-hist-sched="${s.id}">History</button>
+                      <button class="btn small danger" data-del-sched="${s.id}">Delete</button>
+                    </td>
+                  </tr>
+                `;
+              }).join('') || '<tr><td colspan="6" class="muted">No report schedules created yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('addNewScheduleBtn').onclick = () => {
+      if (!reports.length) { toast('Please create a saved report first in the Report Builder.'); return; }
+      openScheduleModal(reports[0].id, filterOptsCache, reports);
+    };
+
+    container.querySelectorAll('[data-test-sched]').forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const res = await api(`/schedules/${b.dataset.testSched}/test`, { method: 'POST', body: {} });
+          toast(`Scheduled run test finished: ${res.count} records processed.`);
+          renderAnalytics();
+        } catch (err) { toast(err.message); }
+      };
+    });
+
+    container.querySelectorAll('[data-hist-sched]').forEach((b) => {
+      b.onclick = async () => {
+        const hist = await api(`/schedules/${b.dataset.histSched}/history`);
+        modal(`
+          <h2>Delivery History</h2>
+          <div class="table-wrap" style="max-height:50vh;overflow:auto">
+            <table class="rtable">
+              <thead><tr><th>Time</th><th>Status</th><th>Records</th><th>Period</th></tr></thead>
+              <tbody>
+                ${hist.map((h) => `
+                  <tr>
+                    <td>${esc(fullDate(h.run_at))}</td>
+                    <td><span class="badge-status ${h.status}">${esc(h.status)}</span></td>
+                    <td>${h.record_count}</td>
+                    <td>${esc(h.period_label)}</td>
+                  </tr>
+                `).join('') || '<tr><td colspan="4" class="muted">No execution history logged.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+          <div class="row" style="justify-content:flex-end;margin-top:1rem"><button class="btn" data-close>Close</button></div>
+        `, { wide: true });
+      };
+    });
+
+    container.querySelectorAll('[data-del-sched]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('Delete this report schedule?')) return;
+        try {
+          await api(`/schedules/${b.dataset.delSched}`, { method: 'DELETE' });
+          toast('Schedule deleted');
+          renderAnalytics();
+        } catch (err) { toast(err.message); }
+      };
+    });
+  }
+
+  function openScheduleModal(reportId, opts, reportsList = []) {
+    const m = modal(`
+      <form id="schedForm">
+        <h2>Schedule Report Delivery</h2>
+        ${reportsList.length ? `
+          <div class="field">
+            <label for="sc_report">Report</label>
+            <select id="sc_report">${reportsList.map((r) => `<option value="${r.id}" ${r.id === reportId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+          </div>
+        ` : ''}
+        <div class="field">
+          <label for="sc_cadence">Cadence</label>
+          <select id="sc_cadence">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly (Mondays)</option>
+            <option value="monthly">Monthly (1st of month)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sc_time">Delivery Time (UTC/Server)</label>
+          <input id="sc_time" type="time" value="08:00" required>
+        </div>
+        <div class="field">
+          <label for="sc_rec">Recipients (Comma-separated emails)</label>
+          <input id="sc_rec" value="${esc(state.me.email)}" placeholder="rep@company.com, manager@company.com">
+        </div>
+        <label class="check" style="margin-top:.8rem">
+          <input type="checkbox" id="sc_skip" checked> Skip delivery if report returns 0 records
+        </label>
+        <div class="row" style="justify-content:flex-end;margin-top:1.2rem">
+          <button type="button" class="btn" data-close>Cancel</button>
+          <button class="btn primary">Create Schedule</button>
+        </div>
+      </form>
+    `);
+
+    m.querySelector('form').onsubmit = async (e) => {
+      e.preventDefault();
+      const targetReportId = document.getElementById('sc_report') ? Number(document.getElementById('sc_report').value) : reportId;
+      const rec = document.getElementById('sc_rec').value.split(',').map((x) => x.trim()).filter(Boolean);
+
+      try {
+        await api(`/reports/${targetReportId}/schedules`, {
+          method: 'POST',
+          body: {
+            cadence: document.getElementById('sc_cadence').value,
+            delivery_time: document.getElementById('sc_time').value,
+            recipients: rec,
+            skip_empty: document.getElementById('sc_skip').checked,
+          },
+        });
+        closeModal();
+        toast('Report schedule created!');
+        location.hash = '#/analytics?tab=schedules';
+      } catch (err) { toast(err.message); }
+    };
+  }
+
+  // ---------- audit logs view ----------
+
+  async function renderAuditLogs() {
+    if (!isAdmin()) { location.hash = defaultRoute(); return; }
+    const logs = await api('/audit-logs');
+
+    shell(`
+      <div class="card">
+        <h1>Enterprise Security &amp; Audit Logs</h1>
+        <p class="muted small" style="margin-top:0">Complete immutable record of report generation, exports, scheduling, and administrative events.</p>
+        <div class="table-wrap" style="margin-top:1rem">
+          <table class="rtable">
+            <thead>
+              <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Resource</th><th>Details</th><th>IP</th></tr>
+            </thead>
+            <tbody>
+              ${logs.map((l) => `
+                <tr>
+                  <td class="small muted">${esc(fullDate(l.created_at))}</td>
+                  <td><b>${esc(l.full_name || l.username)}</b></td>
+                  <td><span class="tag">${esc(l.action)}</span></td>
+                  <td class="small">${esc(l.resource_type)} #${esc(l.resource_id)}</td>
+                  <td class="small">${esc(l.details)}</td>
+                  <td class="small muted">${esc(l.ip)}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="6" class="muted">No audit logs recorded.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `);
+  }
+
+
 
   async function route_() {
     if (!state.me) return renderLogin();
@@ -1736,7 +2320,10 @@
       if (h === '#/board') return await renderBoard();
       if (h === '#/duplicates') return await renderDuplicates();
       if (h === '#/sales') return await renderSales();
+      if (h === '#/analytics') return await renderAnalytics();
+      if (h === '#/audit-logs') return await renderAuditLogs();
       if (h === '#/team') return await renderTeam();
+
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();
       if (h === '#/home') return await renderHome();
