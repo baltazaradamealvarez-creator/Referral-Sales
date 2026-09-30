@@ -1,0 +1,26 @@
+{
+  "name": "eo-spectrum-referrals",
+  "version": "1.0.0",
+  "description": "E&O Spectrum Referrals — simple referral entry, tracking and team management",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "test": "node --test --disable-warning=ExperimentalWarning test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baltazaradamealvarez-creator/Referral-Sales.git"
+  },
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/baltazaradamealvarez-creator/Referral-Sales/issues"
+  },
+  "homepage": "https://github.com/baltazaradamealvarez-creator/Referral-Sales#readme",
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
