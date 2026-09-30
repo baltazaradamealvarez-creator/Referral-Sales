@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 212 110" role="img" aria-label="E&amp;O">
+  <defs>
+    <linearGradient id="eo-g" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="212" y2="70">
+      <stop offset="0" stop-color="#0a2586"/>
+      <stop offset="0.5" stop-color="#0b64d4"/>
+      <stop offset="1" stop-color="#08b8f4"/>
+    </linearGradient>
+    <mask id="eo-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="212" height="110">
+      <rect width="212" height="110" fill="#fff"/>
+      <path d="M110 -2 H150 V26 H86 Z" fill="#000"/>
+      <path d="M90 80 H150 V110 H114 Z" fill="#000"/>
+    </mask>
+  </defs>
+  <path d="M120 13 H55 A40 40 0 0 0 55 93 H120" fill="none" stroke="url(#eo-g)" stroke-width="22" mask="url(#eo-cut)"/>
+  <path d="M26 53 H82 C102 53 112 70 128 92" fill="none" stroke="url(#eo-g)" stroke-width="24"/>
+  <circle cx="157" cy="55" r="44" fill="none" stroke="url(#eo-g)" stroke-width="22"/>
+  <g fill="none" stroke="#0a93ea" stroke-width="7" stroke-linecap="round">
+    <path d="M141 51 A9 9 0 0 1 146 64"/>
+    <path d="M144 40 A20 20 0 0 1 156 70"/>
+    <path d="M149 29 A31 31 0 0 1 165 76"/>
+  </g>
+</svg>

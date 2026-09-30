@@ -58,9 +58,17 @@ async function sendEmail({ to, subject, text, html }, settings = {}) {
   }
 }
 
+// The logo image needs the app's public address; without it, a text wordmark is used.
+function logoHtml() {
+  const { appUrl } = emailConfig();
+  return appUrl
+    ? `<div style="margin-bottom:16px"><img src="${esc(appUrl)}/brand/logo-email.png" width="156" height="32" alt="E&amp;O Sales" style="display:block;border:0"></div>`
+    : '<div style="font-size:20px;margin-bottom:16px"><b style="color:#0b1f52">E&amp;O</b> <span style="color:#3d4451">Sales</span></div>';
+}
+
 function layout({ greeting, bodyHtml, button, footer }) {
   return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.5;color:#16202e;max-width:520px">
-    <div style="font-weight:700;font-size:16px;margin-bottom:14px"><span style="display:inline-block;background:#0b63ce;color:#fff;border-radius:6px;padding:2px 6px;font-size:12px;margin-right:6px">E&amp;O</span>E&amp;O Spectrum Referrals</div>
+    ${logoHtml()}
     <p>${esc(greeting)}</p>
     ${bodyHtml}
     ${button ? `<p style="margin:20px 0"><a href="${esc(button.href)}" style="display:inline-block;background:#0b63ce;color:#fff;text-decoration:none;font-weight:600;padding:10px 16px;border-radius:8px">${esc(button.label)}</a></p>` : ''}

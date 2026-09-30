@@ -600,3 +600,37 @@ td.actions .btn { display: block; width: 100%; margin: .15rem 0; }
   .brand-text { font-size: .95rem; }
 }
 @media (max-width: 440px) { .brand-text { display: none !important; } }
+
+/* ---------- E&O Sales logo ---------- */
+:root {
+  --mark-1: #0a2586; --mark-2: #0b64d4; --mark-3: #08b8f4; --mark-waves: #0a93ea;
+  --wm-strong: #0b1f52; --wm-soft: #3d4451;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --mark-1: #3b6ff0; --mark-2: #2f8ff0; --mark-3: #22c3f7; --mark-waves: #4fb4f5; --wm-strong: #ffffff; --wm-soft: #aeb8c6; }
+}
+:root[data-theme="dark"] { --mark-1: #3b6ff0; --mark-2: #2f8ff0; --mark-3: #22c3f7; --mark-waves: #4fb4f5; --wm-strong: #ffffff; --wm-soft: #aeb8c6; }
+.eo-s1 { stop-color: var(--mark-1); }
+.eo-s2 { stop-color: var(--mark-2); }
+.eo-s3 { stop-color: var(--mark-3); }
+.eo-waves { stroke: var(--mark-waves); }
+.brand { gap: .55rem; }
+.brand-mark { width: 52px; height: 27px; flex-shrink: 0; display: block; }
+.wm { display: block; font-size: 1.12rem; line-height: 1.1; letter-spacing: -.01em; color: var(--wm-soft); font-weight: 450; white-space: nowrap; }
+.wm b { color: var(--wm-strong); font-weight: 800; }
+.brand-text small { display: block; font-weight: 500; color: var(--muted); font-size: .72rem; margin-top: 1px; }
+.lockup { display: flex; align-items: center; gap: .8rem; margin-bottom: .6rem; }
+.lockup-mark { width: 92px; height: 48px; flex-shrink: 0; }
+.lockup .wm { font-size: 1.9rem; }
+.lockup small { display: block; color: var(--muted); font-weight: 600; font-size: .85rem; margin-top: .15rem; }
+/* The short wordmark fits most widths; hide it only where the menu needs the room. */
+@media (max-width: 1440px) { .brand-text { display: block !important; } .brand-text small { display: none; } }
+@media (max-width: 1320px) { .brand-text { display: none !important; } }
+@media (max-width: 760px) { .brand-text { display: block !important; } }
+@media (max-width: 360px) { .brand-text { display: none !important; } }
+@media (max-width: 760px) {
+  .search { flex: 0 0 auto; }
+  .topbar.searching .search { flex: 1 1 auto; }
+  .brand-mark { width: 46px; height: 24px; }
+  .wm { font-size: 1.02rem; }
+}
