@@ -49,9 +49,24 @@ Environment variables:
 
 Run the tests with `npm test`.
 
-### Deploying
+## Putting it online (Render)
 
-It is a single Node process plus one SQLite file, so it runs on any small VPS, Render, Railway or Fly.io. Mount a persistent disk for `DB_FILE`. Put it behind HTTPS; session cookies are marked `Secure` automatically when the request arrives over HTTPS.
+The repo includes a `render.yaml` file that sets everything up for you: the server, a 1 GB disk that keeps your data between restarts, and HTTPS.
+
+1. Sign up at [render.com](https://render.com) with your GitHub account and let it see the **Referral-Sales** repository.
+2. In the Render dashboard click **New → Blueprint** and pick **Referral-Sales**.
+3. Render reads `render.yaml` and asks for **ADMIN_PASSWORD**. Type the password you want for the `admin` account.
+4. Click **Apply**. After a few minutes the service shows **Live**, with a link like `https://eo-spectrum-referrals.onrender.com`.
+5. Open the link, sign in as `admin`, and change the password from the 👤 menu.
+6. Under **Users & Teams**, create your teams and add your managers. Managers then add their own reps.
+
+It uses Render's **Starter** plan, because free plans can't keep a disk and would lose your data. Every push to the `main` branch redeploys automatically, and the data on the disk isn't touched.
+
+**Backups:** admins can click **Download backup** on the Users & Teams page to get a copy of the whole database. You can also turn on disk snapshots in Render.
+
+**On phones:** open the link, then use **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen** (Android) and it opens like an app.
+
+**Other hosts:** it is one Node process plus one SQLite file, so it also runs on Railway, Fly.io or any VPS. Set `DB_FILE` to a path on a persistent volume and serve it over HTTPS.
 
 ## Project layout
 

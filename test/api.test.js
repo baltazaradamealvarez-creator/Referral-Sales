@@ -165,3 +165,33 @@ test('referral flow, duplicates, permissions, comments, stats', async (t) => {
   const form = await fetch(`http://127.0.0.1:${port}/api/login`, { method: 'POST', body: 'username=a&password=b', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
   assert.equal(form.status, 415);
 });
+
+test('health check and admin-only backup', async (t) => {
+  const s = await setup();
+  t.after(() => s.server.close());
+  const base = `http://127.0.0.1:${s.server.address().port}`;
+  assert.equal((await fetch(base + '/healthz')).status, 200);
+
+  await s.repA.c.post('/referrals', { text: 'Backup Person 214-555-3030' });
+  assert.equal((await s.repA.c.get('/admin/backup')).status, 403);
+  assert.equal((await s.mgrA.c.get('/admin/backup')).status, 403);
+
+  // Fetch raw bytes as admin and open the file as a database.
+  const cookie = (await fetch(base + '/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'admin-pass-1' }),
+  })).headers.get('set-cookie').split(';')[0];
+  const res = await fetch(base + '/api/admin/backup', { headers: { Cookie: cookie } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-disposition'), /eo-referrals-backup-\d{4}-\d{2}-\d{2}\.db/);
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eo-test-')), 'b.db');
+  fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  const { DatabaseSync } = require('node:sqlite');
+  const copy = new DatabaseSync(file);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM referrals').get().n, 1);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM users').get().n, 6);
+  copy.close();
+});

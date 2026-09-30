@@ -597,6 +597,9 @@
           <h2>Teams</h2>
           <ul class="lead-list">${teams.map((t) => `<li style="cursor:default"><div class="who"><b>${esc(t.name)}</b><span>${t.members} active member${t.members === 1 ? '' : 's'}</span></div><button class="btn small" data-rename="${t.id}" data-name="${esc(t.name)}">Rename</button></li>`).join('') || '<li class="muted">No teams yet — add one below.</li>'}</ul>
           <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
+          <h2 style="margin-top:1.4rem">Backup</h2>
+          <p class="small muted" style="margin-top:0">Download a full copy of all referrals, users and comments. Keep it somewhere safe.</p>
+          <a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a>
         </div>` : `
         <div class="card"><h2>Tips</h2><p class="muted small">Reps sign in with the username and temporary password you give them.<br>If someone forgets their password, hit <b>Reset password</b> and give them the new one.<br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
       </div>

@@ -1,0 +1,22 @@
+# Render Blueprint: in the Render dashboard choose New -> Blueprint and pick this repo.
+services:
+  - type: web
+    name: eo-spectrum-referrals
+    runtime: node
+    plan: starter            # a paid plan is required for the persistent disk
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DB_FILE
+        value: /var/data/referrals.db
+      - key: ADMIN_PASSWORD
+        sync: false          # Render asks you for this when you create the Blueprint
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

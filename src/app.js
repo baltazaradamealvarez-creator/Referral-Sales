@@ -1,6 +1,8 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const express = require('express');
 const { tx, STATUSES, ROLES } = require('./db');
 const auth = require('./auth');
@@ -29,6 +31,12 @@ function createApp(db) {
   });
 
   app.use(express.static(path.join(__dirname, '..', 'public')));
+
+  // Used by the host (e.g. Render) to check the app is up.
+  app.get('/healthz', (req, res) => {
+    db.prepare('SELECT 1').get();
+    res.json({ ok: true });
+  });
 
   // ---------- helpers ----------
 
@@ -539,6 +547,21 @@ function createApp(db) {
   }));
 
   // ---------- errors & SPA fallback ----------
+
+  // Full copy of the database, for admins to keep offsite backups.
+  app.get('/api/admin/backup', (req, res, next) => {
+    let tmp;
+    try {
+      requireRole(req, 'admin');
+      tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eo-backup-')), 'referrals.db');
+      db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.download(tmp, `eo-referrals-backup-${stamp}.db`, () => fs.rmSync(path.dirname(tmp), { recursive: true, force: true }));
+    } catch (e) {
+      if (tmp) fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
+      next(e);
+    }
+  });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
