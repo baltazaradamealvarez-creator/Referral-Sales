@@ -134,6 +134,11 @@ const MIGRATIONS = [
     value TEXT NOT NULL
   );
   `,
+  // v3: email alerts
+  `
+  ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN email_alerts INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 function migrate(db) {

@@ -134,6 +134,7 @@
             <button class="icon-btn" id="menuBtn" aria-label="Account">👤</button>
             ${state.menuOpen ? `<div class="menu-pop">
               <div class="who"><b>${esc(me.full_name)}</b><div class="small muted">@${esc(me.username)} · ${roleLabel(me.role)}</div></div>
+              <a href="#/account">My account</a>
               <button id="changePwBtn">Change password</button>
               <button id="logoutBtn">Sign out</button>
             </div>` : ''}
@@ -863,6 +864,7 @@
           <h2>Add a ${isAdmin() ? 'user' : 'rep to ' + esc(state.me.team_name || 'your team')}</h2>
           <div class="field"><label for="au_name">Full name</label><input id="au_name" name="full_name" required></div>
           <div class="field"><label for="au_user">Username</label><input id="au_user" name="username" autocapitalize="none" placeholder="e.g. jsmith" required></div>
+          <div class="field"><label for="au_email">Email <span class="muted small">(optional, for alerts)</span></label><input id="au_email" name="email" type="email" autocapitalize="none"></div>
           ${isAdmin() ? `
             <div class="field"><label for="au_role">Role</label><select id="au_role" name="role">${roles.map((r) => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select>
               <p class="small muted" style="margin:.3rem 0 0" id="roleHelp"></p></div>
@@ -891,7 +893,9 @@
           <button class="btn primary">Save settings</button>
         </form>
         <div class="card">
-          <h2>Backup</h2>
+          <h2>Email alerts</h2>
+          <div id="emailStatus" class="small muted">Checking…</div>
+          <h2 style="margin-top:1.4rem">Backup</h2>
           <p class="small muted" style="margin-top:0">Download a full copy of all referrals, users and comments. Keep it somewhere safe.</p>
           <a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a>
           <h2 style="margin-top:1.4rem">Export</h2>
@@ -907,7 +911,8 @@
             const manageable = isAdmin() || (u.role === 'rep');
             const self = u.id === state.me.id;
             return `<tr style="${u.active ? '' : 'opacity:.55'}">
-              <td><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · temp password' : ''}</div></td>
+              <td><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · temp password' : ''}</div>
+                <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div></td>
               <td>${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}</td>
               ${isAdmin() ? `<td><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
               <td class="num"><a href="#/referrals?scope=${isAdmin() ? 'all' : 'team'}&user_id=${u.id}">${u.referral_count}</a></td>
@@ -920,6 +925,33 @@
           }).join('')}</tbody>
         </table></div>
       </div>`);
+
+    const emailStatus = document.getElementById('emailStatus');
+    if (emailStatus) {
+      const cfg = await api('/admin/email');
+      emailStatus.innerHTML = cfg.enabled
+        ? `<p style="margin:0 0 .6rem"><b style="color:var(--ok)">On.</b> Sending from <b>${esc(cfg.from)}</b>.${cfg.app_url ? '' : ' Links in emails are off until APP_URL is set.'}</p>
+           <button class="btn small" id="testEmail">✉ Send me a test email</button><span id="testRes" style="margin-left:.5rem"></span>`
+        : `<p style="margin:0"><b>Off.</b> In Render, open your service → <b>Environment</b> and add <code>RESEND_API_KEY</code> (and <code>EMAIL_FROM</code>, e.g. <code>E&amp;O Referrals &lt;alerts@yourdomain.com&gt;</code>). The app restarts and alerts switch on.</p>`;
+      const tb = document.getElementById('testEmail');
+      if (tb) tb.onclick = async () => {
+        const out = document.getElementById('testRes');
+        tb.disabled = true;
+        try {
+          const r = await api('/admin/test-email', { method: 'POST', body: {} });
+          out.innerHTML = `<span style="color:var(--ok)">Sent to ${esc(r.to)} ✓</span>`;
+        } catch (err) {
+          out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+        } finally { tb.disabled = false; }
+      };
+    }
+    document.querySelectorAll('[data-email]').forEach((b) => {
+      b.onclick = async () => {
+        const email = prompt('Email address (leave empty to remove)', b.dataset.current);
+        if (email === null) return;
+        try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
+      };
+    });
 
     const copy = document.getElementById('copyPw');
     if (copy) copy.onclick = () => { navigator.clipboard?.writeText(flash.password); toast('Copied'); };
@@ -992,6 +1024,34 @@
     });
   }
 
+  // ---------- my account ----------
+
+  async function renderAccount() {
+    const me = state.me;
+    shell(`
+      <form class="card narrow" id="acctForm">
+        <h1>My account</h1>
+        <p class="muted" style="margin-top:0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p>
+        <div class="field"><label for="em">Email</label><input id="em" type="email" autocapitalize="none" placeholder="you@example.com" value="${esc(me.email)}"></div>
+        <label class="check" style="margin-top:.9rem"><input type="checkbox" id="ea" ${me.email_alerts ? 'checked' : ''}> Email me my alerts</label>
+        <p class="small muted" style="margin:.3rem 0 0">Status changes on your leads, @mentions, comments on your leads, and leads assigned to you or entered for you.</p>
+        ${me.email_enabled ? '' : '<div class="alert warn small" style="margin-top:.8rem">Email alerts aren\'t switched on for this app yet. You\'ll still see everything under 🔔.</div>'}
+        <div id="acctErr" style="margin-top:.8rem"></div>
+        <div class="row" style="margin-top:1rem"><button class="btn primary">Save</button><button type="button" class="btn" id="pwBtn">Change password</button></div>
+      </form>`);
+    document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
+    document.getElementById('acctForm').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api('/me', { method: 'PATCH', body: { email: document.getElementById('em').value, email_alerts: document.getElementById('ea').checked } });
+        await refreshMe();
+        toast('Saved');
+      } catch (err) {
+        document.getElementById('acctErr').innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
+      }
+    };
+  }
+
   // ---------- notifications ----------
 
   async function renderNotifications() {
@@ -1023,6 +1083,7 @@
       if (h === '#/sales') return await renderSales();
       if (h === '#/team') return await renderTeam();
       if (h === '#/notifications') return await renderNotifications();
+      if (h === '#/account') return await renderAccount();
       return await renderNew();
     } catch (e) {
       if (state.me) toast(e.message);

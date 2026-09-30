@@ -326,7 +326,8 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM users').get().n, 2);
   const ref = db.prepare('SELECT * FROM referrals').get();
   assert.equal(ref.customer_name, 'Old Lead');
@@ -344,4 +345,83 @@ test('upgrades a database created by the first version without losing data', asy
   const again = openDb(file);
   assert.equal(again.prepare('SELECT COUNT(*) AS n FROM referrals').get().n, 1);
   again.close();
+});
+
+test('email alerts go through Resend only when configured and wanted', async (t) => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  let resendStatus = 200;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith('https://api.resend.com/')) {
+      sent.push({ auth: init.headers.Authorization, ...JSON.parse(init.body) });
+      return new Response(JSON.stringify(resendStatus === 200 ? { id: 'em_1' } : { message: 'The domain is not verified' }), { status: resendStatus });
+    }
+    return realFetch(url, init);
+  };
+  const saved = { key: process.env.RESEND_API_KEY, from: process.env.EMAIL_FROM, url: process.env.APP_URL };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of [['RESEND_API_KEY', saved.key], ['EMAIL_FROM', saved.from], ['APP_URL', saved.url]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+
+  const s = await setup();
+  t.after(() => s.server.close());
+
+  // Off by default: no key, no emails.
+  delete process.env.RESEND_API_KEY;
+  assert.equal((await s.repA.c.get('/me')).body.email_enabled, false);
+  assert.equal((await s.repA.c.patch('/me', { email: 'Rep.A@Example.com' })).status, 200);
+  assert.equal((await s.repA.c.get('/me')).body.email, 'rep.a@example.com');
+  assert.equal((await s.repA.c.patch('/me', { email: 'nope' })).status, 400);
+  const ref = (await s.repA.c.post('/referrals', { text: 'Gil G 512-555-7000' })).body;
+  await s.mgrA.c.patch(`/referrals/${ref.id}`, { status: 'Passed' });
+  await tick();
+  assert.equal(sent.length, 0);
+
+  // On: the rep gets an email for the status change, with a link to the lead.
+  process.env.RESEND_API_KEY = 're_test_123';
+  process.env.EMAIL_FROM = 'E&O <alerts@example.com>';
+  process.env.APP_URL = 'https://eo.example.com/';
+  await s.mgrA.c.patch(`/referrals/${ref.id}`, { status: 'Ordered' });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].auth, 'Bearer re_test_123');
+  assert.deepEqual(sent[0].to, ['rep.a@example.com']);
+  assert.equal(sent[0].from, 'E&O <alerts@example.com>');
+  assert.match(sent[0].subject, /marked Gil G as Ordered/);
+  assert.match(sent[0].html, new RegExp(`https://eo.example.com/#/r/${ref.id}`));
+
+  // Users who turned alerts off, or have no email, get nothing.
+  await s.repA.c.patch('/me', { email_alerts: false });
+  await s.mgrA.c.patch(`/referrals/${ref.id}`, { status: 'Cancelled' });
+  await s.mgrA.c.post(`/referrals/${ref.id}/comments`, { body: 'no email for mgra either' });
+  await tick();
+  assert.equal(sent.length, 1);
+
+  // A rolled-back change sends nothing: duplicate edit throws after no notify, and a
+  // failing status update (bad status) never notifies.
+  await s.repA.c.patch('/me', { email_alerts: true });
+  assert.equal((await s.mgrA.c.patch(`/referrals/${ref.id}`, { status: 'Passed', install_date: 'bad' })).status, 400);
+  await tick();
+  assert.equal(sent.length, 1, 'status change was rolled back with the bad install date');
+
+  // Managers/admins can set an email when creating or editing a user.
+  const created = await s.mgrA.c.post('/users', { username: 'withmail', full_name: 'With Mail', email: 'w@example.com' });
+  assert.equal(created.status, 201);
+  const users = (await s.mgrA.c.get('/users')).body;
+  assert.equal(users.find((u) => u.username === 'withmail').email, 'w@example.com');
+  assert.equal((await s.mgrA.c.patch(`/users/${created.body.id}`, { email: 'bad' })).status, 400);
+
+  // Admin test email reports Resend's own error message.
+  assert.equal((await s.admin.post('/admin/test-email')).status, 400, 'admin has no email yet');
+  await s.admin.patch('/me', { email: 'boss@example.com' });
+  assert.equal((await s.admin.post('/admin/test-email')).body.to, 'boss@example.com');
+  resendStatus = 403;
+  const bad = await s.admin.post('/admin/test-email');
+  assert.equal(bad.status, 502);
+  assert.match(bad.body.error, /domain is not verified/);
+  assert.equal((await s.repA.c.post('/admin/test-email')).status, 403);
 });

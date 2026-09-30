@@ -16,6 +16,10 @@ services:
         value: /var/data/referrals.db
       - key: ADMIN_PASSWORD
         sync: false          # Render asks you for this when you create the Blueprint
+      - key: RESEND_API_KEY  # email alerts (optional); from resend.com → API Keys
+        sync: false
+      - key: EMAIL_FROM      # e.g. E&O Referrals <alerts@yourdomain.com> (domain verified in Resend)
+        sync: false
     disk:
       name: data
       mountPath: /var/data

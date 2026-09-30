@@ -8,7 +8,7 @@ A simple web app for entering Spectrum sales referrals, dispatching them and tra
 - **Dispatch.** Dispatchers see every lead from every team. They get leads assigned to them (or grab one with **Take it**), and they update the status, the Spectrum account or order number and the install date. **My Queue** shows their open leads. Admins can turn on **auto-assign**, which gives each new lead to the dispatcher with the fewest open leads.
 - **Board.** A Kanban view with a column for each status (New, Passed, DNQ, Ordered, Cancelled). Drag a card to change its status. Closed leads only show for a chosen period (the last 7, 30 or 90 days, or all time) so the board stays readable.
 - **Entering for someone else.** Managers, dispatch and admins can enter a lead on a rep's behalf, and the rep gets the credit.
-- **Comments with @mentions** and **notifications** (🔔) for mentions, status changes, assignments and comments on your leads.
+- **Comments with @mentions** and **notifications** (🔔) for mentions, status changes, assignments and comments on your leads. These can also go out by **email** through [Resend](https://resend.com), and each user can turn email off under **My account**.
 - **Customers view** with search and filters for status, service, rep, team and dispatcher, plus **Export CSV**.
 - **Sales dashboards:** your own numbers, your team's totals and a per-rep breakdown. Admins and dispatch also see every team, each dispatcher's workload and sales by service.
 - **User management.** Managers add reps to their team, reset passwords and deactivate or reactivate reps. Admins manage all users, roles, teams and settings, and can download a backup.
@@ -49,6 +49,9 @@ Environment variables:
 | `DB_FILE` | `data/referrals.db` | SQLite database file (back this up) |
 | `ADMIN_USERNAME` | `admin` | First admin's username (used only when the database is empty) |
 | `ADMIN_PASSWORD` | random | First admin's password (used only when the database is empty) |
+| `RESEND_API_KEY` | — | Turns on email alerts. Leave it unset to keep email off. |
+| `EMAIL_FROM` | `E&O Referrals <onboarding@resend.dev>` | Sender address. It must be on a domain you verified in Resend. |
+| `APP_URL` | Render's own URL | The site address used for links in emails. Only needed with a custom domain. |
 
 Run the tests with `npm test`.
 
@@ -75,6 +78,8 @@ The repo includes a `render.yaml` file that sets everything up for you: the serv
 
 It uses Render's **Starter** plan, because free plans can't keep a disk and would lose your data. Every push to the `main` branch redeploys automatically, and the data on the disk isn't touched.
 
+**Email alerts:** in Render, open your service → **Environment** and add `RESEND_API_KEY` (from Resend → API Keys) and `EMAIL_FROM`, for example `E&O Referrals <alerts@yourdomain.com>`, using a domain you've verified in Resend. Save, and Render restarts the app. Then on the **Admin** page click **Send me a test email**. If something is wrong, it shows Resend's error message. Everyone adds their email address under 👤 → **My account**. Admins and managers can also add it when creating a user.
+
 **Backups:** admins can click **Download backup** on the Admin page to get a copy of the whole database. You can also turn on disk snapshots in Render.
 
 **On phones:** open the link, then use **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen** (Android) and it opens like an app.
@@ -87,6 +92,7 @@ It uses Render's **Starter** plan, because free plans can't keep a disk and woul
 src/server.js      starts the app
 src/app.js         API routes and permission rules
 scripts/           reset-password.js for locked-out accounts
+src/email.js       email alerts through Resend
 src/normalize.js   lead parsing and phone/email/address matching
 src/db.js          SQLite schema and automatic upgrades
 src/auth.js        password hashing (scrypt) and sessions

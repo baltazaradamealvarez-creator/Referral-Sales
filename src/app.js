@@ -6,6 +6,7 @@ const os = require('node:os');
 const express = require('express');
 const { tx, STATUSES, ROLES, SERVICES } = require('./db');
 const auth = require('./auth');
+const mail = require('./email');
 const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -180,8 +181,37 @@ function createApp(db) {
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(userId, dup.id, dup.on, lead.name, lead.phone, lead.email, lead.address);
   }
 
+  // In-app notification, plus an email when email is set up and the user wants alerts.
+  // Emails go out after the request's transaction: a notification that was rolled back
+  // no longer exists when the queue is flushed, so it is never emailed.
+  let emailQueue = [];
   function notify(userId, referralId, message) {
-    db.prepare('INSERT INTO notifications (user_id, referral_id, message) VALUES (?, ?, ?)').run(userId, referralId, message);
+    const r = db.prepare('INSERT INTO notifications (user_id, referral_id, message) VALUES (?, ?, ?)').run(userId, referralId, message);
+    if (!mail.emailConfig().enabled) return;
+    if (!emailQueue.length) setImmediate(flushEmails);
+    emailQueue.push(Number(r.lastInsertRowid));
+  }
+
+  function flushEmails() {
+    const ids = emailQueue;
+    emailQueue = [];
+    const rows = db.prepare(`
+      SELECT n.referral_id, n.message, u.full_name, u.email
+      FROM notifications n JOIN users u ON u.id = n.user_id
+      WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1 AND u.email_alerts = 1 AND u.email <> ''`).all(...ids);
+    for (const row of rows) {
+      const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id });
+      mail.sendEmail({ to: row.email, ...msg }).then((res) => {
+        if (!res.ok) console.error(`Email to ${row.email} failed: ${res.error}`);
+      });
+    }
+  }
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function cleanEmail(value) {
+    const e = String(value ?? '').trim().toLowerCase().slice(0, 200);
+    if (e && !EMAIL_RE.test(e)) throw new HttpError(400, 'That email address doesn\'t look right.');
+    return e;
   }
 
   // Everyone allowed to see a referral: creator, assignee, that team's managers, dispatch and admins.
@@ -252,7 +282,16 @@ function createApp(db) {
       id: u.id, username: u.username, full_name: u.full_name, role: u.role,
       team_id: u.team_id, team_name: u.team_name, must_change_password: !!u.must_change_password,
       unread, queue, statuses: STATUSES, services: SERVICES,
+      email: u.email, email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig().enabled,
     };
+  }));
+
+  app.patch('/api/me', wrap((req) => {
+    const u = requireUser(req);
+    const b = req.body || {};
+    if (b.email !== undefined) db.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanEmail(b.email), u.id);
+    if (b.email_alerts !== undefined) db.prepare('UPDATE users SET email_alerts = ? WHERE id = ?').run(b.email_alerts ? 1 : 0, u.id);
+    return { ok: true };
   }));
 
   app.post('/api/me/password', wrap((req) => {
@@ -694,7 +733,7 @@ function createApp(db) {
   app.get('/api/users', wrap((req) => {
     const u = requireRole(req, 'admin', 'manager');
     const rows = db.prepare(`
-      SELECT u.id, u.username, u.full_name, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
+      SELECT u.id, u.username, u.full_name, u.email, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned
@@ -722,10 +761,11 @@ function createApp(db) {
     if (!['admin', 'dispatch'].includes(role) && teamId == null) throw new HttpError(400, 'Pick a team for this user.');
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'That username is taken.');
 
+    const email = cleanEmail(req.body.email);
     const password = req.body.password ? String(req.body.password) : auth.tempPassword();
     if (password.length < 8) throw new HttpError(400, 'Password needs at least 8 characters.');
-    const r = db.prepare(`INSERT INTO users (username, full_name, password_hash, role, team_id, must_change_password)
-      VALUES (?, ?, ?, ?, ?, 1)`).run(username, fullName, auth.hashPassword(password), role, teamId);
+    const r = db.prepare(`INSERT INTO users (username, full_name, email, password_hash, role, team_id, must_change_password)
+      VALUES (?, ?, ?, ?, ?, ?, 1)`).run(username, fullName, email, auth.hashPassword(password), role, teamId);
     res.status(201);
     return { id: Number(r.lastInsertRowid), username, temp_password: password };
   }));
@@ -741,6 +781,7 @@ function createApp(db) {
       if (!n) throw new HttpError(400, 'Full name is required.');
       updates.full_name = n;
     }
+    if (b.email !== undefined) updates.email = cleanEmail(b.email);
     if (b.active !== undefined) {
       if (target.id === actor.id) throw new HttpError(400, 'You can\'t deactivate yourself.');
       updates.active = b.active ? 1 : 0;
@@ -774,6 +815,27 @@ function createApp(db) {
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
     return { temp_password: password };
   }));
+
+  app.get('/api/admin/email', wrap((req) => {
+    requireRole(req, 'admin');
+    const cfg = mail.emailConfig();
+    return { enabled: cfg.enabled, from: cfg.from, app_url: cfg.appUrl };
+  }));
+
+  // Sends a test email to the admin's own address and reports Resend's answer.
+  app.post('/api/admin/test-email', async (req, res, next) => {
+    try {
+      const u = requireRole(req, 'admin');
+      if (!u.email) throw new HttpError(400, 'Add your own email under My account first.');
+      if (!mail.emailConfig().enabled) throw new HttpError(400, 'Email is off: add RESEND_API_KEY in Render → Environment.');
+      const msg = mail.alertEmail({ fullName: u.full_name, message: 'This is a test email. Alerts are working!', referralId: null });
+      const r = await mail.sendEmail({ to: u.email, ...msg, subject: 'E&O Referrals test email' });
+      if (!r.ok) throw new HttpError(502, `Resend said: ${r.error}`);
+      res.json({ ok: true, to: u.email });
+    } catch (e) {
+      next(e);
+    }
+  });
 
   // Full copy of the database, for admins to keep offsite backups.
   app.get('/api/admin/backup', (req, res, next) => {
