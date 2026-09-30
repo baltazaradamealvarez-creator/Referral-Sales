@@ -7,6 +7,8 @@ const express = require('express');
 const { tx, STATUSES, ROLES, SERVICES } = require('./db');
 const auth = require('./auth');
 const mail = require('./email');
+const crypto = require('node:crypto');
+const { buildDashboard, WIDGETS } = require('./dashboard');
 const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -14,6 +16,8 @@ const OPEN_STATUSES = ['New', 'Passed'];
 
 const DEFAULT_SETTINGS = {
   auto_assign: '0',
+  email_from_name: '',
+  email_reply_to: '',
   entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nServices: \nNotes: ',
 };
 
@@ -56,6 +60,13 @@ function createApp(db) {
     }
   };
 
+  const awrap = (fn) => (req, res, next) => {
+    Promise.resolve()
+      .then(() => fn(req, res))
+      .then((out) => { if (out !== undefined && !res.headersSent) res.json(out); })
+      .catch(next);
+  };
+
   // Mutating requests must be JSON: blocks classic cross-site form posts (CSRF).
   app.use('/api', (req, res, next) => {
     if (!['GET', 'HEAD'].includes(req.method) && !req.is('application/json')) {
@@ -67,9 +78,13 @@ function createApp(db) {
   app.use('/api', (req, res, next) => {
     req.user = auth.loadUser(db, req);
     // Until a temporary password is changed, only allow changing it (or signing out).
-    const allowed = ['/me', '/me/password', '/logout', '/login'];
+    const allowed = ['/me', '/me/password', '/logout', '/login', '/password/forgot', '/password/reset'];
     if (req.user && req.user.must_change_password && !allowed.includes(req.path)) {
       return res.status(403).json({ error: 'Please set a new password first.', must_change_password: true });
+    }
+    if (req.user) {
+      db.prepare(`UPDATE users SET last_seen_at = datetime('now')
+        WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-5 minutes'))`).run(req.user.id);
     }
     next();
   });
@@ -187,7 +202,7 @@ function createApp(db) {
   let emailQueue = [];
   function notify(userId, referralId, message) {
     const r = db.prepare('INSERT INTO notifications (user_id, referral_id, message) VALUES (?, ?, ?)').run(userId, referralId, message);
-    if (!mail.emailConfig().enabled) return;
+    if (!mail.emailConfig(getSettings()).enabled) return;
     if (!emailQueue.length) setImmediate(flushEmails);
     emailQueue.push(Number(r.lastInsertRowid));
   }
@@ -199,9 +214,10 @@ function createApp(db) {
       SELECT n.referral_id, n.message, u.full_name, u.email
       FROM notifications n JOIN users u ON u.id = n.user_id
       WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1 AND u.email_alerts = 1 AND u.email <> ''`).all(...ids);
+    const settings = getSettings();
     for (const row of rows) {
-      const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id });
-      mail.sendEmail({ to: row.email, ...msg }).then((res) => {
+      const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id }, settings);
+      mail.sendEmail({ to: row.email, ...msg }, settings).then((res) => {
         if (!res.ok) console.error(`Email to ${row.email} failed: ${res.error}`);
       });
     }
@@ -246,6 +262,77 @@ function createApp(db) {
   // ---------- auth ----------
 
   const loginAttempts = new Map();
+
+  function logLogin(req, user, username, success, reason) {
+    db.prepare(`INSERT INTO login_events (user_id, username, success, reason, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(user ? user.id : null, String(username).slice(0, 100), success ? 1 : 0, reason, String(req.ip || '').slice(0, 64),
+        String(req.headers['user-agent'] || '').slice(0, 300));
+    if (Math.random() < 0.02) db.prepare("DELETE FROM login_events WHERE created_at < datetime('now', '-180 days')").run();
+  }
+
+  // ---------- forgot password: emailed 6-digit code ----------
+
+  const RESET_MINUTES = 15;
+  const resetRequests = new Map();
+  const hashCode = (userId, code) => crypto.createHash('sha256').update(`${userId}:${code}`).digest('hex');
+  function rateLimit(map, key, max, windowMs) {
+    const now = Date.now();
+    const hits = (map.get(key) || []).filter((t) => now - t < windowMs);
+    if (hits.length >= max) return false;
+    hits.push(now);
+    map.set(key, hits);
+    return true;
+  }
+  const findByLogin = (login) => db.prepare(`SELECT * FROM users WHERE username = ? OR (email <> '' AND email = lower(?))
+    ORDER BY username = ? DESC LIMIT 1`).get(login, login, login);
+
+  // Always answers the same way, so it can't be used to find out who has an account.
+  app.post('/api/password/forgot', awrap(async (req) => {
+    const login = String(req.body.login || '').trim();
+    const settings = getSettings();
+    if (!mail.emailConfig(settings).enabled) {
+      return { ok: true, email_enabled: false };
+    }
+    if (!login) throw new HttpError(400, 'Enter your username or email.');
+    if (!rateLimit(resetRequests, `ip:${req.ip}`, 10, 15 * 60 * 1000)) throw new HttpError(429, 'Too many requests. Try again in a few minutes.');
+    const user = findByLogin(login);
+    if (user && user.active && user.email && rateLimit(resetRequests, `u:${user.id}`, 3, 15 * 60 * 1000)) {
+      const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+      db.prepare('UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0').run(user.id);
+      db.prepare('INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES (?, ?, ?)')
+        .run(user.id, hashCode(user.id, code), Date.now() + RESET_MINUTES * 60 * 1000);
+      const r = await mail.sendEmail({ to: user.email, ...mail.resetCodeEmail({ fullName: user.full_name, code, minutes: RESET_MINUTES }) }, settings);
+      if (!r.ok) console.error(`Reset code email to ${user.email} failed: ${r.error}`);
+    }
+    return { ok: true, email_enabled: true };
+  }));
+
+  app.post('/api/password/reset', wrap((req, res) => {
+    const login = String(req.body.login || '').trim();
+    const code = String(req.body.code || '').replace(/\D/g, '');
+    const next = String(req.body.password || '');
+    if (next.length < 8) throw new HttpError(400, 'New password needs at least 8 characters.');
+    const wrong = new HttpError(400, 'That code is wrong or has expired. Request a new one.');
+    const user = findByLogin(login);
+    if (!user || !user.active) throw wrong;
+    const row = db.prepare('SELECT * FROM password_resets WHERE user_id = ? AND used = 0 ORDER BY id DESC LIMIT 1').get(user.id);
+    if (!row || row.expires_at < Date.now() || row.attempts >= 5) throw wrong;
+    const ok = code.length === 6 && crypto.timingSafeEqual(Buffer.from(hashCode(user.id, code)), Buffer.from(row.code_hash));
+    if (!ok) {
+      db.prepare('UPDATE password_resets SET attempts = attempts + 1, used = CASE WHEN attempts + 1 >= 5 THEN 1 ELSE used END WHERE id = ?').run(row.id);
+      logLogin(req, user, login, false, 'wrong reset code');
+      throw wrong;
+    }
+    db.prepare('UPDATE password_resets SET used = 1 WHERE user_id = ?').run(user.id);
+    db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0, password_changed_at = datetime('now') WHERE id = ?")
+      .run(auth.hashPassword(next), user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+    // Sign them straight in.
+    logLogin(req, user, login, true, 'reset code');
+    db.prepare("UPDATE users SET last_login_at = datetime('now'), last_seen_at = datetime('now'), login_count = login_count + 1 WHERE id = ?").run(user.id);
+    res.set('Set-Cookie', auth.sessionCookie(auth.createSession(db, user.id), req));
+    return { ok: true };
+  }));
   app.post('/api/login', wrap((req, res) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
@@ -254,13 +341,17 @@ function createApp(db) {
     const attempts = (loginAttempts.get(key) || []).filter((t) => now - t < 15 * 60 * 1000);
     if (attempts.length >= 10) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
 
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    const user = db.prepare('SELECT * FROM users WHERE username = ? OR (email <> \'\' AND email = lower(?)) ORDER BY username = ? DESC LIMIT 1')
+      .get(username, username, username);
     if (!user || !user.active || !auth.verifyPassword(password, user.password_hash)) {
       attempts.push(now);
       loginAttempts.set(key, attempts);
+      logLogin(req, user, username, false, !user ? 'unknown user' : !user.active ? 'deactivated' : 'wrong password');
       throw new HttpError(401, 'Wrong username or password.');
     }
     loginAttempts.delete(key);
+    logLogin(req, user, username, true, '');
+    db.prepare("UPDATE users SET last_login_at = datetime('now'), last_seen_at = datetime('now'), login_count = login_count + 1 WHERE id = ?").run(user.id);
     const token = auth.createSession(db, user.id);
     res.set('Set-Cookie', auth.sessionCookie(token, req));
     return { ok: true };
@@ -282,7 +373,8 @@ function createApp(db) {
       id: u.id, username: u.username, full_name: u.full_name, role: u.role,
       team_id: u.team_id, team_name: u.team_name, must_change_password: !!u.must_change_password,
       unread, queue, statuses: STATUSES, services: SERVICES,
-      email: u.email, email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig().enabled,
+      email: u.email, email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig(getSettings()).enabled,
+      dashboard_layout: parseLayout(u.dashboard_layout),
     };
   }));
 
@@ -291,6 +383,10 @@ function createApp(db) {
     const b = req.body || {};
     if (b.email !== undefined) db.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanEmail(b.email), u.id);
     if (b.email_alerts !== undefined) db.prepare('UPDATE users SET email_alerts = ? WHERE id = ?').run(b.email_alerts ? 1 : 0, u.id);
+    if (b.dashboard_layout !== undefined) {
+      const layout = b.dashboard_layout === null ? '' : JSON.stringify([...new Set(parseLayout(JSON.stringify(b.dashboard_layout)) || [])]);
+      db.prepare('UPDATE users SET dashboard_layout = ? WHERE id = ?').run(layout, u.id);
+    }
     return { ok: true };
   }));
 
@@ -300,9 +396,48 @@ function createApp(db) {
     const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(u.id);
     if (!auth.verifyPassword(String(current || ''), row.password_hash)) throw new HttpError(400, 'Current password is wrong.');
     if (String(next || '').length < 8) throw new HttpError(400, 'New password needs at least 8 characters.');
-    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(auth.hashPassword(next), u.id);
+    db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0, password_changed_at = datetime('now') WHERE id = ?")
+      .run(auth.hashPassword(next), u.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(u.id, u.token);
     return { ok: true };
+  }));
+
+  app.post('/api/me/logout-all', wrap((req) => {
+    const u = requireUser(req);
+    const n = db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(u.id, u.token).changes;
+    return { ok: true, signed_out: Number(n) };
+  }));
+
+  // ---------- dashboard ----------
+
+  function parseLayout(raw) {
+    try {
+      const v = JSON.parse(raw || 'null');
+      return Array.isArray(v) ? v.filter((id) => WIDGETS.includes(id)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  app.get('/api/dashboard', wrap((req) => buildDashboard(db, requireUser(req), req.query)));
+
+  // ---------- global search ----------
+
+  app.get('/api/search', wrap((req) => {
+    const u = requireUser(req);
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    if (q.length < 2) return { referrals: [], users: [] };
+    const referrals = listReferrals(u, { q, limit: 8, scope: seesAll(u) ? 'all' : isManager(u) ? 'team' : 'mine' }, 8)
+      .map((r) => ({ id: r.id, customer_name: r.customer_name, phone: r.phone, email: r.email, address: r.address,
+        status: r.status, created_by_name: r.created_by_name, team_name: r.team_name }));
+    let users = [];
+    if (isAdmin(u) || isManager(u)) {
+      const like = `%${q.toLowerCase()}%`;
+      users = db.prepare(`SELECT u.id, u.full_name, u.username, u.role, t.name AS team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id
+        WHERE (lower(u.full_name) LIKE ? OR lower(u.username) LIKE ? OR lower(u.email) LIKE ?) ${isAdmin(u) ? '' : 'AND u.team_id = ?'}
+        ORDER BY u.active DESC, u.full_name LIMIT 5`).all(like, like, like, ...(isAdmin(u) ? [] : [u.team_id ?? -1]));
+    }
+    return { referrals, users };
   }));
 
   // ---------- settings ----------
@@ -318,6 +453,8 @@ function createApp(db) {
     const set = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     if (b.auto_assign !== undefined) set.run('auto_assign', b.auto_assign ? '1' : '0');
     if (b.entry_template !== undefined) set.run('entry_template', String(b.entry_template).slice(0, 2000));
+    if (b.email_from_name !== undefined) set.run('email_from_name', String(b.email_from_name).replace(/[\r\n"<>]/g, '').trim().slice(0, 60));
+    if (b.email_reply_to !== undefined) set.run('email_reply_to', cleanEmail(b.email_reply_to));
     return getSettings();
   }));
 
@@ -736,14 +873,16 @@ function createApp(db) {
       SELECT u.id, u.username, u.full_name, u.email, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
-        (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned
+        (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned,
+        u.last_login_at, u.last_seen_at, u.password_changed_at, u.login_count,
+        (SELECT COUNT(*) FROM login_events l WHERE l.user_id = u.id AND l.success = 0 AND l.created_at >= datetime('now', '-7 days')) AS failed_7d
       FROM users u LEFT JOIN teams t ON t.id = u.team_id
       ${isAdmin(u) ? '' : 'WHERE u.team_id = ?'}
       ORDER BY u.active DESC, t.name, u.full_name`).all(...(isAdmin(u) ? [] : [u.team_id ?? -1]));
     return rows;
   }));
 
-  app.post('/api/users', wrap((req, res) => {
+  app.post('/api/users', awrap(async (req, res) => {
     const actor = requireRole(req, 'admin', 'manager');
     const username = String(req.body.username || '').trim().toLowerCase();
     const fullName = String(req.body.full_name || '').trim().slice(0, 100);
@@ -766,8 +905,19 @@ function createApp(db) {
     if (password.length < 8) throw new HttpError(400, 'Password needs at least 8 characters.');
     const r = db.prepare(`INSERT INTO users (username, full_name, email, password_hash, role, team_id, must_change_password)
       VALUES (?, ?, ?, ?, ?, ?, 1)`).run(username, fullName, email, auth.hashPassword(password), role, teamId);
+    const id = Number(r.lastInsertRowid);
+    let welcome = { sent: false };
+    const settings = getSettings();
+    if (req.body.send_welcome && email && mail.emailConfig(settings).enabled) {
+      const teamName = teamId != null ? db.prepare('SELECT name FROM teams WHERE id = ?').get(teamId).name : '';
+      const w = await mail.sendEmail({ to: email, ...mail.welcomeEmail({
+        fullName, username, password, teamName, invitedBy: actor.full_name,
+        roleLabel: { admin: 'admin', manager: 'manager', dispatch: 'dispatcher', rep: 'rep' }[role],
+      }, settings) }, settings);
+      welcome = w.ok ? { sent: true, to: email } : { sent: false, error: w.error };
+    }
     res.status(201);
-    return { id: Number(r.lastInsertRowid), username, temp_password: password };
+    return { id, username, temp_password: password, welcome };
   }));
 
   app.patch('/api/users/:id', wrap((req) => {
@@ -806,20 +956,55 @@ function createApp(db) {
     return { ok: true };
   }));
 
-  app.post('/api/users/:id/reset-password', wrap((req) => {
+  app.post('/api/users/:id/reset-password', awrap(async (req) => {
     const actor = requireRole(req, 'admin', 'manager');
     const target = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(req.params.id));
     if (!target || !canManageUser(actor, target)) throw new HttpError(404, 'User not found.');
     const password = auth.tempPassword();
     db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(auth.hashPassword(password), target.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
-    return { temp_password: password };
+    let emailed = { sent: false };
+    const settings = getSettings();
+    if (req.body.send_email && target.email && mail.emailConfig(settings).enabled) {
+      const r = await mail.sendEmail({ to: target.email, ...mail.tempPasswordEmail({
+        fullName: target.full_name, username: target.username, password, resetBy: actor.full_name }, settings) }, settings);
+      emailed = r.ok ? { sent: true, to: target.email } : { sent: false, error: r.error };
+    }
+    return { temp_password: password, emailed };
+  }));
+
+  // Sign-in history for one user (admins: anyone; managers: their reps).
+  app.get('/api/users/:id/logins', wrap((req) => {
+    const actor = requireRole(req, 'admin', 'manager');
+    const target = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(req.params.id));
+    if (!target || !canManageUser(actor, target)) throw new HttpError(404, 'User not found.');
+    return db.prepare(`SELECT success, reason, ip, user_agent, created_at FROM login_events
+      WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(target.id);
+  }));
+
+  // Account-health overview for admins.
+  app.get('/api/admin/security', wrap((req) => {
+    requireRole(req, 'admin');
+    const one = (sql, ...p) => db.prepare(sql).get(...p).n;
+    return {
+      users: one('SELECT COUNT(*) AS n FROM users WHERE active = 1'),
+      active_today: one("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND last_seen_at >= datetime('now', '-1 day')"),
+      active_7d: one("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND last_seen_at >= datetime('now', '-7 days')"),
+      never_signed_in: one('SELECT COUNT(*) AS n FROM users WHERE active = 1 AND last_login_at IS NULL'),
+      inactive_30d: one("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND last_login_at IS NOT NULL AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-30 days'))"),
+      old_passwords: one("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND must_change_password = 0 AND (password_changed_at IS NULL OR password_changed_at < datetime('now', '-90 days'))"),
+      temp_passwords: one('SELECT COUNT(*) AS n FROM users WHERE active = 1 AND must_change_password = 1'),
+      failed_24h: one("SELECT COUNT(*) AS n FROM login_events WHERE success = 0 AND created_at >= datetime('now', '-1 day')"),
+      recent_failed: db.prepare(`SELECT l.username, l.reason, l.ip, l.created_at, u.full_name
+        FROM login_events l LEFT JOIN users u ON u.id = l.user_id
+        WHERE l.success = 0 ORDER BY l.id DESC LIMIT 15`).all(),
+    };
   }));
 
   app.get('/api/admin/email', wrap((req) => {
     requireRole(req, 'admin');
-    const cfg = mail.emailConfig();
-    return { enabled: cfg.enabled, from: cfg.from, app_url: cfg.appUrl };
+    const cfg = mail.emailConfig(getSettings());
+    return { enabled: cfg.enabled, from: cfg.from, name: cfg.name, address: cfg.address, reply_to: cfg.replyTo, app_url: cfg.appUrl };
   }));
 
   // Sends a test email to the admin's own address and reports Resend's answer.
@@ -827,9 +1012,10 @@ function createApp(db) {
     try {
       const u = requireRole(req, 'admin');
       if (!u.email) throw new HttpError(400, 'Add your own email under My account first.');
-      if (!mail.emailConfig().enabled) throw new HttpError(400, 'Email is off: add RESEND_API_KEY in Render → Environment.');
-      const msg = mail.alertEmail({ fullName: u.full_name, message: 'This is a test email. Alerts are working!', referralId: null });
-      const r = await mail.sendEmail({ to: u.email, ...msg, subject: 'E&O Referrals test email' });
+      const settings = getSettings();
+      if (!mail.emailConfig(settings).enabled) throw new HttpError(400, 'Email is off: add RESEND_API_KEY in Render → Environment.');
+      const msg = mail.alertEmail({ fullName: u.full_name, message: 'This is a test email. Alerts are working!', referralId: null }, settings);
+      const r = await mail.sendEmail({ to: u.email, ...msg, subject: 'E&O Referrals test email' }, settings);
       if (!r.ok) throw new HttpError(502, `Resend said: ${r.error}`);
       res.json({ ok: true, to: u.email });
     } catch (e) {

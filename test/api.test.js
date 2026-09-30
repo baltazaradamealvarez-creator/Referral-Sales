@@ -326,7 +326,7 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
   assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM users').get().n, 2);
   const ref = db.prepare('SELECT * FROM referrals').get();
@@ -424,4 +424,170 @@ test('email alerts go through Resend only when configured and wanted', async (t)
   assert.equal(bad.status, 502);
   assert.match(bad.body.error, /domain is not verified/);
   assert.equal((await s.repA.c.post('/admin/test-email')).status, 403);
+});
+
+// Captures Resend calls; everything else goes to the real fetch.
+function fakeResend(t) {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith('https://api.resend.com/')) {
+      sent.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: 'em_x' }), { status: 200 });
+    }
+    return realFetch(url, init);
+  };
+  const saved = { key: process.env.RESEND_API_KEY, from: process.env.EMAIL_FROM };
+  process.env.RESEND_API_KEY = 're_test';
+  process.env.EMAIL_FROM = 'noreply@eo.example.com';
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of [['RESEND_API_KEY', saved.key], ['EMAIL_FROM', saved.from]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+  return sent;
+}
+
+test('sender name, welcome emails, emailed temp passwords', async (t) => {
+  const sent = fakeResend(t);
+  const s = await setup();
+  t.after(() => s.server.close());
+
+  // A bare EMAIL_FROM gets the friendly name instead of showing "noreply".
+  assert.equal((await s.admin.get('/admin/email')).body.from, 'E&O Referrals <noreply@eo.example.com>');
+  await s.admin.patch('/settings', { email_from_name: 'E&O Spectrum Team', email_reply_to: 'Boss@EO.example.com' });
+  const cfg = (await s.admin.get('/admin/email')).body;
+  assert.equal(cfg.from, 'E&O Spectrum Team <noreply@eo.example.com>');
+  assert.equal(cfg.reply_to, 'boss@eo.example.com');
+  assert.equal((await s.mgrA.c.patch('/settings', { email_from_name: 'x' })).status, 403);
+
+  const created = await s.mgrA.c.post('/users', { username: 'newrep', full_name: 'New Rep', email: 'new@x.com', send_welcome: true });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.body.welcome, { sent: true, to: 'new@x.com' });
+  const w = sent.at(-1);
+  assert.equal(w.from, 'E&O Spectrum Team <noreply@eo.example.com>');
+  assert.equal(w.reply_to, 'boss@eo.example.com');
+  assert.deepEqual(w.to, ['new@x.com']);
+  assert.match(w.subject, /Welcome/);
+  assert.ok(w.text.includes('newrep') && w.text.includes(created.body.temp_password));
+  assert.match(w.text, /Team A/);
+
+  // No welcome unless asked, or without an email.
+  const before = sent.length;
+  await s.mgrA.c.post('/users', { username: 'quiet', full_name: 'Quiet', email: 'q@x.com' });
+  await s.mgrA.c.post('/users', { username: 'nomail', full_name: 'No Mail', send_welcome: true });
+  assert.equal(sent.length, before);
+
+  const reset = await s.mgrA.c.post(`/users/${created.body.id}/reset-password`, { send_email: true });
+  assert.equal(reset.body.emailed.sent, true);
+  assert.ok(sent.at(-1).text.includes(reset.body.temp_password));
+});
+
+test('forgot password: emailed code, attempts limit, signs you in', async (t) => {
+  const sent = fakeResend(t);
+  const s = await setup();
+  t.after(() => s.server.close());
+  await s.repA.c.patch('/me', { email: 'repa@x.com' });
+
+  const anon = s.client();
+  // Unknown users get the same answer and no email.
+  assert.deepEqual((await anon.post('/password/forgot', { login: 'ghost' })).body, { ok: true, email_enabled: true });
+  assert.equal(sent.length, 0);
+
+  // By email address (any case) works too.
+  assert.equal((await anon.post('/password/forgot', { login: 'RepA@x.com' })).status, 200);
+  assert.equal(sent.length, 1);
+  const code = sent[0].text.match(/\b(\d{6})\b/)[1];
+  assert.match(sent[0].subject, new RegExp(code));
+
+  // Wrong code, short password.
+  const wrong = code === '000000' ? '111111' : '000000';
+  assert.equal((await anon.post('/password/reset', { login: 'repa', code: wrong, password: 'new-pass-123' })).status, 400);
+  assert.equal((await anon.post('/password/reset', { login: 'repa', code, password: 'short' })).status, 400);
+
+  // Right code: password changes, old sessions end, and you're signed in.
+  const ok = await anon.post('/password/reset', { login: 'repa', code, password: 'new-pass-123' });
+  assert.equal(ok.status, 200);
+  assert.equal((await anon.get('/me')).body.username, 'repa');
+  assert.equal((await s.repA.c.get('/me')).status, 401, 'other sessions signed out');
+  // Code is single-use.
+  assert.equal((await s.client().post('/password/reset', { login: 'repa', code, password: 'another-pass-1' })).status, 400);
+  await s.client().login('repa', 'new-pass-123');
+
+  // Five wrong guesses burn the code.
+  await s.client().post('/password/forgot', { login: 'repa' });
+  const code2 = sent.at(-1).text.match(/\b(\d{6})\b/)[1];
+  const bad = code2 === '999999' ? '888888' : '999999';
+  for (let i = 0; i < 5; i++) await s.client().post('/password/reset', { login: 'repa', code: bad, password: 'x-pass-1234' });
+  assert.equal((await s.client().post('/password/reset', { login: 'repa', code: code2, password: 'x-pass-1234' })).status, 400);
+
+  // Password-changed date and login history are recorded.
+  const users = (await s.admin.get('/users')).body;
+  const ra = users.find((u) => u.username === 'repa');
+  assert.ok(ra.password_changed_at);
+  assert.ok(ra.last_login_at);
+  assert.ok(ra.failed_7d >= 6);
+});
+
+test('login tracking, security summary, sign out everywhere, search, dashboard', async (t) => {
+  const s = await setup();
+  t.after(() => s.server.close());
+
+  // Failed then successful logins show up.
+  assert.equal((await s.client().post('/login', { username: 'repb', password: 'nope' })).status, 401);
+  const users = (await s.admin.get('/users')).body;
+  const rb = users.find((u) => u.username === 'repb');
+  assert.ok(rb.login_count >= 1 && rb.last_login_at && rb.password_changed_at);
+  assert.equal(rb.failed_7d, 1);
+  const logins = (await s.admin.get(`/users/${rb.id}/logins`)).body;
+  assert.equal(logins[0].success, 0);
+  assert.equal(logins[0].reason, 'wrong password');
+  assert.equal((await s.mgrA.c.get(`/users/${rb.id}/logins`)).status, 404, 'other team');
+  const sec = (await s.admin.get('/admin/security')).body;
+  assert.equal(sec.failed_24h, 1);
+  assert.equal(sec.recent_failed[0].username, 'repb');
+  assert.equal((await s.mgrA.c.get('/admin/security')).status, 403);
+
+  // Users can sign in with their email address too.
+  await s.repB.c.patch('/me', { email: 'rb@x.com' });
+  await s.client().login('rb@x.com', 'repb-pass-1');
+
+  // Sign out everywhere keeps only the current session.
+  const second = s.client();
+  await second.login('repb', 'repb-pass-1');
+  assert.ok((await s.repB.c.post('/me/logout-all')).body.signed_out >= 2);
+  assert.equal((await second.get('/me')).status, 401);
+  assert.equal((await s.repB.c.get('/me')).status, 200);
+
+  // Search respects visibility.
+  await s.repA.c.post('/referrals', { text: 'Zelda Quinn 512-555-8100 zq@x.com' });
+  await s.repB.c.post('/referrals', { text: 'Zelda Other 512-555-8200' });
+  assert.equal((await s.repA.c.get('/search?q=zelda')).body.referrals.length, 1);
+  assert.equal((await s.admin.get('/search?q=zelda')).body.referrals.length, 2);
+  assert.equal((await s.admin.get('/search?q=8100')).body.referrals[0].customer_name, 'Zelda Quinn');
+  assert.deepEqual((await s.repA.c.get('/search?q=repb')).body.users, []);
+  assert.equal((await s.mgrA.c.get('/search?q=rep')).body.users.every((u) => u.team_name === 'Team A'), true);
+  assert.equal((await s.admin.get('/search?q=mgrb')).body.users[0].username, 'mgrb');
+
+  // Dashboard: scoped numbers, role-based widgets, saved layout.
+  const repDash = (await s.repA.c.get('/dashboard')).body;
+  assert.equal(repDash.kpis.entered, 1);
+  assert.ok(!repDash.allowed.includes('teams'));
+  assert.equal(repDash.teams, undefined);
+  const adminDash = (await s.admin.get(`/dashboard?from=2020-01-01&tz=300`)).body;
+  assert.equal(adminDash.kpis.entered, 2);
+  assert.equal(adminDash.teams.length, 2);
+  assert.ok(Array.isArray(adminDash.insights));
+  assert.equal(adminDash.trend.length > 0, true);
+  const teamB = (await s.admin.get(`/dashboard?team_id=${s.teamB}`)).body;
+  assert.equal(teamB.kpis.entered, 1);
+  // Managers can't widen their scope with team_id.
+  assert.equal((await s.mgrA.c.get(`/dashboard?team_id=${s.teamB}`)).body.kpis.entered, 1);
+
+  assert.equal((await s.repA.c.get('/me')).body.dashboard_layout, null);
+  await s.repA.c.patch('/me', { dashboard_layout: ['trend', 'kpis', 'bogus', 'trend'] });
+  assert.deepEqual((await s.repA.c.get('/me')).body.dashboard_layout, ['trend', 'kpis']);
+  await s.repA.c.patch('/me', { dashboard_layout: null });
+  assert.equal((await s.repA.c.get('/me')).body.dashboard_layout, null);
 });
