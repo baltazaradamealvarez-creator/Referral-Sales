@@ -320,6 +320,12 @@ const MIGRATIONS = [
     updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
   );
   `,
+  // v9: lead quality score (0-100) and the tips behind it
+  `
+  ALTER TABLE referrals ADD COLUMN lead_score INTEGER;
+  ALTER TABLE referrals ADD COLUMN lead_flags TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_referrals_score ON referrals(lead_score);
+  `,
 ];
 
 

@@ -466,6 +466,7 @@
           <p class="muted" style="margin-top:.3rem">Type or paste the customer's info however you like. Anything extra is kept as notes.</p>
           <textarea id="leadText" placeholder="Jane Smith&#10;512-555-0142&#10;jane@email.com&#10;123 Main St, Austin TX 78701&#10;wants internet + mobile, call after 5" aria-label="Customer info"></textarea>
           <div class="chips" id="chips"></div>
+          <div class="score-meter" id="scoreMeter" hidden></div>
           <div class="row" style="gap:.4rem;margin-bottom:.4rem"><span class="small muted">Services:</span>
             ${SERVICES.map((s) => `<button type="button" class="toggle" data-svc="${s}">${s}</button>`).join('')}</div>
           ${creditOptions.length ? `
@@ -504,18 +505,38 @@
 
     const drawServices = () => document.querySelectorAll('[data-svc]').forEach((b) => b.classList.toggle('on', svc.has(b.dataset.svc)));
     document.querySelectorAll('[data-svc]').forEach((b) => {
-      b.onclick = () => { svcTouched = true; svc.has(b.dataset.svc) ? svc.delete(b.dataset.svc) : svc.add(b.dataset.svc); drawServices(); };
+      b.onclick = () => { svcTouched = true; svc.has(b.dataset.svc) ? svc.delete(b.dataset.svc) : svc.add(b.dataset.svc); drawServices(); drawScore(); };
     });
 
+    const currentVals = () => Object.fromEntries(fields.map((k) => [k, touched.has(k) ? f[k].value : parsed[k] || '']));
+    // Live lead-quality meter: red to green, with what's missing or looks fake.
+    const meter = document.getElementById('scoreMeter');
+    const drawScore = () => {
+      const vals = currentVals();
+      if (!ta.value.trim() && !fields.some((k) => vals[k])) { meter.hidden = true; return; }
+      const q = LeadScore.scoreLead({ ...vals, zip: parsed.zip, city: parsed.city, services: [...svc] });
+      const fix = q.checks.email.fix;
+      meter.hidden = false;
+      meter.style.setProperty('--sc', q.color);
+      meter.innerHTML = `<div class="sm-top"><span class="sm-label">Lead quality</span><b class="sm-pct">${q.score}%</b><span class="sm-band">${q.band}</span></div>
+        <div class="sm-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${q.score}" aria-label="Lead quality"><span style="width:${q.score}%"></span></div>
+        ${q.fakes.length ? `<ul class="sm-fakes">${q.fakes.map((x) => `<li>⛔ ${esc(x.msg)}</li>`).join('')}</ul>` : ''}
+        ${q.tips.length ? `<ul class="sm-tips">${q.tips.map((t) => `<li>${esc(t)}${fix && t.startsWith('Did you mean') ? ' <button type="button" class="link-btn" id="fixEmail">Fix it</button>' : ''}</li>`).join('')}</ul>` : ''}`;
+      const fe = document.getElementById('fixEmail');
+      if (fe) fe.onclick = () => { touched.add('email'); f.email.value = fix; if (ta.value.includes(vals.email)) ta.value = ta.value.replace(vals.email, fix); drawChips(); };
+    };
+
     const drawChips = () => {
-      const vals = Object.fromEntries(fields.map((k) => [k, touched.has(k) ? f[k].value : parsed[k] || '']));
+      const vals = currentVals();
       const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', notes: 'Notes' };
       chips.innerHTML = fields
         .filter((k) => k !== 'notes' || vals.notes)
         .map((k) => `<span class="chip ${vals[k] ? 'on' : ''}">${vals[k] ? '✓' : '○'} ${label[k]}${vals[k] ? `: <b>${esc(vals[k].split('\n')[0])}</b>` : ''}</span>`)
         .join('')
         + (ta.value.trim() && !vals.phone && !vals.email && !vals.address
-          ? '<span class="chip warn">Needs a phone, email or address to check for duplicates</span>' : '');
+          ? '<span class="chip warn">Needs a phone, email or address to check for duplicates</span>' : '')
+        + (ta.value.trim() && !vals.name ? '<span class="chip warn">Needs the customer\'s name</span>' : '');
+      drawScore();
     };
 
     const doParse = debounce(async () => {
@@ -585,10 +606,18 @@
     loadRecent();
   }
 
+  // Lead quality: a coloured percentage, red (low) to green (high).
+  function scoreBadge(score, big) {
+    if (score == null || !window.LeadScore) return '';
+    const s = Number(score);
+    const band = s >= 80 ? 'Strong' : s >= 60 ? 'Good' : s >= 35 ? 'Fair' : 'Weak';
+    return `<span class="score-badge${big ? ' big' : ''}" style="--sc:${LeadScore.scoreColor(s)}" title="Lead quality: ${band} (${s}%)">${s}%</span>`;
+  }
+
   function leadItem(r) {
     const sub = [r.phone, r.email, r.address].filter(Boolean).join(' · ');
     return `<li data-id="${r.id}"><div class="who"><b>${esc(leadName(r))}</b><span>${esc(sub)}</span></div>
-      <div style="text-align:right;flex-shrink:0">${pill(r.status)}<div class="small muted">${when(r.created_at)}</div></div></li>`;
+      <div style="text-align:right;flex-shrink:0">${scoreBadge(r.lead_score)} ${pill(r.status)}<div class="small muted">${when(r.created_at)}</div></div></li>`;
   }
   function bindLeadItems(root) {
     root.querySelectorAll('[data-id]').forEach((el) => { el.onclick = () => { location.hash = '#/r/' + el.dataset.id; }; });
@@ -668,7 +697,7 @@
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
           ${worksLeads() ? `<td class="small" data-label="Rep">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
           ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
-          <td class="c-status">${pill(r.status)}</td>
+          <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}</td>
           <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
         </tr>`).join('') : '<tr><td colspan="7" class="muted">No referrals match.</td></tr>';
       document.getElementById('count').textContent = `${rows.length}${rows.length === 500 ? '+' : ''} referral${rows.length === 1 ? '' : 's'}`;
@@ -724,7 +753,7 @@
     const card = (r) => {
       const draggable = canMoveCard(r);
       return `<article class="kcard" data-id="${r.id}" ${draggable ? 'draggable="true"' : ''}>
-        <div class="row between" style="flex-wrap:nowrap"><b class="kname">${esc(leadName(r))}</b><span class="small muted" style="white-space:nowrap">${when(r.created_at)}</span></div>
+        <div class="row between" style="flex-wrap:nowrap"><b class="kname">${esc(leadName(r))}</b><span class="small muted" style="white-space:nowrap">${scoreBadge(r.lead_score)} ${when(r.created_at)}</span></div>
         ${r.phone ? `<div class="small">${esc(r.phone)}</div>` : ''}
         ${r.address ? `<div class="small muted kaddr">${esc(r.address)}</div>` : ''}
         ${r.services ? `<div>${svcTags(r.services)}</div>` : ''}
@@ -840,6 +869,7 @@
             </div>
             <div class="record-meta-row">
               ${pill(r.status)}
+              ${scoreBadge(r.lead_score)}
               <span class="priority-badge ${esc(priority)}">${esc(priority)} Priority</span>
               <span class="pref-chip">🕐 ${esc(contactPref)}</span>
             </div>
@@ -851,6 +881,10 @@
           <div class="highlight-tile">
             <div class="hl-val" style="color:var(--ok)">${estVal ? '$' + estVal.toLocaleString('en-US', { minimumFractionDigits: 0 }) : '—'}</div>
             <div class="hl-label">Est. Monthly</div>
+          </div>
+          <div class="highlight-tile">
+            <div class="hl-val" style="color:${r.lead_score != null && window.LeadScore ? LeadScore.scoreColor(r.lead_score) : 'inherit'}">${r.lead_score != null ? `${r.lead_score}%` : '—'}</div>
+            <div class="hl-label">Lead quality</div>
           </div>
           <div class="highlight-tile">
             <div class="hl-val">${svcCount}</div>
@@ -866,6 +900,7 @@
           </div>
         </div>
 
+        ${r.lead_tips && r.lead_tips.length ? `<div class="score-tips"><b>To improve this lead:</b> ${r.lead_tips.map(esc).join(' · ')}</div>` : ''}
         ${r.can_edit ? `<div class="record-actions">
           ${!editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
           ${r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
@@ -2314,10 +2349,20 @@
       <li>Type or paste the customer's details into the box, in any order. For example:<div class="help-example">Jane Smith 512-555-0142 jane@email.com<br>123 Main St, Austin TX 78701<br>wants internet + mobile, call after 5</div></li>
       <li>Check the green ticks under the box (Name, Phone, Email, Address) and the <b>Services</b> buttons: Internet, TV, Mobile, Voice.</li>
       <li>Tap <b>Send referral</b>, or press <kbd>Ctrl</kbd> + <kbd>Enter</kbd>.</li></ol>
-      <ul><li>You need at least a <b>phone, email or address</b> — that's how duplicates are checked. A name is optional.</li>
+      <ul><li>You need the customer's <b>name</b> and at least a <b>phone, email or address</b>. The contact details are how duplicates are checked.</li>
       <li>Something read wrong? Tap <b>Something wrong? Fix the details</b> before sending.</li>
       <li><b>Use template</b> fills the box with labels (Name:, Phone:, Address:…) if your admin set one up.</li>
       <li>Anything extra — current provider, best time to call, a second number — is kept in the notes. Your original text is always saved.</li></ul>` });
+    S.push({ id: 'quality', title: 'Lead quality score', roles: 'all', body: `
+      <p>While you type a lead, a bar under the box shows its <b>quality from 0 to 100%</b>, from <span style="color:${LeadScore.scoreColor(10)}"><b>red</b></span> to <span style="color:${LeadScore.scoreColor(100)}"><b>green</b></span>. It tells you what would raise it.</p>
+      <table class="help-table"><thead><tr><th>Detail</th><th>Worth</th><th>Full marks when…</th></tr></thead><tbody>
+      <tr><td>Name</td><td>25%</td><td>First and last name, spelled out</td></tr>
+      <tr><td>Phone</td><td>25%</td><td>A real 10-digit number</td></tr>
+      <tr><td>Address</td><td>25%</td><td>House number, street, city and zip</td></tr>
+      <tr><td>Email</td><td>15%</td><td>A real mailbox (not a throw-away service)</td></tr>
+      <tr><td>Services</td><td>10%</td><td>At least one of Internet, TV, Mobile, Voice picked</td></tr></tbody></table>
+      <p><b>Made-up details are refused</b>, with a message saying what's wrong. That covers names like “Test”, “asdf” or “N/A”, and names with numbers. It covers phone numbers like 123-456-7890, 111-111-1111 or a fake area code. It also covers throw-away or placeholder emails like mailinator.com or test@…. Common email typos get a “Did you mean @gmail.com?” with a one-tap fix.</p>
+      <p>The score shows as a coloured % on every lead, in the list and on the Board${worksLeads() ? ', so you can work the strongest leads first' : ''}.</p>` });
     S.push({ id: 'dupes', title: 'Duplicates', roles: 'all', body: `
       <p>If the phone, email or address matches <b>any</b> referral already in the system, from any team, you'll see <i>“This lead is a duplicate and cannot be entered.”</i> You won't be shown whose lead it is.</p>
       <p>Addresses match even when written differently (“123 N. Main St #4b” = “123 North Main Street Apt 4B”), but a different apartment is a different address. ${seesAll() ? 'The <a href="#/duplicates">Duplicates</a> page shows every blocked attempt and the lead it matched.' : 'If you think it\'s wrong, ask your manager — dispatch and admins can see what it matched.'}</p>` });

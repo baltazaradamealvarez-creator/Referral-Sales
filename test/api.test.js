@@ -258,10 +258,12 @@ test('dispatch role: sees all, assignment, auto-assign, credit, board filters, C
   assert.ok(people.credit.every((p) => p.team_id === s.teamA));
   assert.equal(people.dispatchers.length, 0);
 
-  // Name is optional now; a contact method is still required.
+  // A name is required, as well as a contact method.
   const noName = await s.repA.c.post('/referrals', { text: '77 Oak Ave Apt 2, Austin TX 78702' });
-  assert.equal(noName.status, 201, JSON.stringify(noName.body));
-  assert.equal(noName.body.customer_name, '');
+  assert.equal(noName.status, 400);
+  assert.match(noName.body.error, /name/);
+  const oak = await s.repA.c.post('/referrals', { text: 'Olive Parker\n77 Oak Ave Apt 2, Austin TX 78702' });
+  assert.equal(oak.status, 201, JSON.stringify(oak.body));
 
   // Duplicate attempts are logged for dispatch/admin, but the rep still sees only the generic message.
   const dup = await s.repA2.c.post('/referrals', { text: 'Someone 512 555 2000' });
@@ -282,7 +284,7 @@ test('dispatch role: sees all, assignment, auto-assign, credit, board filters, C
   assert.equal((await d1.c.get('/referrals?service=TV')).body.length, 1);
 
   // CSV respects scope and neutralizes spreadsheet formulas.
-  await s.repA.c.patch(`/referrals/${noName.body.id}`, { notes: '=HYPERLINK("x")' });
+  await s.repA.c.patch(`/referrals/${oak.body.id}`, { notes: '=HYPERLINK("x")' });
   const port = s.server.address().port;
   const login = await fetch(`http://127.0.0.1:${port}/api/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'repa', password: 'repa-pass-1' }),
@@ -326,7 +328,7 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
 
 
   assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
@@ -592,4 +594,32 @@ test('login tracking, security summary, sign out everywhere, search, dashboard',
   assert.deepEqual((await s.repA.c.get('/me')).body.dashboard_layout, ['trend', 'kpis']);
   await s.repA.c.patch('/me', { dashboard_layout: null });
   assert.equal((await s.repA.c.get('/me')).body.dashboard_layout, null);
+});
+
+test('leads need a name, obvious fakes are refused, and every lead gets a quality score', async () => {
+  const s = await setup();
+  try {
+    const post = (body) => s.repA.c.post('/referrals', body);
+    assert.match((await post({ phone: '512-867-1111' })).body.error, /name/);
+    assert.match((await post({ name: 'Test', phone: '512-867-1111' })).body.error, /isn’t a real name/);
+    assert.match((await post({ name: 'Real Person', phone: '123-456-7890' })).body.error, /isn’t real/);
+    assert.match((await post({ name: 'Real Person', email: 'rp@mailinator.com' })).body.error, /throw-away/);
+    const good = await post({ name: 'Real Person', phone: '512-867-1111', email: 'real.person@gmail.com', address: '9 Elm St, Austin TX 78701', services: ['Internet'] });
+    assert.equal(good.status, 201);
+    assert.equal(good.body.lead_score, 100);
+    assert.deepEqual(good.body.lead_tips, []);
+    const weak = await post({ name: 'Cher', phone: '512-867-2222' });
+    assert.equal(weak.status, 201);
+    assert.ok(weak.body.lead_score < 60);
+    assert.ok(weak.body.lead_tips.includes('Add the last name too.'));
+    // Editing only the notes of a lead doesn't re-check untouched fields; changing the name does.
+    assert.equal((await s.repA.c.patch(`/referrals/${weak.body.id}`, { notes: 'call later' })).status, 200);
+    assert.equal((await s.repA.c.patch(`/referrals/${weak.body.id}`, { name: 'asdf' })).status, 400);
+    const fixed = await s.repA.c.patch(`/referrals/${weak.body.id}`, { name: 'Cher Sarkisian', email: 'cher@gmail.com' });
+    assert.ok(fixed.body.lead_score > weak.body.lead_score);
+    const list = (await s.repA.c.get('/referrals')).body;
+    assert.ok(list.every((r) => typeof r.lead_score === 'number'));
+  } finally {
+    s.server.close();
+  }
 });

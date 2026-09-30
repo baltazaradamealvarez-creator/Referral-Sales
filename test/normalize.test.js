@@ -73,3 +73,33 @@ test('keeps unknown labels, extra phones, and builds address from city/zip label
   assert.match(p.notes, /Alt phone: 214-555-9999/);
   assert.deepEqual(p.services, ['Internet', 'Mobile']);
 });
+
+// ---------- lead score ----------
+const { scoreLead, checkName, checkPhone, checkEmail } = require('../public/leadscore');
+
+test('lead score: complete real lead is green, gaps lower it, fakes cap it', () => {
+  const full = scoreLead({ name: 'Maria Lopez', phone: '512-867-5309', email: 'maria.lopez@gmail.com', address: '123 Main St, Austin TX 78701', services: ['Internet'] });
+  assert.equal(full.score, 100);
+  assert.equal(full.band, 'Strong');
+  const partial = scoreLead({ name: 'Maria', phone: '512-867-5309' });
+  assert.ok(partial.score > 20 && partial.score < 60, String(partial.score));
+  assert.ok(partial.tips.includes('Add the last name too.'));
+  const fake = scoreLead({ name: 'Test Test', phone: '512-867-5309', email: 'maria@gmail.com', address: '123 Main St, Austin TX 78701', services: ['TV'] });
+  assert.ok(fake.score <= 15);
+  assert.equal(fake.fakes[0].field, 'name');
+});
+
+test('fake detection: names, phones and emails', () => {
+  for (const n of ['test', 'Fake Name', 'asdf', 'N/A', 'Unknown', 'Mickey Mouse', 'Jon 3', 'Qwerty Smith', 'Aaaa Bbbb', 'Xzkrtp Jones']) {
+    assert.equal(checkName(n).level, 'fake', n);
+  }
+  for (const n of ['Maria Lopez', 'Nguyen Tran', 'José García', "Mary-Jane O'Neil", 'Xi Li', 'Albert Werth']) assert.equal(checkName(n).level, 'ok', n);
+  assert.equal(checkName('John Doe').level, 'warn');
+  assert.equal(checkName('Madonna').level, 'warn');
+  for (const p of ['111-111-1111', '123-456-7890', '555-222-3333', '012-345-6789', '212-011-2222', '911-222-3333', '512-555']) assert.equal(checkPhone(p).level, 'fake', p);
+  assert.equal(checkPhone('512-555-0142').level, 'warn');
+  assert.equal(checkPhone('+1 (512) 867-5309').level, 'ok');
+  for (const e of ['x@mailinator.com', 'test@gmail.com', 'none@yahoo.com', 'a@example.com', 'jane@']) assert.equal(checkEmail(e).level, 'fake', e);
+  assert.deepEqual(checkEmail('jane@gmial.com'), { level: 'warn', msg: 'Did you mean @gmail.com?', fix: 'jane@gmail.com' });
+  assert.equal(checkEmail('jane.doe@company.co.uk').level, 'ok');
+});

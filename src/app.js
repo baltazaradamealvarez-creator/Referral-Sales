@@ -10,6 +10,7 @@ const mail = require('./email');
 const crypto = require('node:crypto');
 const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
+const { scoreLead } = require('../public/leadscore');
 const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -143,8 +144,20 @@ function createApp(db) {
   }
 
   function publicReferral(r) {
-    const { phone_key, email_key, address_key, address_zip, ...rest } = r;
-    return rest;
+    const { phone_key, email_key, address_key, address_zip, lead_flags, ...rest } = r;
+    let tips = [];
+    try { tips = JSON.parse(lead_flags || '[]'); } catch { tips = []; }
+    return { ...rest, lead_tips: tips };
+  }
+
+  // Leads entered before scoring existed get a score once, at startup.
+  {
+    const rows = db.prepare('SELECT id, customer_name, phone, email, address, city, zip, services FROM referrals WHERE lead_score IS NULL').all();
+    const upd = db.prepare('UPDATE referrals SET lead_score = ?, lead_flags = ? WHERE id = ?');
+    for (const r of rows) {
+      const q = scoreLead({ name: r.customer_name, phone: r.phone, email: r.email, address: r.address, city: r.city, zip: r.zip, services: r.services ? r.services.split(', ') : [] });
+      upd.run(q.score, JSON.stringify(q.fakes.map((f) => f.msg).concat(q.tips)), r.id);
+    }
   }
 
   function cleanServices(list) {
@@ -152,7 +165,9 @@ function createApp(db) {
     return SERVICES.filter((s) => arr.some((x) => String(x).trim().toLowerCase() === s.toLowerCase())).join(', ');
   }
 
-  function cleanLead(input) {
+  // opts.requireName: new leads (and edits that change the name) must have one.
+  // opts.changed: on edits, the fields being changed; only those are checked for fake details.
+  function cleanLead(input, opts = {}) {
     const parsed = input.text ? parseLeadText(input.text) : {};
     const pick = (k) => String(input[k] != null && input[k] !== '' ? input[k] : parsed[k] || '').trim();
     const lead = {
@@ -171,9 +186,15 @@ function createApp(db) {
       lead_priority: ['Low', 'Standard', 'High', 'Urgent'].includes(input.lead_priority) ? input.lead_priority : 'Standard',
       est_monthly_value: Math.max(0, Number(input.est_monthly_value) || 0),
     };
+    if (opts.requireName !== false && !lead.name) throw new HttpError(400, 'Add the customer\'s name.');
     if (!lead.phone && !lead.email && !lead.address) {
       throw new HttpError(400, 'Add a phone number, email or address so we can check it isn\'t a duplicate.');
     }
+    const quality = scoreLead({ ...lead, services: lead.services ? lead.services.split(', ') : [] });
+    const fake = quality.fakes.find((x) => !opts.changed || opts.changed.has(x.field));
+    if (fake) throw new HttpError(400, fake.msg);
+    lead.score = quality.score;
+    lead.flags = JSON.stringify(quality.tips);
     if (lead.phone && !normalizePhone(lead.phone)) throw new HttpError(400, 'That phone number doesn\'t look right (need 10 digits).');
     if (lead.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) throw new HttpError(400, 'That email doesn\'t look right.');
     if (lead.phone) lead.phone = formatPhone(lead.phone);
@@ -530,13 +551,13 @@ function createApp(db) {
         (customer_name, company, phone, alt_phone, email, address, city, zip, notes, services,
          contact_pref, package_details, lead_priority, est_monthly_value,
          raw_text, phone_key, email_key, address_key, address_zip,
-         created_by, entered_by, team_id, assigned_to, assigned_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END)`).run(
+         created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?)`).run(
         lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
         lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
         String(req.body.text || '').slice(0, 4000),
         lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip,
-        owner.id, u.id, owner.team_id ?? null, assignee, assignee,
+        owner.id, u.id, owner.team_id ?? null, assignee, assignee, lead.score, lead.flags,
       );
       const id = Number(r.lastInsertRowid);
       db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, NULL, ?)').run(id, u.id, 'New');
@@ -734,15 +755,18 @@ function createApp(db) {
           package_details: body.package_details ?? ref.package_details,
           lead_priority: body.lead_priority ?? ref.lead_priority,
           est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
+        }, {
+          requireName: body.name !== undefined || !!ref.customer_name,
+          changed: new Set(['name', 'phone', 'email', 'address'].filter((f) => body[f] !== undefined)),
         });
         const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key });
         if (d) return { d, lead };
         db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, zip = ?,
           notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
-          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, ${touch} WHERE id = ?`).run(
+          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, ${touch} WHERE id = ?`).run(
           lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
           lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
-          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, ref.id,
+          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, ref.id,
         );
       }
       return null;
