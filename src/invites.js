@@ -39,9 +39,37 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
 
   // ---------- admin: create, list, turn off ----------
 
-  app.post('/api/invites', wrap((req, res) => {
+  // "a@x.com, b@y.com" or an array -> unique, valid addresses (max 50).
+  function parseEmails(value) {
+    const list = (Array.isArray(value) ? value : String(value || '').split(/[\s,;]+/)).map((e) => String(e).trim()).filter(Boolean);
+    const out = [...new Set(list.map((e) => cleanEmail(e)))];
+    if (out.length > 50) throw new HttpError(400, 'Send to 50 addresses or fewer at a time.');
+    return out;
+  }
+
+  async function emailInvite(req, inv, emails, message) {
+    const settings = getSettings();
+    if (!mail.emailConfig(settings).enabled) throw new HttpError(400, 'Email isn’t switched on yet, so the link can’t be emailed. Copy it and text it instead.');
+    const team = inv.team_id != null ? db.prepare('SELECT name FROM teams WHERE id = ?').get(inv.team_id) : null;
+    const msg = mail.inviteEmail({
+      url: inviteUrl(req, inv.token), roleLabel: ROLE_LABEL[inv.role], teamName: team ? team.name : '',
+      invitedBy: req.user.full_name, expiresAt: inv.expires_at, message,
+    }, settings);
+    const results = [];
+    for (const to of emails) {
+      const r = await mail.sendEmail({ to, ...msg }, settings);
+      db.prepare('INSERT INTO invite_emails (invite_id, email, sent_by, ok, error) VALUES (?, ?, ?, ?, ?)')
+        .run(inv.id, to, req.user.id, r.ok ? 1 : 0, r.ok ? '' : String(r.error || '').slice(0, 300));
+      results.push({ email: to, sent: r.ok, error: r.ok ? undefined : r.error });
+    }
+    logAudit(req, 'invite.email', 'invite', inv.id, `${results.filter((x) => x.sent).length} of ${emails.length} sent`);
+    return results;
+  }
+
+  app.post('/api/invites', awrap(async (req, res) => {
     const u = requireRole(req, 'admin');
     const b = req.body || {};
+    const emails = parseEmails(b.emails);
     const role = String(b.role || 'rep');
     if (!ROLE_LABEL[role]) throw new HttpError(400, 'Unknown role.');
     const teamId = b.team_id != null && b.team_id !== '' ? Number(b.team_id) : null;
@@ -49,6 +77,8 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
     if (!['admin', 'dispatch'].includes(role) && teamId == null) throw new HttpError(400, 'Pick the team new people will join.');
     const maxUses = Number(b.max_uses ?? 1);
     if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 500) throw new HttpError(400, 'Uses must be between 1 and 500.');
+    if (emails.length > maxUses) throw new HttpError(400, `You're emailing ${emails.length} people, but the link can only be used ${maxUses === 1 ? 'once' : `${maxUses} times`}. Pick a bigger “Can be used” number.`);
+    if (emails.length && !mail.emailConfig(getSettings()).enabled) throw new HttpError(400, 'Email isn’t switched on yet, so the link can’t be emailed. Leave the email box empty, then copy the link and text it.');
     const days = Number(b.expires_days ?? 7);
     if (!Number.isInteger(days) || days < 1 || days > 90) throw new HttpError(400, 'The link can last 1 to 90 days.');
     const note = String(b.note || '').trim().slice(0, 120);
@@ -57,8 +87,9 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
       VALUES (?, ?, ?, ?, ?, datetime('now', ?), ?)`).run(token, u.id, role, teamId, maxUses, `+${days} days`, note);
     const id = Number(r.lastInsertRowid);
     logAudit(req, 'invite.create', 'invite', id, `${ROLE_LABEL[role]}, ${maxUses} use(s), ${days} day(s)${note ? `: ${note}` : ''}`);
+    const sent = emails.length ? await emailInvite(req, db.prepare('SELECT * FROM invites WHERE id = ?').get(id), emails, b.message) : [];
     res.status(201);
-    return { id, url: inviteUrl(req, token), status: 'active' };
+    return { id, url: inviteUrl(req, token), status: 'active', emailed: sent };
   }));
 
   app.get('/api/invites', wrap((req) => {
@@ -67,11 +98,25 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
       FROM invites i LEFT JOIN teams t ON t.id = i.team_id LEFT JOIN users u ON u.id = i.created_by
       ORDER BY i.id DESC LIMIT 200`).all();
     const joined = db.prepare('SELECT id, full_name, username, created_at FROM users WHERE invite_id = ? ORDER BY id');
+    const emailed = db.prepare('SELECT email, ok, error, created_at FROM invite_emails WHERE invite_id = ? ORDER BY id');
     return rows.map((i) => ({
       id: i.id, role: i.role, team_id: i.team_id, team_name: i.team_name, max_uses: i.max_uses, uses: i.uses,
       expires_at: i.expires_at, note: i.note, created_at: i.created_at, created_by_name: i.created_by_name,
-      status: inviteStatus(i), url: inviteUrl(req, i.token), joined: joined.all(i.id),
+      status: inviteStatus(i), url: inviteUrl(req, i.token), joined: joined.all(i.id), emailed: emailed.all(i.id),
     }));
+  }));
+
+  // Email an existing, still-active link to more people.
+  app.post('/api/invites/:id/email', awrap(async (req) => {
+    requireRole(req, 'admin');
+    const inv = db.prepare('SELECT * FROM invites WHERE id = ?').get(Number(req.params.id));
+    if (!inv) throw new HttpError(404, 'Invite not found.');
+    if (inviteStatus(inv) !== 'active') throw new HttpError(410, 'This link can’t be used any more. Create a new one.');
+    const emails = parseEmails((req.body || {}).emails);
+    if (!emails.length) throw new HttpError(400, 'Enter at least one email address.');
+    const left = inv.max_uses - inv.uses;
+    if (emails.length > left) throw new HttpError(400, `This link has ${left} sign-up${left === 1 ? '' : 's'} left, so it can't go to ${emails.length} people. Create a new link.`);
+    return { emailed: await emailInvite(req, inv, emails, (req.body || {}).message) };
   }));
 
   app.delete('/api/invites/:id', wrap((req) => {

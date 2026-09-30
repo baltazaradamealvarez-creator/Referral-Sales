@@ -713,6 +713,8 @@ td.actions .btn { display: block; width: 100%; margin: .15rem 0; }
 .users-table td { font-size: .92rem; }
 @media (max-width: 1280px) { .nav a { padding: .4rem .45rem; font-size: .88rem; } .search { flex-basis: 190px; } }
 @media (max-width: 760px) {
+  .search { flex-basis: auto; }
+  .topbar.searching .search { flex: 1; }
   td.actions .btn { display: inline-block; width: auto; }
   .brand-text { font-size: .95rem; }
 }
@@ -845,10 +847,36 @@ td.actions .btn { display: block; width: 100%; margin: .15rem 0; }
 /* ---------- invite links ---------- */
 .invite-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem .8rem; margin: .9rem 0 .4rem; align-items: end; }
 .invite-form label { font-size: .82rem; }
-.invite-form .iv-note { grid-column: span 3; }
+.invite-form .iv-note { grid-column: 1 / -1; }
+.invite-form .iv-emails { grid-column: span 2; }
+.invite-form .iv-emails:nth-of-type(6) { grid-column: span 1; }
+.invite-form textarea { min-height: 2.6rem; resize: vertical; }
 .invite-form .iv-go { display: flex; align-items: end; }
 .invite-form .iv-go .btn { width: 100%; }
-@media (max-width: 860px) { .invite-form { grid-template-columns: 1fr 1fr; } .invite-form .iv-note, .invite-form .iv-go { grid-column: 1 / -1; } }
+@media (max-width: 860px) { .invite-form { grid-template-columns: 1fr 1fr; } .invite-form .iv-note, .invite-form .iv-go, .invite-form .iv-emails, .invite-form .iv-emails:nth-of-type(6) { grid-column: 1 / -1; } }
+
+/* past sales upload */
+.history-form { display: grid; grid-template-columns: 2fr 2fr 1fr; gap: .6rem .8rem; align-items: end; }
+.history-form label { font-size: .82rem; }
+.history-form .iv-go .btn { width: 100%; }
+.history-form input[type=file] { padding: .45rem; }
+#historyPreview:not(:empty) { margin-top: .8rem; }
+@media (max-width: 760px) { .history-form { grid-template-columns: 1fr; } }
+
+/* payments */
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: .02em; }
+.pay-current { display: flex; align-items: center; gap: .9rem; padding: .9rem 1rem; border: 1px solid var(--border); border-radius: 12px; margin: .6rem 0; }
+.pay-current .btn { margin-left: auto; }
+.pay-ico { font-size: 1.6rem; width: 2.4rem; text-align: center; }
+.pay-form { margin-top: 1rem; max-width: 680px; }
+.pay-form .field { margin-top: .8rem; }
+.pay-methods { margin: .4rem 0 .2rem; flex-wrap: wrap; }
+.pay-grid { gap: 0 .9rem; margin: 0; }
+.pay-grid > .field { margin-top: .8rem; }
+.pay-reveal { width: 100%; border-collapse: collapse; margin: .6rem 0; }
+.pay-reveal td { padding: .45rem .4rem; border-bottom: 1px solid var(--border); word-break: break-all; }
+.pay-reveal td:first-child, .pay-reveal td:last-child { white-space: nowrap; word-break: normal; width: 1%; }
+.pay-toggle { margin-top: .35rem; font-weight: 400; white-space: nowrap; }
 .invite-new { border: 1px solid var(--brand); background: var(--brand-soft); border-radius: 8px; padding: .7rem .8rem; margin: .6rem 0 .8rem; }
 .invite-new input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; background: var(--surface); }
 .iv-st { display: inline-block; font-size: .76rem; font-weight: 700; padding: .1rem .5rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); }

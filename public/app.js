@@ -121,6 +121,7 @@
     if (seesAll()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
     links.push(['#/sales', 'Sales', 'sales', '📈']);
     if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
+    if (state.me.payments) links.push(['#/payments', 'Payments', 'payments', '💳']);
     if (isAdmin()) links.push(['#/audit-logs', 'Audit Logs', 'audit', '🔒']);
     links.push(['#/help', 'Help', 'help', '❓']);
     return links;
@@ -1203,7 +1204,7 @@
               <td><b>${esc(d.attempted_by_name)}</b>${d.attempted_by_team ? `<div class="small muted">${esc(d.attempted_by_team)}</div>` : ''}</td>
               <td class="small">${esc(d.customer_name || '—')}<div class="muted">${esc([d.phone, d.email, d.address].filter(Boolean).join(' · '))}</div></td>
               <td><span class="tag">${esc(d.matched_on)}</span></td>
-              <td>${d.matched_referral_id ? `<a href="#/r/${d.matched_referral_id}">${esc(d.matched_name || 'No name')}</a> ${pill(d.matched_status)}<div class="small muted">${esc(d.matched_owner_name || '')}${d.matched_owner_team ? ` · ${esc(d.matched_owner_team)}` : ''}</div>` : '<span class="muted">deleted</span>'}</td>
+              <td>${d.matched_referral_id ? `<a href="#/r/${d.matched_referral_id}">${esc(d.matched_name || 'No name')}</a> ${pill(d.matched_status)}<div class="small muted">${esc(d.matched_owner_name || '')}${d.matched_owner_team ? ` · ${esc(d.matched_owner_team)}` : ''}</div>` : (/past sale/.test(d.matched_on) ? '<span class="muted">Past sale (uploaded list)</span>' : '<span class="muted">deleted</span>')}</td>
             </tr>`).join('') || '<tr><td colspan="5" class="muted">No duplicates blocked yet.</td></tr>'}</tbody>
         </table></div>
       </div>`);
@@ -1348,10 +1349,24 @@
           <div><label for="iv_uses">Can be used</label><select id="iv_uses"><option value="1">Once (one person)</option><option value="5">Up to 5 people</option><option value="10">Up to 10 people</option><option value="25">Up to 25 people</option><option value="100">Up to 100 people</option></select></div>
           <div><label for="iv_days">Expires after</label><select id="iv_days"><option value="1">1 day</option><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></div>
           <div class="iv-note"><label for="iv_note">Note <span class="muted small">(optional, only you see it)</span></label><input id="iv_note" maxlength="120" placeholder="e.g. October hires, North Crew"></div>
-          <div class="iv-go"><button class="btn primary">Create invite link</button></div>
+          <div class="iv-emails"><label for="iv_emails">Email it to <span class="muted small">(optional — separate addresses with commas)</span></label>
+            <textarea id="iv_emails" rows="2" autocapitalize="none" placeholder="${emailOn ? 'maria@email.com, james@email.com' : 'Available once email is switched on'}" ${emailOn ? '' : 'disabled'}></textarea></div>
+          <div class="iv-emails"><label for="iv_msg">Personal message <span class="muted small">(optional, goes in the email)</span></label><input id="iv_msg" maxlength="500" placeholder="e.g. Welcome to the North Crew — sign up before Monday's meeting" ${emailOn ? '' : 'disabled'}></div>
+          <div class="iv-go"><button class="btn primary" id="ivGo">Create invite link</button></div>
         </form>
         <div id="inviteNew"></div>
         <div id="inviteList" class="small muted">Loading invites…</div>
+      </div>
+      <div class="card" id="historyCard">
+        <div class="row between"><h2 style="margin:0">Past sales</h2><span class="small muted">Blocks old customers as duplicates. Never shown in the portal.</span></div>
+        <p class="small muted" style="margin:.4rem 0 .8rem">Upload old sales spreadsheets (.xlsx or .csv). Every phone number and street address in them is added to the duplicate check, so nobody can enter those customers again. Only the phone and address are kept — no names, account numbers or amounts — and they don't appear in customer lists, search or reports.</p>
+        <form class="history-form" id="historyForm">
+          <div><label for="hs_file">Spreadsheet</label><input type="file" id="hs_file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required></div>
+          <div><label for="hs_note">Note <span class="muted small">(optional)</span></label><input id="hs_note" maxlength="200" placeholder="e.g. Pay reports May–Sep 2026"></div>
+          <div class="iv-go"><button class="btn" id="hsCheck">Check file</button></div>
+        </form>
+        <div id="historyPreview"></div>
+        <div id="historyList" class="small muted">Loading uploads…</div>
       </div>` : ''}
       <div class="grid-2">
         <form class="card" id="addUser">
@@ -1413,7 +1428,8 @@
             return `<tr class="${u.active ? '' : 'inactive'}">
               <td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
                 <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div></td>
-              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}</td>
+              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
+                ${isAdmin() && ['rep', 'dispatch'].includes(u.role) ? `<label class="check small pay-toggle"><input type="checkbox" data-pay="${u.id}" ${u.payments_enabled ? 'checked' : ''}> Payments tab</label>` : ''}</td>
               ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
               <td data-label="Last active">${ago(u.last_seen_at || u.last_login_at)}<div class="small muted">${u.login_count} sign-in${u.login_count === 1 ? '' : 's'}${u.failed_7d ? ` · <span class="warn-text">${u.failed_7d} failed</span>` : ''}</div></td>
               <td data-label="Password changed">${u.password_changed_at ? `${ago(u.password_changed_at)}${pwOld ? ' <span class="tag">90+ days</span>' : ''}` : '<span class="muted">never</span>'}</td>
@@ -1443,7 +1459,7 @@
       roleSel.onchange = upd; upd();
     }
 
-    if (isAdmin()) setupInvites(teams);
+    if (isAdmin()) { setupInvites(teams); setupHistory(); }
 
     document.getElementById('addUser').onsubmit = async (e) => {
       e.preventDefault();
@@ -1552,6 +1568,11 @@
     });
     document.querySelectorAll('select[data-team]').forEach((sel) => {
       sel.onchange = async () => { try { await api('/users/' + sel.dataset.team, { method: 'PATCH', body: { team_id: sel.value || null } }); peopleCache = null; toast('Team updated'); } catch (err) { toast(err.message); } };
+    });
+    document.querySelectorAll('input[data-pay]').forEach((cb) => {
+      cb.onchange = async () => {
+        try { await api(`/users/${cb.dataset.pay}/payments`, { method: 'PATCH', body: { enabled: cb.checked } }); toast(cb.checked ? 'Payments tab switched on' : 'Payments tab switched off'); } catch (err) { cb.checked = !cb.checked; toast(err.message); }
+      };
     });
   }
 
@@ -1889,6 +1910,209 @@
     },
   };
 
+  // ---------- past sales upload (admin) ----------
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.onerror = () => reject(new Error('Couldn’t read that file.'));
+      fr.readAsDataURL(file);
+    });
+  }
+
+  function setupHistory() {
+    const form = document.getElementById('historyForm');
+    const preview = document.getElementById('historyPreview');
+    const n = (x) => Number(x).toLocaleString();
+    const load = async () => {
+      const box = document.getElementById('historyList');
+      if (!box) return;
+      let d;
+      try { d = await api('/history/imports'); } catch (err) { box.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+      box.classList.remove('muted');
+      box.innerHTML = `<div class="stats sec-stats" style="margin:.8rem 0">
+          <div class="stat"><div class="n">${n(d.totals.phones)}</div><div class="l">Phone numbers blocked</div></div>
+          <div class="stat"><div class="n">${n(d.totals.addresses)}</div><div class="l">Addresses blocked</div></div>
+          <div class="stat"><div class="n">${n(d.totals.blocked)}</div><div class="l">Leads stopped so far</div></div></div>
+        ${d.imports.length ? `<div class="table-wrap"><table class="rtable"><thead><tr><th>File</th><th class="num">Rows</th><th class="num">Phones</th><th class="num">Addresses</th><th>Uploaded</th><th></th></tr></thead><tbody>
+        ${d.imports.map((i) => `<tr><td data-label="File"><b>${esc(i.file_name)}</b>${i.note ? `<div class="small muted">${esc(i.note)}</div>` : ''}</td>
+          <td data-label="Rows" class="num">${n(i.rows_read)}</td><td data-label="Phones" class="num">${n(i.phones)}</td><td data-label="Addresses" class="num">${n(i.addresses)}</td>
+          <td data-label="Uploaded">${when(i.created_at)}<div class="small muted">${esc(i.uploaded_by_name || '')}</div></td>
+          <td class="actions"><button class="btn small danger" data-hdel="${i.id}" data-name="${esc(i.file_name)}">Remove</button></td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="muted">Nothing uploaded yet.</p>'}`;
+      box.querySelectorAll('[data-hdel]').forEach((b) => {
+        b.onclick = async () => {
+          if (!confirm(`Remove “${b.dataset.name}”? Its phones and addresses stop blocking new leads (unless another upload has them too).`)) return;
+          try { await api(`/history/imports/${b.dataset.hdel}`, { method: 'DELETE', body: {} }); toast('Upload removed'); load(); } catch (err) { toast(err.message); }
+        };
+      });
+    };
+    let pending = null;
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('hs_file').files[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) { preview.innerHTML = '<div class="alert err small">That file is over 10 MB. Split it into smaller files.</div>'; return; }
+      const btn = document.getElementById('hsCheck');
+      btn.disabled = true; btn.textContent = 'Reading…';
+      try {
+        pending = { file_name: file.name, data: await fileToBase64(file), note: document.getElementById('hs_note').value };
+        const r = await api('/history/import', { method: 'POST', body: pending });
+        preview.innerHTML = `<div class="invite-new">
+          <div><b>${esc(r.file_name)}</b>: found <b>${n(r.phones)}</b> phone number${r.phones === 1 ? '' : 's'} and <b>${n(r.addresses)}</b> address${r.addresses === 1 ? '' : 'es'} in ${n(r.rows)} rows
+            <span class="muted">(${n(r.new_phones)} phones and ${n(r.new_addresses)} addresses aren't blocked yet)</span>.</div>
+          <div class="small muted" style="margin:.3rem 0 .6rem">${r.sheets.map((sh) => `${esc(sh.name)}: ${n(sh.phones)} phones, ${n(sh.addresses)} addresses${sh.mode === 'scan' ? ' (no header row — addresses picked out of the cells)' : ''}`).join(' · ')}</div>
+          <div class="row"><button class="btn primary" id="hsSave">Add to the block list</button><button class="btn" id="hsCancel">Cancel</button></div></div>`;
+        document.getElementById('hsCancel').onclick = () => { preview.innerHTML = ''; pending = null; };
+        document.getElementById('hsSave').onclick = async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const saved = await api('/history/import', { method: 'POST', body: { ...pending, commit: true } });
+            preview.innerHTML = `<div class="alert ok small">✓ Added ${n(saved.phones)} phones and ${n(saved.addresses)} addresses from ${esc(saved.file_name)}. New leads matching them are now blocked.</div>`;
+            form.reset(); pending = null; load();
+          } catch (err) { ev.target.disabled = false; toast(err.message); }
+        };
+      } catch (err) {
+        preview.innerHTML = `<div class="alert err small">${esc(err.message)}</div>`;
+      } finally { btn.disabled = false; btn.textContent = 'Check file'; }
+    };
+    load();
+  }
+
+  // ---------- payments ----------
+
+  const PAY_METHODS = { bank: 'Bank account', bit: 'Bit', bitcoin: 'Bitcoin wallet' };
+  let countriesCache = null;
+
+  async function renderPayments() {
+    if (!state.me.payments) { location.hash = defaultRoute(); return; }
+    const [mine, meta, everyone] = await Promise.all([
+      api('/payments/me'),
+      countriesCache ? Promise.resolve(countriesCache) : api('/payments/meta'),
+      isAdmin() ? api('/payments') : Promise.resolve(null),
+    ]);
+    countriesCache = meta;
+    const cur = mine.payout;
+    const countries = meta.countries;
+    const cName = (c) => (countries.find((x) => x.code === c) || {}).name || c;
+    shell(`
+      <div class="card">
+        <h1>Payments</h1>
+        <p class="muted small" style="margin-top:0">Tell us where to send your pay. Only admins can see your full details, and you get an email whenever they change.</p>
+        ${cur ? `<div class="pay-current"><div class="pay-ico">${cur.method === 'bank' ? '🏦' : cur.method === 'bit' ? '📱' : '₿'}</div>
+          <div><b>${esc(cur.summary)}</b><div class="small muted">${esc(PAY_METHODS[cur.method])} · ${esc(cur.country_name)} · ${esc(cur.holder_name)} · updated ${when(cur.updated_at)}</div></div>
+          <button class="btn small" id="payEdit">Change</button></div>` : '<div class="alert warn small">You haven\'t added payout details yet.</div>'}
+        <form id="payForm" class="pay-form" ${cur ? 'hidden' : ''} autocomplete="off">
+          <label>How do you want to be paid?</label>
+          <div class="seg pay-methods" id="payMethod">${Object.entries(PAY_METHODS).map(([k, l]) => `<button type="button" data-m="${k}" class="${(cur ? cur.method : 'bank') === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+          <div class="grid-2 pay-grid">
+            <div class="field"><label for="p_country">Country</label><select id="p_country" required>${countries.map((c) => `<option value="${c.code}" ${(cur ? cur.country : 'US') === c.code ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+            <div class="field"><label for="p_holder">Account holder's full name</label><input id="p_holder" required maxlength="120" value="${esc(cur ? cur.holder_name : state.me.full_name)}"></div>
+          </div>
+          <div id="payFields"></div>
+          <div class="field"><label for="p_pw">Your sign-in password <span class="muted small">(to confirm it's you)</span></label><input id="p_pw" type="password" required autocomplete="current-password"></div>
+          <div id="payErr"></div>
+          <div class="row" style="margin-top:.8rem"><button class="btn primary">Save payout details</button>${cur ? '<button type="button" class="btn" id="payCancel">Cancel</button><button type="button" class="btn danger" id="payRemove" style="margin-left:auto">Remove</button>' : ''}</div>
+          <p class="small muted" style="margin:.8rem 0 0">🔒 Account numbers are encrypted when saved. You'll only ever see the last 4 digits here.</p>
+        </form>
+      </div>
+      ${everyone ? `<div class="card">
+        <div class="row between"><h2 style="margin:0">Everyone's payout details</h2><span class="small muted">Managers always have the Payments tab; switch it on for reps under Admin → All users.</span></div>
+        <div class="table-wrap" style="margin-top:.6rem"><table class="rtable"><thead><tr><th>Person</th><th>Method</th><th>Country</th><th>Details</th><th>Updated</th><th></th></tr></thead><tbody>
+        ${everyone.map((p) => `<tr class="${p.active ? '' : 'inactive'}">
+          <td data-label="Person"><b>${esc(p.full_name)}</b><div class="small muted">${roleLabel(p.role)}${p.team_name ? ` · ${esc(p.team_name)}` : ''}${p.access ? '' : ' · <span class="warn-text">tab off</span>'}</div></td>
+          <td data-label="Method">${p.method ? esc(PAY_METHODS[p.method]) : '<span class="muted">not added</span>'}</td>
+          <td data-label="Country">${esc(p.country_name || '')}</td>
+          <td data-label="Details">${esc(p.summary || '')}${p.holder_name ? `<div class="small muted">${esc(p.holder_name)}</div>` : ''}</td>
+          <td data-label="Updated">${p.updated_at ? when(p.updated_at) : ''}</td>
+          <td class="actions">${p.method ? `<button class="btn small" data-reveal="${p.id}">Show full details</button>` : ''}</td></tr>`).join('')}
+        </tbody></table></div></div>` : ''}`);
+
+    const form = document.getElementById('payForm');
+    let method = cur ? cur.method : 'bank';
+    const country = document.getElementById('p_country');
+    const ibanCountry = () => (countries.find((c) => c.code === country.value) || {}).iban > 0;
+    let format = null;
+    const fields = () => {
+      const box = document.getElementById('payFields');
+      if (method === 'bank') {
+        if (format === null || !ibanCountry()) format = ibanCountry() ? 'iban' : 'account';
+        const us = country.value === 'US';
+        box.innerHTML = `
+          <div class="field"><label for="p_bank">Bank name</label><input id="p_bank" required maxlength="120" placeholder="${us ? 'e.g. Chase' : 'e.g. BBVA'}"></div>
+          ${ibanCountry() ? `<div class="seg small-seg" id="payFormat" style="margin:.6rem 0 0"><button type="button" data-f="iban" class="${format === 'iban' ? 'on' : ''}">IBAN</button><button type="button" data-f="account" class="${format === 'account' ? 'on' : ''}">Account number</button></div>` : ''}
+          ${format === 'iban' ? `<div class="field"><label for="p_iban">IBAN</label><input id="p_iban" required maxlength="42" autocapitalize="characters" spellcheck="false" placeholder="${esc(country.value)}00 0000 0000 0000 0000 00" class="mono"></div>`
+            : `<div class="grid-2 pay-grid">
+                <div class="field"><label for="p_acct">Account number</label><input id="p_acct" required maxlength="40" inputmode="${us ? 'numeric' : 'text'}" spellcheck="false" class="mono"></div>
+                ${us ? `<div class="field"><label for="p_routing">Routing number <span class="muted small">(9 digits)</span></label><input id="p_routing" required maxlength="9" inputmode="numeric" class="mono"></div>`
+                  : `<div class="field"><label for="p_code">Bank / branch code <span class="muted small">(if your bank uses one)</span></label><input id="p_code" maxlength="40" placeholder="CLABE, sort code, BSB, IFSC…"></div>`}
+              </div>
+              ${us ? '<div class="field"><label for="p_type">Account type</label><select id="p_type"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>' : ''}`}
+          <div class="field"><label for="p_swift">SWIFT / BIC <span class="muted small">(${us ? 'optional' : 'needed for international transfers'})</span></label><input id="p_swift" maxlength="11" autocapitalize="characters" spellcheck="false" class="mono" placeholder="e.g. BOFAUS3N"></div>`;
+        box.querySelectorAll('#payFormat button').forEach((b) => { b.onclick = () => { format = b.dataset.f; fields(); }; });
+      } else if (method === 'bit') {
+        box.innerHTML = '<div class="field"><label for="p_bit">Phone number on your Bit account</label><input id="p_bit" required type="tel" maxlength="20" placeholder="+972 50-123-4567"></div>';
+      } else {
+        box.innerHTML = '<div class="field"><label for="p_wallet">Bitcoin wallet address</label><input id="p_wallet" required maxlength="90" spellcheck="false" class="mono" placeholder="bc1q…"><p class="small muted" style="margin:.3rem 0 0">Double-check it: payments to a wrong address can\'t be undone.</p></div>';
+      }
+    };
+    fields();
+    country.onchange = () => { format = null; fields(); };
+    document.querySelectorAll('#payMethod button').forEach((b) => {
+      b.onclick = () => {
+        method = b.dataset.m;
+        document.querySelectorAll('#payMethod button').forEach((x) => x.classList.toggle('on', x === b));
+        if (method === 'bit' && country.value === 'US' && !cur) country.value = 'IL';
+        fields();
+      };
+    });
+    const edit = document.getElementById('payEdit');
+    if (edit) edit.onclick = () => { form.hidden = false; edit.hidden = true; form.querySelector('select, input').focus(); };
+    const cancel = document.getElementById('payCancel');
+    if (cancel) cancel.onclick = () => { form.hidden = true; edit.hidden = false; };
+    const v = (id) => { const el = document.getElementById(id); return el ? el.value : undefined; };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('.primary');
+      btn.disabled = true;
+      try {
+        await api('/payments/me', { method: 'PUT', body: {
+          method, country: country.value, holder_name: v('p_holder'), password: v('p_pw'),
+          bank_name: v('p_bank'), format, iban: v('p_iban'), account_number: v('p_acct'), routing_number: v('p_routing'),
+          account_type: v('p_type'), bank_code: v('p_code'), swift: v('p_swift'), bit_phone: v('p_bit'), wallet: v('p_wallet'),
+        } });
+        toast('Payout details saved');
+        renderPayments();
+      } catch (err) {
+        document.getElementById('payErr').innerHTML = `<div class="alert err small">${esc(err.message)}</div>`;
+        btn.disabled = false;
+      }
+    };
+    const remove = document.getElementById('payRemove');
+    if (remove) remove.onclick = async () => {
+      const pw = v('p_pw');
+      if (!pw) { document.getElementById('payErr').innerHTML = '<div class="alert err small">Enter your password first, then tap Remove.</div>'; return; }
+      if (!confirm('Remove your payout details?')) return;
+      try { await api('/payments/me', { method: 'DELETE', body: { password: pw } }); toast('Payout details removed'); renderPayments(); } catch (err) { document.getElementById('payErr').innerHTML = `<div class="alert err small">${esc(err.message)}</div>`; }
+    };
+    const LABELS = { holder_name: 'Account holder', bank_name: 'Bank', iban: 'IBAN', account_number: 'Account number', routing_number: 'Routing number',
+      account_type: 'Account type', bank_code: 'Bank / branch code', swift: 'SWIFT / BIC', bit_phone: 'Bit phone', wallet: 'Bitcoin address' };
+    document.querySelectorAll('[data-reveal]').forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const r = await api(`/payments/${b.dataset.reveal}/reveal`, { method: 'POST', body: {} });
+          const rows = Object.entries(r.details).filter(([k]) => LABELS[k]).map(([k, val]) => `<tr><td class="muted">${LABELS[k]}</td><td class="mono"><b>${esc(k === 'iban' ? val.replace(/(.{4})/g, '$1 ').trim() : val)}</b></td><td><button class="btn small" data-cp="${esc(val)}">Copy</button></td></tr>`).join('');
+          const m = modal(`<h2>${esc(PAY_METHODS[r.method])} · ${esc(cName(r.country))}</h2>
+            <table class="pay-reveal">${rows}</table>
+            <p class="small muted">Viewing is recorded in the audit log.</p>
+            <div class="row" style="justify-content:flex-end"><button class="btn" data-close>Close</button></div>`);
+          m.querySelectorAll('[data-cp]').forEach((c) => { c.onclick = async () => toast((await copyText(c.dataset.cp)) ? 'Copied' : 'Copy failed'); });
+        } catch (err) { toast(err.message); }
+      };
+    });
+  }
+
   // ---------- invite links (admin) ----------
 
   function copyText(text) {
@@ -1912,6 +2136,16 @@
       if (needs && !teamSel.value && teams[0]) teamSel.value = String(teams[0].id);
     };
     roleSel.onchange = syncTeam; syncTeam();
+    const emailsBox = document.getElementById('iv_emails');
+    const usesSel = document.getElementById('iv_uses');
+    emailsBox.oninput = () => {
+      const n = emailsBox.value.split(/[\s,;]+/).filter((x) => x.includes('@')).length;
+      if (n > Number(usesSel.value)) {
+        const fit = [...usesSel.options].find((o) => Number(o.value) >= n);
+        if (fit) usesSel.value = fit.value;
+      }
+      document.getElementById('ivGo').textContent = n ? `Create link and email ${n === 1 ? 'it' : `${n} people`}` : 'Create invite link';
+    };
     const statusChip = { active: '<span class="iv-st active">Active</span>', used: '<span class="iv-st">Used up</span>', expired: '<span class="iv-st">Expired</span>', revoked: '<span class="iv-st">Turned off</span>' };
     const load = async () => {
       const box = document.getElementById('inviteList');
@@ -1925,10 +2159,36 @@
           <td data-label="Status">${statusChip[i.status]}</td>
           <td data-label="Used" class="num">${i.uses} of ${i.max_uses}</td>
           <td data-label="Expires">${esc(fullDate(i.expires_at))}</td>
-          <td data-label="Joined" class="small">${i.joined.length ? i.joined.map((j) => esc(j.full_name)).join(', ') : '<span class="muted">nobody yet</span>'}</td>
-          <td class="actions">${i.status === 'active' ? `<button class="btn small" data-copy-invite="${esc(i.url)}">Copy link</button> <button class="btn small danger" data-revoke="${i.id}">Turn off</button>` : ''}</td>
+          <td data-label="Joined" class="small">${i.joined.length ? i.joined.map((j) => esc(j.full_name)).join(', ') : '<span class="muted">nobody yet</span>'}
+            ${i.emailed.length ? `<div class="muted">✉ ${i.emailed.map((e) => `${esc(e.email)}${e.ok ? '' : ' <span class="warn-text">(failed)</span>'}`).join(', ')}</div>` : ''}</td>
+          <td class="actions">${i.status === 'active' ? `<button class="btn small" data-copy-invite="${esc(i.url)}">Copy link</button>${state.me.email_enabled ? ` <button class="btn small" data-email-invite="${i.id}" data-left="${i.max_uses - i.uses}">Email</button>` : ''} <button class="btn small danger" data-revoke="${i.id}">Turn off</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>` : '<p class="muted">No invite links yet.</p>';
       box.querySelectorAll('[data-copy-invite]').forEach((b) => { b.onclick = async () => toast((await copyText(b.dataset.copyInvite)) ? 'Link copied' : 'Copy failed — select the link and copy it'); });
+      box.querySelectorAll('[data-email-invite]').forEach((b) => {
+        b.onclick = () => {
+          const m = modal(`<h2>Email this invite link</h2>
+            <p class="small muted" style="margin-top:0">It has ${b.dataset.left} sign-up${b.dataset.left === '1' ? '' : 's'} left.</p>
+            <form id="ivMail"><div class="field"><label for="ivm_to">To <span class="muted small">(separate addresses with commas)</span></label><textarea id="ivm_to" rows="2" autocapitalize="none" required placeholder="manager@email.com"></textarea></div>
+            <div class="field"><label for="ivm_msg">Personal message <span class="muted small">(optional)</span></label><input id="ivm_msg" maxlength="500"></div>
+            <div id="ivmErr"></div>
+            <div class="row" style="justify-content:flex-end;margin-top:.8rem"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Send</button></div></form>`);
+          m.querySelector('#ivMail').onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = e.target.querySelector('.primary');
+            btn.disabled = true;
+            try {
+              const r = await api(`/invites/${b.dataset.emailInvite}/email`, { method: 'POST', body: { emails: m.querySelector('#ivm_to').value, message: m.querySelector('#ivm_msg').value } });
+              const bad = r.emailed.filter((x) => !x.sent);
+              closeModal();
+              toast(bad.length ? `Sent ${r.emailed.length - bad.length}; failed: ${bad.map((x) => x.email).join(', ')}` : `Emailed to ${r.emailed.map((x) => x.email).join(', ')}`);
+              load();
+            } catch (err) {
+              m.querySelector('#ivmErr').innerHTML = `<div class="alert err small">${esc(err.message)}</div>`;
+              btn.disabled = false;
+            }
+          };
+        };
+      });
       box.querySelectorAll('[data-revoke]').forEach((b) => {
         b.onclick = async () => {
           if (!confirm('Turn this link off? Nobody else will be able to sign up with it. Accounts already created stay.')) return;
@@ -1941,17 +2201,25 @@
       const btn = form.querySelector('button');
       btn.disabled = true;
       try {
+        const emails = document.getElementById('iv_emails').value;
         const r = await api('/invites', { method: 'POST', body: {
           role: roleSel.value, team_id: teamSel.value || null, max_uses: Number(document.getElementById('iv_uses').value),
           expires_days: Number(document.getElementById('iv_days').value), note: document.getElementById('iv_note').value,
+          emails, message: document.getElementById('iv_msg').value,
         } });
+        const sentTo = (r.emailed || []).filter((x) => x.sent).map((x) => x.email);
+        const failed = (r.emailed || []).filter((x) => !x.sent);
         document.getElementById('inviteNew').innerHTML = `<div class="invite-new">
-          <div class="small"><b>New invite link</b> — send it by text or email. Whoever opens it can sign up as a <b>${roleLabel(roleSel.value)}</b>.</div>
+          ${sentTo.length ? `<div class="alert ok small" style="margin-bottom:.5rem">✉ Emailed to ${sentTo.map(esc).join(', ')}</div>` : ''}
+          ${failed.length ? `<div class="alert warn small" style="margin-bottom:.5rem">Didn't go out to ${failed.map((f) => `${esc(f.email)} (${esc(f.error || 'error')})`).join(', ')}. Copy the link and send it another way.</div>` : ''}
+          <div class="small"><b>New invite link</b> — ${sentTo.length ? 'you can also copy it and text it.' : 'send it by text or email.'} Whoever opens it can sign up as a <b>${roleLabel(roleSel.value)}</b>.</div>
           <div class="row" style="margin-top:.4rem;flex-wrap:nowrap"><input id="inviteUrl" readonly value="${esc(r.url)}" style="flex:1;min-width:0"><button type="button" class="btn primary" id="copyInvite">Copy</button></div></div>`;
         const input = document.getElementById('inviteUrl');
         input.onfocus = () => input.select();
         document.getElementById('copyInvite').onclick = async () => toast((await copyText(r.url)) ? 'Link copied' : 'Copy failed — select the link and copy it');
         document.getElementById('iv_note').value = '';
+        document.getElementById('iv_emails').value = '';
+        document.getElementById('iv_msg').value = '';
         load();
       } catch (err) { toast(err.message); } finally { btn.disabled = false; }
     };
@@ -2089,12 +2357,29 @@
         <li>Pick the <b>role</b> and <b>team</b> new people get, how many people can use the link, and when it expires. Tap <b>Create invite link</b>.</li>
         <li>Copy the link and send it by text or email. Each person opens it, enters their name, email, phone, username and password, and is signed straight in — with a welcome email that explains how to enter leads.</li>
         <li>The list shows who joined with each link. <b>Turn off</b> stops a link working; accounts already created stay.</li></ol>
+        <p>To <b>email</b> the link instead, type the addresses in <b>Email it to</b> before creating it (or use <b>Email</b> on a link in the list). Each person gets a “Create my account” button. Email needs to be switched on.</p>
         <p>The role and team always come from the link, not from what someone types. Every sign-up is in the audit log and you get a notification.</p>` });
+      S.push({ id: 'past-sales', title: 'Past sales (admins)', roles: 'admin', body: `
+        <ol><li>Go to <a href="#/team"><b>Admin</b></a> → <b>Past sales</b> and choose a spreadsheet (.xlsx or .csv). In Excel, an old .xls file needs <b>Save As → .xlsx</b> first.</li>
+        <li>Tap <b>Check file</b>. You'll see how many phone numbers and addresses were found. Nothing is saved yet.</li>
+        <li>Tap <b>Add to the block list</b>. From now on, a new lead with any of those phones or addresses gets “This lead is a duplicate and cannot be entered.”</li></ol>
+        <ul><li>Columns named like <i>Phone</i>, <i>Address</i> / <i>Address Line 1</i>, <i>Line 2</i>, <i>City</i>, <i>State</i> and <i>Zip</i> are read automatically. Sheets without a header row (like pay reports) have their street addresses picked out of the cells.</li>
+        <li>Only the phone and address are kept. Past sales never show up in customer lists, search or reports. On the <a href="#/duplicates">Duplicates</a> page they show as <i>Past sale (uploaded list)</i>.</li>
+        <li><b>Remove</b> an upload to stop blocking its phones and addresses.</li></ul>` });
       S.push({ id: 'admin', title: 'Settings (admins)', roles: 'admin', body: `
         <ul><li><b>Automatically assign new leads to dispatch</b> sends each new lead to the least-busy dispatcher.</li>
         <li><b>Entry template</b> sets what <b>Use template</b> puts in the entry box.</li>
         <li><b>Email</b>: set the sender name and reply-to address; <b>Send me a test</b> checks it works. Email needs <code>RESEND_API_KEY</code> in Render.</li>
         <li><b>Backup</b> downloads the whole database; export all referrals as a spreadsheet.</li></ul>` });
+    }
+    if (state.me.payments) {
+      S.push({ id: 'payments', title: 'Payments', roles: 'all', body: `
+        <ol><li>Open <a href="#/payments"><b>Payments</b></a>.</li>
+        <li>Pick <b>Bank account</b>, <b>Bit</b> or <b>Bitcoin wallet</b>, choose your <b>country</b> and enter the account holder's name.</li>
+        <li>For a bank: enter the bank name and either your <b>IBAN</b> (most of Europe, the Middle East and more) or your <b>account number</b>. US accounts also need the 9-digit <b>routing number</b>.</li>
+        <li>Enter your sign-in password and tap <b>Save payout details</b>.</li></ol>
+        <p>Account numbers are encrypted. You only see the last 4 digits; admins can see the full details, and every look is recorded. You get an email each time your details change. If you didn't change them, change your password and tell your admin.</p>
+        ${isAdmin() ? '<p><b>Admins:</b> managers always have the Payments tab. Switch it on for a rep or dispatcher with the <b>Payments tab</b> box under Admin → All users. <b>Show full details</b> on the Payments page reveals what you need to pay someone.</p>' : ''}` });
     }
     S.push({ id: 'faq', title: 'Common questions', roles: 'all', body: `
       <dl class="help-faq">
@@ -2818,6 +3103,7 @@
       if (h === '#/analytics') return await renderAnalytics();
       if (h === '#/audit-logs') return await renderAuditLogs();
       if (h === '#/team') return await renderTeam();
+      if (h === '#/payments') return await renderPayments();
 
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();

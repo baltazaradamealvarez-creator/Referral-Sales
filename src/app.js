@@ -9,6 +9,7 @@ const auth = require('./auth');
 const mail = require('./email');
 const crypto = require('node:crypto');
 const { buildDashboard, WIDGETS } = require('./dashboard');
+const { historyMatch } = require('./history');
 const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -32,7 +33,10 @@ function createApp(db) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', true);
-  app.use(express.json({ limit: '100kb' }));
+  // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
+  const smallJson = express.json({ limit: '100kb' });
+  const uploadJson = express.json({ limit: '15mb' });
+  app.use((req, res, next) => (req.path === '/api/history/import' ? uploadJson : smallJson)(req, res, next));
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
@@ -185,8 +189,10 @@ function createApp(db) {
   }
 
 
-  // Checks against ALL referrals from every team. The caller never tells the rep which lead matched.
-  function findDuplicate(keys, excludeId = 0) {
+  // Checks against ALL referrals from every team, then the uploaded past sales.
+  // The caller never tells the rep which lead matched.
+  // history: which keys to test against past sales ({ phone, address }); edits only test keys that changed.
+  function findDuplicate(keys, excludeId = 0, history = { phone: true, address: true }) {
     let hit;
     if (keys.phone && (hit = db.prepare('SELECT id FROM referrals WHERE phone_key = ? AND id <> ? LIMIT 1').get(keys.phone, excludeId))) {
       return { id: hit.id, on: 'phone' };
@@ -198,6 +204,8 @@ function createApp(db) {
         AND (? = '' OR address_zip = '' OR address_zip = ?) LIMIT 1`).get(keys.address, excludeId, keys.zip, keys.zip))) {
       return { id: hit.id, on: 'address' };
     }
+    const past = historyMatch(db, keys, history);
+    if (past) return { id: null, on: past };
     return null;
   }
 
@@ -385,6 +393,7 @@ function createApp(db) {
       unread, queue, statuses: STATUSES, services: SERVICES,
       email: u.email, phone: u.phone || '', email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig(getSettings()).enabled,
       dashboard_layout: parseLayout(u.dashboard_layout),
+      payments: u.role === 'admin' || u.role === 'manager' || !!u.payments_enabled,
     };
   }));
 
@@ -726,7 +735,7 @@ function createApp(db) {
           lead_priority: body.lead_priority ?? ref.lead_priority,
           est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
         });
-        const d = findDuplicate(lead.keys, ref.id);
+        const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key });
         if (d) return { d, lead };
         db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, zip = ?,
           notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
@@ -1261,7 +1270,7 @@ function createApp(db) {
   app.get('/api/users', wrap((req) => {
     const u = requireRole(req, 'admin', 'manager');
     const rows = db.prepare(`
-      SELECT u.id, u.username, u.full_name, u.email, u.phone, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
+      SELECT u.id, u.username, u.full_name, u.email, u.phone, u.role, u.payments_enabled, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned,
@@ -1432,6 +1441,8 @@ function createApp(db) {
   // ---------- errors & SPA fallback ----------
 
   require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
+  require('./history').mount(app, db, { requireRole, wrap, HttpError, logAudit });
+  require('./payments').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
