@@ -98,21 +98,57 @@ function credentialsBlock(username, password) {
     </table>`;
 }
 
-function welcomeEmail({ fullName, username, password, roleLabel, teamName, invitedBy }, settings) {
+// A short "how to" that goes in every welcome email: how to enter a lead, then role extras.
+function quickStart(role) {
+  const steps = [
+    'Tap <b>New Referral</b>.',
+    'Type or paste the customer’s details in one box, in any order — name, phone, email, address and what they want. For example: <i>Jane Smith 512-555-0142 jane@email.com 123 Main St, Austin TX 78701 wants internet + mobile</i>.',
+    'Check the green ticks under the box and the <b>Services</b> buttons (Internet, TV, Mobile, Voice).',
+    'Tap <b>Send referral</b> (or press Ctrl + Enter).',
+  ];
+  const tips = [
+    'Include at least a <b>phone, email or address</b> — that’s how duplicates are checked.',
+    'If the lead already exists anywhere in the company, you’ll see <i>“This lead is a duplicate and cannot be entered.”</i>',
+    'Follow each lead’s status (New → Passed → Ordered, or DNQ / Cancelled) under <b>My Referrals</b>, and watch the bell for updates.',
+    'Use <b>@name</b> in a lead’s comments to flag something to a manager or dispatcher.',
+    'On your phone, open the link and choose <b>Add to Home Screen</b> so it opens like an app.',
+  ];
+  const extra = {
+    manager: 'As a manager you’ll also see your whole team’s leads, can change statuses on the Board, and can add reps and reset their passwords under <b>My Team</b>.',
+    dispatch: 'As a dispatcher, open <b>My Queue</b> for the leads assigned to you, tap <b>Take it</b> to claim unassigned ones, and record the account number and install date when a customer orders.',
+    admin: 'As an admin you can add teams and users, create invite links, and change settings under <b>Admin</b>.',
+  }[role] || '';
+  const html = `<p style="font-weight:700;margin:22px 0 6px">Entering a lead takes about 30 seconds:</p>
+    <ol style="margin:0 0 12px;padding-left:20px">${steps.map((x) => `<li style="margin:4px 0">${x}</li>`).join('')}</ol>
+    <p style="font-weight:700;margin:16px 0 6px">Good to know</p>
+    <ul style="margin:0 0 12px;padding-left:20px">${tips.map((x) => `<li style="margin:4px 0">${x}</li>`).join('')}</ul>
+    ${extra ? `<p>${extra}</p>` : ''}
+    <p>The <b>Help</b> page in the app (account menu → Help) has the full guide.</p>`;
+  const strip = (x) => x.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&');
+  const text = `ENTERING A LEAD\n${steps.map((x, i) => `${i + 1}. ${strip(x)}`).join('\n')}\n\nGOOD TO KNOW\n${tips.map((x) => `- ${strip(x)}`).join('\n')}\n${extra ? `\n${strip(extra)}\n` : ''}\nThe Help page in the app (account menu → Help) has the full guide.`;
+  return { html, text };
+}
+
+// password is included only when an admin created the account (a temporary one);
+// people who signed up with an invite link chose their own and never get it by email.
+function welcomeEmail({ fullName, username, password, role, roleLabel, teamName, invitedBy, selfSignup }, settings) {
   const { appUrl } = emailConfig(settings);
   const where = teamName ? ` on ${teamName}` : '';
-  const text = `Hi ${fullName},\n\n${invitedBy} set you up on E&O Spectrum Referrals as a ${roleLabel}${where}.\n\n`
-    + `Username: ${username}\nTemporary password: ${password}\n\n${appUrl ? `Sign in: ${appUrl}\n\n` : ''}`
-    + 'You\'ll pick your own password the first time you sign in.\n\n— E&O Spectrum Referrals';
+  const qs = quickStart(role || ({ manager: 'manager', dispatcher: 'dispatch', admin: 'admin' }[roleLabel] || 'rep'));
+  const intro = selfSignup
+    ? `Your account is ready — you're set up as a ${roleLabel}${where}. Sign in any time with your username <b>${esc(username)}</b> and the password you chose.`
+    : `${esc(invitedBy)} set you up on <b>E&amp;O Spectrum Referrals</b> as a ${esc(roleLabel)}${esc(where)}. Here's how to sign in:`;
+  const text = `Hi ${fullName},\n\n${selfSignup ? `Your E&O Spectrum Referrals account is ready — you're set up as a ${roleLabel}${where}.\nUsername: ${username}\n` : `${invitedBy} set you up on E&O Spectrum Referrals as a ${roleLabel}${where}.\n\nUsername: ${username}\nTemporary password: ${password}\nYou'll pick your own password the first time you sign in.\n`}`
+    + `${appUrl ? `\nSign in: ${appUrl}\n` : ''}\n${qs.text}\n\n— E&O Spectrum Referrals`;
   const html = layout({
     greeting: `Hi ${fullName},`,
-    bodyHtml: `<p>${esc(invitedBy)} set you up on <b>E&amp;O Spectrum Referrals</b> as a ${esc(roleLabel)}${esc(where)}. Here's how to sign in:</p>
-      ${credentialsBlock(username, password)}
-      <p>You'll pick your own password the first time you sign in. On your phone, use <b>Add to Home Screen</b> to keep it one tap away.</p>`,
-    button: appUrl && { href: appUrl, label: 'Sign in' },
+    bodyHtml: `<p>${intro}</p>
+      ${password && !selfSignup ? `${credentialsBlock(username, password)}<p>You'll pick your own password the first time you sign in.</p>` : ''}
+      ${qs.html}`,
+    button: appUrl && { href: appUrl, label: 'Open E&O Referrals' },
     footer: 'Didn\'t expect this? You can ignore this email.',
   });
-  return { subject: 'Welcome to E&O Spectrum Referrals', text, html };
+  return { subject: 'Welcome to E&O Spectrum Referrals — here’s how to enter leads', text, html };
 }
 
 function tempPasswordEmail({ fullName, username, password, resetBy }, settings) {
@@ -141,4 +177,4 @@ function resetCodeEmail({ fullName, code, minutes }) {
   return { subject: `${code} is your E&O Referrals reset code`, text, html };
 }
 
-module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };
+module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, quickStart, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };

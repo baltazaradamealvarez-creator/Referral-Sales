@@ -56,7 +56,7 @@ function loadUser(db, req) {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return null;
   const row = db.prepare(`
-    SELECT u.id, u.username, u.full_name, u.role, u.team_id, u.active, u.must_change_password, u.email, u.email_alerts, u.dashboard_layout,
+    SELECT u.id, u.username, u.full_name, u.role, u.team_id, u.active, u.must_change_password, u.email, u.email_alerts, u.dashboard_layout, u.phone,
            t.name AS team_name, s.expires_at
     FROM sessions s JOIN users u ON u.id = s.user_id
     LEFT JOIN teams t ON t.id = u.team_id

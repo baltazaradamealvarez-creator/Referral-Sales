@@ -383,7 +383,7 @@ function createApp(db) {
       id: u.id, username: u.username, full_name: u.full_name, role: u.role,
       team_id: u.team_id, team_name: u.team_name, must_change_password: !!u.must_change_password,
       unread, queue, statuses: STATUSES, services: SERVICES,
-      email: u.email, email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig(getSettings()).enabled,
+      email: u.email, phone: u.phone || '', email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig(getSettings()).enabled,
       dashboard_layout: parseLayout(u.dashboard_layout),
     };
   }));
@@ -392,6 +392,11 @@ function createApp(db) {
     const u = requireUser(req);
     const b = req.body || {};
     if (b.email !== undefined) db.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanEmail(b.email), u.id);
+    if (b.phone !== undefined) {
+      const phone = String(b.phone || '').trim().slice(0, 30);
+      if (phone && phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'That phone number looks too short.');
+      db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(phone, u.id);
+    }
     if (b.email_alerts !== undefined) db.prepare('UPDATE users SET email_alerts = ? WHERE id = ?').run(b.email_alerts ? 1 : 0, u.id);
     if (b.dashboard_layout !== undefined) {
       const layout = b.dashboard_layout === null ? '' : JSON.stringify([...new Set(parseLayout(JSON.stringify(b.dashboard_layout)) || [])]);
@@ -1256,7 +1261,7 @@ function createApp(db) {
   app.get('/api/users', wrap((req) => {
     const u = requireRole(req, 'admin', 'manager');
     const rows = db.prepare(`
-      SELECT u.id, u.username, u.full_name, u.email, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
+      SELECT u.id, u.username, u.full_name, u.email, u.phone, u.role, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned,
@@ -1297,7 +1302,7 @@ function createApp(db) {
     if (req.body.send_welcome && email && mail.emailConfig(settings).enabled) {
       const teamName = teamId != null ? db.prepare('SELECT name FROM teams WHERE id = ?').get(teamId).name : '';
       const w = await mail.sendEmail({ to: email, ...mail.welcomeEmail({
-        fullName, username, password, teamName, invitedBy: actor.full_name,
+        fullName, username, password, teamName, invitedBy: actor.full_name, role,
         roleLabel: { admin: 'admin', manager: 'manager', dispatch: 'dispatcher', rep: 'rep' }[role],
       }, settings) }, settings);
       welcome = w.ok ? { sent: true, to: email } : { sent: false, error: w.error };
@@ -1425,6 +1430,8 @@ function createApp(db) {
   });
 
   // ---------- errors & SPA fallback ----------
+
+  require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

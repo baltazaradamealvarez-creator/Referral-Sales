@@ -122,6 +122,7 @@
     links.push(['#/sales', 'Sales', 'sales', '📈']);
     if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
     if (isAdmin()) links.push(['#/audit-logs', 'Audit Logs', 'audit', '🔒']);
+    links.push(['#/help', 'Help', 'help', '❓']);
     return links;
   }
 
@@ -246,6 +247,7 @@
             <div class="menu-pop" id="menuPop">
               <div class="who"><b>${esc(me.full_name)}</b><div class="small muted">@${esc(me.username)} · ${roleLabel(me.role)}</div></div>
               <a href="#/account">My account</a>
+              <a href="#/help">Help &amp; how-to</a>
               <div class="menu-theme"><span class="small muted">Appearance</span>
                 <div class="seg small-seg">${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-set="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
               <button id="logoutBtn">Sign out</button>
@@ -456,6 +458,7 @@
 
     shell(`
       <div class="narrow stack">
+        ${helpNudge()}
         <form class="card quick" id="quickForm" autocomplete="off">
           <div class="row between"><h1 style="margin:0">New referral</h1>
             ${settings.entry_template.trim() ? '<button type="button" class="btn small" id="tplBtn">📝 Use template</button>' : ''}</div>
@@ -1336,6 +1339,20 @@
           ${security.recent_failed.map((f) => `<tr><td data-label="When">${ago(f.created_at)}</td><td data-label="Tried as"><b>${esc(f.username)}</b>${f.full_name ? ` <span class="muted small">${esc(f.full_name)}</span>` : ''}</td><td data-label="Why">${esc(f.reason)}</td><td data-label="IP" class="small muted">${esc(f.ip)}</td></tr>`).join('')}
           </tbody></table></div></details>` : ''}
       </div>` : ''}
+      ${isAdmin() ? `
+      <div class="card" id="invitesCard">
+        <div class="row between"><h2 style="margin:0">Invite links</h2><span class="small muted">People sign themselves up; you pick their role and team.</span></div>
+        <form class="invite-form" id="inviteForm">
+          <div><label for="iv_role">Role</label><select id="iv_role">${roles.map((r) => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+          <div><label for="iv_team">Team</label><select id="iv_team"><option value="">— none (admin &amp; dispatch only) —</option>${teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+          <div><label for="iv_uses">Can be used</label><select id="iv_uses"><option value="1">Once (one person)</option><option value="5">Up to 5 people</option><option value="10">Up to 10 people</option><option value="25">Up to 25 people</option><option value="100">Up to 100 people</option></select></div>
+          <div><label for="iv_days">Expires after</label><select id="iv_days"><option value="1">1 day</option><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></div>
+          <div class="iv-note"><label for="iv_note">Note <span class="muted small">(optional, only you see it)</span></label><input id="iv_note" maxlength="120" placeholder="e.g. October hires, North Crew"></div>
+          <div class="iv-go"><button class="btn primary">Create invite link</button></div>
+        </form>
+        <div id="inviteNew"></div>
+        <div id="inviteList" class="small muted">Loading invites…</div>
+      </div>` : ''}
       <div class="grid-2">
         <form class="card" id="addUser">
           <h2>Add a ${isAdmin() ? 'user' : 'rep to ' + esc(state.me.team_name || 'your team')}</h2>
@@ -1425,6 +1442,8 @@
       const upd = () => { document.getElementById('roleHelp').textContent = help[roleSel.value]; };
       roleSel.onchange = upd; upd();
     }
+
+    if (isAdmin()) setupInvites(teams);
 
     document.getElementById('addUser').onsubmit = async (e) => {
       e.preventDefault();
@@ -1869,6 +1888,278 @@
         : empty('No activity yet.');
     },
   };
+
+  // ---------- invite links (admin) ----------
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(() => true, () => false);
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return Promise.resolve(ok);
+  }
+
+  function setupInvites(teams) {
+    const form = document.getElementById('inviteForm');
+    const roleSel = document.getElementById('iv_role');
+    const teamSel = document.getElementById('iv_team');
+    const syncTeam = () => {
+      const needs = !['admin', 'dispatch'].includes(roleSel.value);
+      teamSel.required = needs;
+      if (needs && !teamSel.value && teams[0]) teamSel.value = String(teams[0].id);
+    };
+    roleSel.onchange = syncTeam; syncTeam();
+    const statusChip = { active: '<span class="iv-st active">Active</span>', used: '<span class="iv-st">Used up</span>', expired: '<span class="iv-st">Expired</span>', revoked: '<span class="iv-st">Turned off</span>' };
+    const load = async () => {
+      const box = document.getElementById('inviteList');
+      if (!box) return;
+      let list;
+      try { list = await api('/invites'); } catch (err) { box.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+      box.classList.remove('muted');
+      box.innerHTML = list.length ? `<div class="table-wrap"><table class="rtable invites-table"><thead><tr><th>Invite</th><th>Status</th><th class="num">Used</th><th>Expires</th><th>Joined</th><th></th></tr></thead><tbody>
+        ${list.map((i) => `<tr>
+          <td data-label="Invite"><b>${roleLabel(i.role)}</b>${i.team_name ? ` · ${esc(i.team_name)}` : ''}${i.note ? `<div class="small muted">${esc(i.note)}</div>` : ''}<div class="small muted">by ${esc(i.created_by_name || '—')}, ${when(i.created_at)}</div></td>
+          <td data-label="Status">${statusChip[i.status]}</td>
+          <td data-label="Used" class="num">${i.uses} of ${i.max_uses}</td>
+          <td data-label="Expires">${esc(fullDate(i.expires_at))}</td>
+          <td data-label="Joined" class="small">${i.joined.length ? i.joined.map((j) => esc(j.full_name)).join(', ') : '<span class="muted">nobody yet</span>'}</td>
+          <td class="actions">${i.status === 'active' ? `<button class="btn small" data-copy-invite="${esc(i.url)}">Copy link</button> <button class="btn small danger" data-revoke="${i.id}">Turn off</button>` : ''}</td>
+        </tr>`).join('')}</tbody></table></div>` : '<p class="muted">No invite links yet.</p>';
+      box.querySelectorAll('[data-copy-invite]').forEach((b) => { b.onclick = async () => toast((await copyText(b.dataset.copyInvite)) ? 'Link copied' : 'Copy failed — select the link and copy it'); });
+      box.querySelectorAll('[data-revoke]').forEach((b) => {
+        b.onclick = async () => {
+          if (!confirm('Turn this link off? Nobody else will be able to sign up with it. Accounts already created stay.')) return;
+          try { await api(`/invites/${b.dataset.revoke}`, { method: 'DELETE', body: {} }); toast('Invite turned off'); load(); } catch (err) { toast(err.message); }
+        };
+      });
+    };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('button');
+      btn.disabled = true;
+      try {
+        const r = await api('/invites', { method: 'POST', body: {
+          role: roleSel.value, team_id: teamSel.value || null, max_uses: Number(document.getElementById('iv_uses').value),
+          expires_days: Number(document.getElementById('iv_days').value), note: document.getElementById('iv_note').value,
+        } });
+        document.getElementById('inviteNew').innerHTML = `<div class="invite-new">
+          <div class="small"><b>New invite link</b> — send it by text or email. Whoever opens it can sign up as a <b>${roleLabel(roleSel.value)}</b>.</div>
+          <div class="row" style="margin-top:.4rem;flex-wrap:nowrap"><input id="inviteUrl" readonly value="${esc(r.url)}" style="flex:1;min-width:0"><button type="button" class="btn primary" id="copyInvite">Copy</button></div></div>`;
+        const input = document.getElementById('inviteUrl');
+        input.onfocus = () => input.select();
+        document.getElementById('copyInvite').onclick = async () => toast((await copyText(r.url)) ? 'Link copied' : 'Copy failed — select the link and copy it');
+        document.getElementById('iv_note').value = '';
+        load();
+      } catch (err) { toast(err.message); } finally { btn.disabled = false; }
+    };
+    load();
+  }
+
+  // ---------- join with an invite link (public) ----------
+
+  async function renderJoin(token) {
+    $app.innerHTML = '<div class="login-wrap"><div class="card login"><p class="muted">Checking your invite…</p></div></div>';
+    let info;
+    try {
+      const res = await fetch(`/api/join/${encodeURIComponent(token)}`, { credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'This invite link isn’t valid.');
+      info = data;
+    } catch (err) {
+      $app.innerHTML = `<div class="login-wrap"><div class="card login">${lockup()}
+        <h1>Invite link problem</h1><div class="alert warn">${esc(err.message)}</div>
+        <p style="margin-top:1rem"><a class="btn" href="#/">Go to sign in</a></p></div></div>`;
+      return;
+    }
+    const signedIn = state.me ? `<div class="alert warn small">You're signed in as <b>${esc(state.me.full_name)}</b>. <button type="button" class="link-btn small" id="joinSignOut">Sign out</button> to create a new account.</div>` : '';
+    $app.innerHTML = `
+      <div class="login-wrap"><form class="card login join" id="joinForm" autocomplete="on">
+        ${lockup()}
+        <h1>Create your account</h1>
+        <p class="muted" style="margin-top:0">${esc(info.invited_by)} invited you to join as a <b>${esc(info.role_label)}</b>${info.team_name ? ` on <b>${esc(info.team_name)}</b>` : ''}.</p>
+        ${signedIn}
+        <div class="field"><label for="j_name">Full name</label><input id="j_name" autocomplete="name" required maxlength="100"></div>
+        <div class="field"><label for="j_email">Email</label><input id="j_email" type="email" autocomplete="email" autocapitalize="none" required>
+          <p class="small muted" style="margin:.25rem 0 0">For your welcome email, alerts and password resets.</p></div>
+        <div class="field"><label for="j_phone">Mobile phone <span class="muted small">(optional)</span></label><input id="j_phone" type="tel" autocomplete="tel" inputmode="tel"></div>
+        <div class="field"><label for="j_user">Username</label><input id="j_user" autocomplete="username" autocapitalize="none" required pattern="[A-Za-z0-9._-]{2,40}">
+          <p class="small muted" style="margin:.25rem 0 0">What you'll sign in with. Letters, numbers, dots, dashes.</p></div>
+        <div class="field"><label for="j_pw">Password <span class="muted small">(8+ characters)</span></label><input id="j_pw" type="password" autocomplete="new-password" minlength="8" required></div>
+        <div class="field"><label for="j_pw2">Type it again</label><input id="j_pw2" type="password" autocomplete="new-password" minlength="8" required></div>
+        <div id="joinErr" style="margin-top:.8rem" role="alert"></div>
+        <button class="btn primary big" style="margin-top:1rem">Create account</button>
+        <p class="small muted" style="margin:.8rem 0 0;text-align:center">Already have an account? <a href="#/">Sign in</a></p>
+      </form></div>`;
+    const nameIn = document.getElementById('j_name');
+    const userIn = document.getElementById('j_user');
+    let userTouched = false;
+    userIn.oninput = () => { userTouched = true; };
+    nameIn.oninput = () => {
+      if (userTouched) return;
+      const parts = nameIn.value.trim().toLowerCase().normalize('NFD').replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean);
+      userIn.value = parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1]}` : (parts[0] || '');
+    };
+    nameIn.focus();
+    const out = document.getElementById('joinSignOut');
+    if (out) out.onclick = async () => { await api('/logout', { method: 'POST', body: {} }).catch(() => {}); state.me = null; renderJoin(token); };
+    document.getElementById('joinForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('joinErr');
+      const pw = document.getElementById('j_pw').value;
+      if (pw !== document.getElementById('j_pw2').value) { err.innerHTML = '<div class="alert err">The two passwords don\'t match.</div>'; return; }
+      const btn = e.target.querySelector('.btn.primary');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/join/${encodeURIComponent(token)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ full_name: nameIn.value, email: document.getElementById('j_email').value, phone: document.getElementById('j_phone').value,
+            username: userIn.value, password: pw, password_confirm: document.getElementById('j_pw2').value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+        state.welcome = { emailed: data.welcome && data.welcome.sent };
+        await refreshMe();
+        location.hash = '#/help?welcome=1';
+      } catch (ex) {
+        err.innerHTML = `<div class="alert err">${esc(ex.message)}</div>`;
+      } finally { btn.disabled = false; }
+    };
+  }
+
+  // ---------- help / how-to guide ----------
+
+  function helpSections() {
+    const r = role();
+    const S = [];
+    S.push({ id: 'start', title: 'Getting started', roles: 'all', body: `
+      <p>Sign in with your <b>username</b> (or email) and password. On your phone, open the app and choose <b>Share → Add to Home Screen</b> (iPhone) or <b>⋮ → Add to Home screen</b> (Android) so it opens like an app.</p>
+      <ul><li><b>Search</b> the top bar (or press <kbd>/</kbd>) to find a customer by name, phone, email, address or account number.</li>
+      <li>The <b>bell</b> shows mentions, status changes and assignments. Add your email under <a href="#/account">My account</a> to get them by email too.</li>
+      <li>The <b>account menu</b> has My account, Help, light or dark appearance, and Sign out.</li>
+      <li><b>Forgot your password?</b> Use the link on the sign-in page to get a 6-digit code by email.</li></ul>` });
+    S.push({ id: 'enter', title: 'Entering a lead', roles: 'all', body: `
+      <p>It takes about 30 seconds — the app reads what you type.</p>
+      <ol><li>Tap <a href="#/new"><b>New Referral</b></a>.</li>
+      <li>Type or paste the customer's details into the box, in any order. For example:<div class="help-example">Jane Smith 512-555-0142 jane@email.com<br>123 Main St, Austin TX 78701<br>wants internet + mobile, call after 5</div></li>
+      <li>Check the green ticks under the box (Name, Phone, Email, Address) and the <b>Services</b> buttons: Internet, TV, Mobile, Voice.</li>
+      <li>Tap <b>Send referral</b>, or press <kbd>Ctrl</kbd> + <kbd>Enter</kbd>.</li></ol>
+      <ul><li>You need at least a <b>phone, email or address</b> — that's how duplicates are checked. A name is optional.</li>
+      <li>Something read wrong? Tap <b>Something wrong? Fix the details</b> before sending.</li>
+      <li><b>Use template</b> fills the box with labels (Name:, Phone:, Address:…) if your admin set one up.</li>
+      <li>Anything extra — current provider, best time to call, a second number — is kept in the notes. Your original text is always saved.</li></ul>` });
+    S.push({ id: 'dupes', title: 'Duplicates', roles: 'all', body: `
+      <p>If the phone, email or address matches <b>any</b> referral already in the system, from any team, you'll see <i>“This lead is a duplicate and cannot be entered.”</i> You won't be shown whose lead it is.</p>
+      <p>Addresses match even when written differently (“123 N. Main St #4b” = “123 North Main Street Apt 4B”), but a different apartment is a different address. ${seesAll() ? 'The <a href="#/duplicates">Duplicates</a> page shows every blocked attempt and the lead it matched.' : 'If you think it\'s wrong, ask your manager — dispatch and admins can see what it matched.'}</p>` });
+    S.push({ id: 'track', title: 'Following your leads', roles: 'all', body: `
+      <table class="help-table"><thead><tr><th>Status</th><th>What it means</th></tr></thead><tbody>
+      <tr><td>${pill('New')}</td><td>Just entered; not worked yet.</td></tr>
+      <tr><td>${pill('Passed')}</td><td>Checked and qualified; being worked.</td></tr>
+      <tr><td>${pill('DNQ')}</td><td>Did not qualify.</td></tr>
+      <tr><td>${pill('Ordered')}</td><td>The customer ordered. An account number and install date may be added.</td></tr>
+      <tr><td>${pill('Cancelled')}</td><td>Cancelled, before or after ordering.</td></tr></tbody></table>
+      <ul><li><a href="#/referrals"><b>${worksLeads() ? 'Customers' : 'My Referrals'}</b></a> lists your leads — search, filter by status or service, and tap one to open it.</li>
+      <li>On a lead's page, use <b>Comments</b> when something doesn't add up. Type <b>@</b> to tag a manager or dispatcher; they get notified.</li>
+      <li>${r === 'rep' ? 'You can edit your own lead while it is still New. Status changes are made by your manager or dispatch.' : 'Edit details, change the status and add the account number and install date from the lead\'s page.'}</li></ul>` });
+    S.push({ id: 'board', title: 'The Board', roles: 'all', body: `
+      <p><a href="#/board"><b>Board</b></a> shows leads as cards in a column per status. ${worksLeads() ? 'Drag a card to another column to change its status; tap a card to open it.' : 'Tap a card to open it. (Your manager or dispatch moves cards between columns.)'} Pick how far back closed leads go with <b>Closed: last 7/30/90 days</b>.</p>` });
+    if (r === 'dispatch' || r === 'admin') {
+      S.push({ id: 'dispatch', title: 'Dispatch', roles: 'dispatch', body: `
+        <ol><li>Open <a href="#/referrals?scope=assigned"><b>My Queue</b></a> for the open leads assigned to you.</li>
+        <li>Tap <b>Take it</b> on the Board or a lead's page to claim an unassigned lead, or pick a dispatcher under <b>Dispatch</b> to hand it on.</li>
+        <li>When the customer orders, set the status to <b>Ordered</b> and add the <b>account / order #</b> and <b>install date</b>.</li></ol>` });
+    }
+    if (worksLeads()) {
+      S.push({ id: 'enter-for', title: 'Entering a lead for someone else', roles: 'lead', body: `
+        <p>On <a href="#/new">New Referral</a>, choose the rep under <b>Entering this for someone else?</b> They get the credit and a notification.</p>` });
+    }
+    S.push({ id: 'numbers', title: 'Dashboard and reports', roles: 'all', body: `
+      <p><a href="#/home"><b>Home</b></a> shows your numbers for the chosen period, compared with the period before. ${worksLeads() ? 'Use <b>Customize</b> to add, remove and reorder widgets. ' : ''}<a href="#/analytics"><b>Analytics</b></a> has reports you can filter, save, export and schedule by email.</p>` });
+    if (managesUsers()) {
+      S.push({ id: 'team', title: isAdmin() ? 'Managing users and teams' : 'Managing your team', roles: 'manager', body: `
+        <ul><li><a href="#/team"><b>${isAdmin() ? 'Admin' : 'My Team'}</b></a> → <b>Add a ${isAdmin() ? 'user' : 'rep'}</b>: enter their name, username and email. Tick <b>Email them a welcome</b> and they get their sign-in details and a quick guide.</li>
+        <li><b>Reset password</b> gives them a temporary one (emailed if you like). <b>Deactivate</b> blocks sign-in but keeps their sales.</li>
+        <li><b>History</b> shows every sign-in; the table shows when each person was last active.</li></ul>` });
+    }
+    if (isAdmin()) {
+      S.push({ id: 'invites', title: 'Invite links (admins)', roles: 'admin', body: `
+        <ol><li>Go to <a href="#/team"><b>Admin</b></a> → <b>Invite links</b>.</li>
+        <li>Pick the <b>role</b> and <b>team</b> new people get, how many people can use the link, and when it expires. Tap <b>Create invite link</b>.</li>
+        <li>Copy the link and send it by text or email. Each person opens it, enters their name, email, phone, username and password, and is signed straight in — with a welcome email that explains how to enter leads.</li>
+        <li>The list shows who joined with each link. <b>Turn off</b> stops a link working; accounts already created stay.</li></ol>
+        <p>The role and team always come from the link, not from what someone types. Every sign-up is in the audit log and you get a notification.</p>` });
+      S.push({ id: 'admin', title: 'Settings (admins)', roles: 'admin', body: `
+        <ul><li><b>Automatically assign new leads to dispatch</b> sends each new lead to the least-busy dispatcher.</li>
+        <li><b>Entry template</b> sets what <b>Use template</b> puts in the entry box.</li>
+        <li><b>Email</b>: set the sender name and reply-to address; <b>Send me a test</b> checks it works. Email needs <code>RESEND_API_KEY</code> in Render.</li>
+        <li><b>Backup</b> downloads the whole database; export all referrals as a spreadsheet.</li></ul>` });
+    }
+    S.push({ id: 'faq', title: 'Common questions', roles: 'all', body: `
+      <dl class="help-faq">
+      <dt>I don't get the reset code.</dt><dd>Check spam and that your email is under <a href="#/account">My account</a>. Otherwise ask your manager to reset your password.</dd>
+      <dt>Can I change a lead after sending it?</dt><dd>${r === 'rep' ? 'Yes, while it is still New: open it and tap <b>Edit details</b>. After that, add a comment and tag your manager.' : 'Yes — open it and tap <b>Edit details</b>.'}</dd>
+      <dt>Why can't I see a colleague's leads?</dt><dd>Reps see their own leads, managers their team's, dispatch and admins everyone's.</dd>
+      <dt>The screen looks out of date.</dt><dd>Refresh (<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>R</kbd>), or close and reopen the app on your phone.</dd></dl>` });
+    return S;
+  }
+
+  async function renderHelp() {
+    const sections = helpSections();
+    const params = query();
+    const welcome = params.welcome === '1';
+    const hi = state.welcome; state.welcome = null;
+    shell(`
+      <div class="help-page">
+        ${welcome ? `<div class="card help-welcome"><h1 style="margin:0 0 .3rem">Welcome, ${esc(state.me.full_name.split(' ')[0])}! 🎉</h1>
+          <p style="margin:0">Your account is ready.${hi && hi.emailed ? ' We also emailed you a copy of the quick guide.' : ''} Here's how everything works — start with <b>Entering a lead</b>.</p>
+          <p style="margin:.7rem 0 0"><a class="btn primary" href="#/new">Enter your first lead</a></p></div>` : ''}
+        <div class="help-layout">
+          <nav class="card help-toc" aria-label="Help topics">
+            <input id="helpSearch" type="search" placeholder="Search help…" aria-label="Search help">
+            <ol>${sections.map((x) => `<li><a href="#/help?topic=${x.id}" data-toc="${x.id}">${esc(x.title)}</a></li>`).join('')}</ol>
+          </nav>
+          <div class="help-body">
+            ${welcome ? '' : '<h1 style="margin:0 0 .8rem">Help</h1>'}
+            ${sections.map((x) => `<section class="card help-sec" id="help-${x.id}" data-sec="${x.id}"><h2>${esc(x.title)}</h2>${x.body}</section>`).join('')}
+            <p class="muted small" id="helpNone" hidden>Nothing matches. Try another word, or ask your manager.</p>
+          </div>
+        </div>
+      </div>`);
+    try { localStorage.setItem('eo-help-seen', '1'); } catch { /* private mode */ }
+    if (params.topic) document.getElementById(`help-${params.topic}`)?.scrollIntoView({ block: 'start' });
+    else window.scrollTo(0, 0);
+    document.querySelectorAll('[data-toc]').forEach((a) => {
+      a.onclick = (e) => { e.preventDefault(); document.getElementById(`help-${a.dataset.toc}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    });
+    const search = document.getElementById('helpSearch');
+    search.oninput = () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      document.querySelectorAll('[data-sec]').forEach((sec) => {
+        const hit = !q || sec.textContent.toLowerCase().includes(q);
+        sec.hidden = !hit;
+        if (hit) shown++;
+      });
+      document.getElementById('helpNone').hidden = shown > 0;
+    };
+  }
+
+  // A one-time nudge for people who haven't opened Help yet.
+  function helpNudge() {
+    let seen = false;
+    try { seen = localStorage.getItem('eo-help-seen') === '1'; } catch { seen = true; }
+    if (seen) return '';
+    return `<div class="help-nudge"><span>New here? The <b>2-minute guide</b> shows how to enter leads and follow them.</span>
+      <a class="btn small" href="#/help">Open the guide</a><button class="link-btn small" id="helpNudgeX" aria-label="Dismiss">Not now</button></div>`;
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'helpNudgeX') {
+      try { localStorage.setItem('eo-help-seen', '1'); } catch { /* ignore */ }
+      e.target.closest('.help-nudge')?.remove();
+    }
+  });
 
   // ---------- my account ----------
 
@@ -2512,6 +2803,8 @@
 
 
   async function route_() {
+    const join = location.hash.match(/^#\/join\/([A-Za-z0-9_-]{10,64})$/);
+    if (join) return renderJoin(join[1]);
     if (!state.me) return renderLogin();
     if (state.me.must_change_password) return renderChangePassword(true);
     const h = location.hash.split('?')[0] || defaultRoute();
@@ -2528,6 +2821,7 @@
 
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();
+      if (h === '#/help') return await renderHelp();
       if (h === '#/home') return await renderHome();
       if (h === '#/new') return await renderNew();
       location.replace(defaultRoute());
