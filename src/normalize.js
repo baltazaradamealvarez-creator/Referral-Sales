@@ -143,63 +143,100 @@ function addressKey(address) {
   return { street, zip };
 }
 
-// Pulls name / phone / email / address out of whatever the rep typed or pasted.
-// Accepts labelled lines ("Name: Jane") or plain text in any order.
+const SERVICE_PATTERNS = [
+  ['Internet', /\b(internet|wi-?fi|broadband)\b/i],
+  ['TV', /\b(tv|television|cable|spectrum tv)\b/i],
+  ['Mobile', /\b(mobile|cell\s?phones?|wireless|phone lines?)\b/i],
+  ['Voice', /\b(voice|home\s?phone|landline)\b/i],
+];
+
+function detectServices(text) {
+  return SERVICE_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
+}
+
+// "<number> <1-4 words> <street suffix>", anywhere in a line.
+const SUFFIX_WORDS = Object.keys(STREET_SUFFIXES).join('|');
+const ADDRESS_IN_LINE_RE = new RegExp(`\\b\\d{1,6}[A-Za-z]?\\s+(?:[A-Za-z0-9'.-]+\\s+){1,4}?(?:${SUFFIX_WORDS})\\b\\.?`, 'i');
+
+const LABELS = {
+  name: 'name', customer: 'name', 'customer name': 'name', client: 'name',
+  phone: 'phone', cell: 'phone', mobile: 'phone', tel: 'phone', number: 'phone', 'phone number': 'phone', 'cell phone': 'phone',
+  email: 'email', 'e-mail': 'email', 'email address': 'email',
+  address: 'address', addr: 'address', 'service address': 'address', street: 'address',
+  city: 'city', state: 'state', zip: 'zip', 'zip code': 'zip', zipcode: 'zip', apt: 'unit', unit: 'unit',
+  note: 'notes', notes: 'notes', comment: 'notes', comments: 'notes',
+  services: 'services', service: 'services', products: 'services', 'interested in': 'services', package: 'services',
+};
+const LABEL_RE = new RegExp(`^\\s*(${Object.keys(LABELS).sort((a, b) => b.length - a.length).join('|')})\\s*[:=\\-]\\s*(.*)$`, 'i');
+
+// Pulls name / phone / email / address / services out of whatever the rep typed or pasted.
+// Accepts labelled lines ("Name: Jane") or plain text in any order. Nothing is thrown away:
+// anything it can't place ends up in notes.
 function parseLeadText(text) {
-  const result = { name: '', phone: '', email: '', address: '', notes: '' };
+  const result = { name: '', phone: '', email: '', address: '', notes: '', services: [] };
   if (!text) return result;
-  let remaining = String(text).replace(/\r/g, '');
 
   const labelled = {};
-  const labelRe = /^\s*(name|customer|phone|cell|mobile|tel|number|email|e-mail|address|addr|notes?|comments?)\s*[:\-]\s*(.+)$/gim;
-  remaining = remaining.replace(labelRe, (_, label, value) => {
-    const key = label.toLowerCase();
-    const map = {
-      name: 'name', customer: 'name',
-      phone: 'phone', cell: 'phone', mobile: 'phone', tel: 'phone', number: 'phone',
-      email: 'email', 'e-mail': 'email',
-      address: 'address', addr: 'address',
-      note: 'notes', notes: 'notes', comment: 'notes', comments: 'notes',
-    };
-    labelled[map[key]] = value.trim();
-    return '';
-  });
-  Object.assign(result, labelled);
+  const extraNotes = [];
+  const bodyLines = [];
+  for (const line of String(text).replace(/\r/g, '').split('\n')) {
+    const m = line.match(LABEL_RE);
+    if (m && m[2].trim()) {
+      const key = LABELS[m[1].toLowerCase()];
+      labelled[key] = labelled[key] ? `${labelled[key]} ${m[2].trim()}` : m[2].trim();
+    } else if (!m) {
+      bodyLines.push(line);
+    }
+  }
+  let remaining = bodyLines.join('\n');
+  for (const k of ['name', 'phone', 'email', 'address', 'notes']) if (labelled[k]) result[k] = labelled[k];
+  const addrParts = [labelled.unit && `Apt ${labelled.unit.replace(/^(apt|unit|#)\s*/i, '')}`, labelled.city,
+    [labelled.state, labelled.zip].filter(Boolean).join(' ')].filter(Boolean);
+  if (addrParts.length) result.address = [result.address, ...addrParts].filter(Boolean).join(', ');
 
   if (!result.email) {
     const m = remaining.match(EMAIL_RE);
     if (m) {
       result.email = m[0];
-      remaining = remaining.replace(m[0], ' ');
+      remaining = remaining.replace(m[0], '  ');
     }
   }
-  if (!result.phone) {
-    const m = remaining.match(PHONE_RE);
-    if (m) {
-      result.phone = m[0].trim();
-      remaining = remaining.replace(m[0], ' ');
-    }
+  // First phone is the contact number; any others are kept as alternates.
+  const phoneRe = new RegExp(PHONE_RE.source, 'g');
+  for (const m of remaining.match(phoneRe) || []) {
+    if (!result.phone) result.phone = m.trim();
+    else extraNotes.push(`Alt phone: ${m.trim()}`);
+    remaining = remaining.replace(m, '  ');
   }
 
-  const lines = remaining
+  let lines = remaining
     .split(/\n|\s{2,}|\t|\|/)
-    .map((l) => l.replace(/^[\s,;\-]+|[\s,;\-]+$/g, ''))
-    .filter(Boolean);
+    .map((l) => l.replace(/^[\s,;\-/]+|[\s,;\-/]+$/g, ''))
+    .filter((l) => /[A-Za-z0-9]/.test(l));
+
+  // Pass 1: an address with a street suffix anywhere in a line ("... at 123 Main St Austin TX 78701 ...")
+  if (!result.address) {
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(ADDRESS_IN_LINE_RE);
+      if (!m) continue;
+      const rest = lines[i].slice(m.index);
+      const withZip = rest.match(/^.*?\b\d{5}(?:-\d{4})?\b/);
+      result.address = (withZip ? withZip[0] : rest).trim();
+      const before = lines[i].slice(0, m.index).replace(/\s+(at|@|address|lives at)\s*$/i, '');
+      const after = withZip ? rest.slice(withZip[0].length) : '';
+      lines.splice(i, 1, ...[before, after].map((x) => x.replace(/^[\s,;\-]+|[\s,;\-]+$/g, '')).filter(Boolean));
+      break;
+    }
+  }
 
   const leftovers = [];
   for (const line of lines) {
-    if (!result.address && /^\d+\s+\S+/.test(line)) {
+    if (!result.address && /^\d+\s+[A-Za-z]/.test(line)) {
       result.address = line;
       continue;
     }
-    // Address that follows a name on the same line: "Jane Doe 123 Main St ..."
-    const inline = line.match(/^([A-Za-z][A-Za-z.'\- ]*?)\s+(\d+\s+[A-Za-z].*)$/);
-    if (!result.address && inline && !result.name) {
-      result.name = inline[1].trim();
-      result.address = inline[2].trim();
-      continue;
-    }
-    if (!result.name && /^[A-Za-z][A-Za-z.'\- ]+$/.test(line) && line.split(/\s+/).length <= 5) {
+    if (!result.name && /^[A-Za-z][A-Za-z.'\- ]+$/.test(line) && line.split(/\s+/).length <= 4
+      && !detectServices(line).length) {
       result.name = line;
       continue;
     }
@@ -211,10 +248,12 @@ function parseLeadText(text) {
     leftovers.push(line);
   }
 
-  if (leftovers.length) {
-    result.notes = [result.notes, leftovers.join(' ')].filter(Boolean).join(' — ');
+  result.notes = [result.notes, ...extraNotes, ...leftovers].filter(Boolean).join('\n');
+  result.services = detectServices([labelled.services || '', result.notes].join(' '));
+  for (const k of ['name', 'phone', 'email', 'address', 'notes']) result[k] = String(result[k] || '').trim();
+  if (result.name && result.name === result.name.toLowerCase()) {
+    result.name = result.name.replace(/(^|[\s'-])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
   }
-  for (const k of Object.keys(result)) result[k] = String(result[k] || '').trim();
   return result;
 }
 
@@ -224,4 +263,5 @@ module.exports = {
   formatPhone,
   addressKey,
   parseLeadText,
+  detectServices,
 };

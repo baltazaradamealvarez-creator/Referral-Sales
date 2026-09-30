@@ -207,8 +207,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .lead-list .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lead-list .who span { display: block; font-size: .85rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.filters { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: .6rem; margin-bottom: 1rem; }
-@media (max-width: 700px) { .filters { grid-template-columns: 1fr 1fr; } .filters .q { grid-column: 1 / -1; } }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; margin-bottom: 1rem; }
+.filters .q { grid-column: 1 / -1; }
+@media (min-width: 900px) { .filters .q { grid-column: span 2; } }
 
 .seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; flex-wrap: wrap; }
 .seg button {
@@ -275,4 +276,63 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 
 .grid-2 > .card { margin-top: 0; }
-.grid-2 + .card, .card + .grid-2 { margin-top: 1rem; }
+.grid-2 + .card, .card + .grid-2, .grid-2 + .grid-2 { margin-top: 1rem; }
+
+/* ---------- wide pages (board) ---------- */
+main.wide, .topbar-inner.wide { max-width: 1600px; }
+.topbar-inner { max-width: 1400px; }
+.nav .count {
+  display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--brand); color: var(--brand-ink);
+  font-size: .72rem; line-height: 20px; text-align: center; margin-left: 2px;
+}
+
+/* ---------- services / tags / toggles ---------- */
+.tag {
+  display: inline-block; font-size: .72rem; font-weight: 650; padding: .05rem .45rem; border-radius: 6px;
+  background: var(--surface-2); color: var(--muted); margin: .15rem .25rem 0 0;
+}
+.toggle {
+  font: inherit; font-size: .85rem; font-weight: 600; padding: .3rem .75rem; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+}
+.toggle.on { background: var(--brand-soft); border-color: var(--brand); color: var(--brand); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+label.check { display: flex; gap: .5rem; align-items: flex-start; font-weight: 600; }
+label.check input { width: auto; margin-top: .2rem; }
+
+details.raw { margin-top: .8rem; }
+details.raw summary { cursor: pointer; color: var(--muted); }
+details.raw pre {
+  white-space: pre-wrap; word-break: break-word; background: var(--surface-2); padding: .7rem; border-radius: 8px;
+  font: .85rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin: .5rem 0 0;
+}
+
+/* ---------- kanban ---------- */
+.board-filters { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.board-filters input { flex: 1 1 220px; width: auto; }
+.board-filters select { flex: 0 1 220px; width: auto; }
+.board {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(215px, 1fr); gap: .8rem;
+  overflow-x: auto; padding-bottom: .6rem; align-items: start;
+}
+.col {
+  background: var(--surface-2); border-radius: var(--radius); padding: .6rem; min-height: 60vh;
+  border: 2px dashed transparent; transition: border-color .1s;
+}
+.col.over { border-color: var(--brand); background: var(--brand-soft); }
+.col header { display: flex; justify-content: space-between; align-items: center; padding: .2rem .2rem .6rem; }
+.cards { display: flex; flex-direction: column; gap: .5rem; }
+.cards .empty { text-align: center; padding: 1rem 0; }
+.kcard {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .6rem .7rem;
+  box-shadow: var(--shadow); cursor: pointer; display: flex; flex-direction: column; gap: .2rem;
+}
+.kcard[draggable="true"] { cursor: grab; }
+.kcard:hover { border-color: var(--brand); }
+.kcard.dragging { opacity: .45; }
+.kname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kaddr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmeta { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; color: var(--muted); }
+.kmeta .assignee { color: var(--text); font-weight: 600; }
+.kmeta .take { margin-left: auto; padding: .15rem .55rem; font-size: .78rem; }
+@media (max-width: 700px) { .board { grid-auto-columns: 82%; scroll-snap-type: x mandatory; } .col { scroll-snap-align: start; } }
