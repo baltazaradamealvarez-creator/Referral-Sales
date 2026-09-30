@@ -21,6 +21,14 @@ A simple web app for entering Spectrum sales referrals, dispatching them and tra
 - **Account activity (admins):** who's active today or this week, who has never signed in, passwords over 90 days old, and failed sign-ins. Each user has a last-active time, a password-changed date and a **History** of sign-ins (time, device, IP). **Sign out other devices** is under My account.
 - **Invite links (admins).** On the Admin page, create a sign-up link that sets the new person's **role and team**, how many people can use it (1 to 100) and when it expires (1 to 30 days). Send it by text or email. People open it, enter their name, email, phone, username and password, and are signed straight in. The role and team always come from the link, never from the form. You get a notification, each sign-up is in the audit log, and you can turn a link off at any time.
 - **Help & how-to** in the app (account menu → Help, or the Help tab): a role-aware guide to entering leads, duplicates, statuses, the Board, dispatch and admin tasks, with search. New users see a one-time "New here?" prompt pointing to it.
+- **Speed to lead.** Each new lead shows ⏱ *Waiting* until dispatch, a manager or an admin first works it (status change, comment, or taking it), then ⚡ *Answered in …*.
+  - After 15 minutes the assigned dispatcher is alerted, or every dispatcher if the lead is unassigned.
+  - After 60 minutes admins are alerted. Optionally, the lead moves to the least-busy other dispatcher.
+  - Only working hours count. The minutes, working hours, time zone and hand-off are set under Admin → Settings.
+  - A **Speed to lead** widget shows average and typical response times, the share answered on time, and who's waiting now.
+- **Call-back reminders.** On any lead, tap *In 1 hour*, *Tomorrow 10am* or pick a time. A notification arrives when it's time to call, and upcoming call-backs show in a **My call-backs** widget.
+- **The app on your phone.** It installs to the home screen like an app. **Phone notifications** (Account → Profile) push every alert to the phone, even when the app is closed; on iPhone the app must first be added to the Home Screen. With no signal the app still opens: new leads are saved on the phone and sent automatically when the connection is back, and anything that couldn't be sent (a duplicate, say) is listed.
+- **Address suggestions.** As an address is typed, the app suggests the full address with city and zip, and offers "Did you mean …?" for the address read from the entry box. It uses the free Photon service (OpenStreetMap), or Geoapify if `GEOAPIFY_API_KEY` is set. If the lookup is down, entry is never blocked.
 - **Tidy navigation.** The top bar holds only the day-to-day pages. Everything else is in one hub with sub-tabs across the top:
   - **Admin** (admins): Users & teams, Invite links, Past sales, Payments, Affiliate, Duplicates, Audit log, Settings, My account.
   - **Account** (everyone else): Profile, Payments and Affiliate when switched on, and Help.
@@ -70,6 +78,8 @@ Environment variables:
 | `ADMIN_USERNAME` | `admin` | First admin's username (used only when the database is empty) |
 | `ADMIN_PASSWORD` | random | First admin's password (used only when the database is empty) |
 | `RESEND_API_KEY` | — | Turns on email alerts. Leave it unset to keep email off. |
+| `GEOAPIFY_API_KEY` | — | Optional. Uses Geoapify for address suggestions (free tier: 3,000 a day) instead of the free Photon service. |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | generated | Optional. Keys for phone notifications; if unset they're generated once and kept in the database. |
 | `PAYMENT_ENCRYPTION_KEY` | a key file next to the database | Encrypts payout details. Set any long random string and keep it safe: changing or losing it makes saved payout details unreadable, so people would need to re-enter them. Without it, a `payment.key` file is created next to the database on the disk. Keep a copy, because it isn't in the backup download. |
 | `EMAIL_FROM` | `onboarding@resend.dev` | Sending address, on a domain you verified in Resend. The display name ("E&O Referrals") is added automatically and can be changed on the Admin page. |
 | `APP_URL` | Render's own URL | The site address used for links in emails. Only needed with a custom domain. |

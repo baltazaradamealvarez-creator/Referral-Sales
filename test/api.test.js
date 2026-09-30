@@ -328,7 +328,7 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
 
 
   assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
@@ -395,7 +395,7 @@ test('email alerts go through Resend only when configured and wanted', async (t)
   assert.equal(sent[0].auth, 'Bearer re_test_123');
   assert.deepEqual(sent[0].to, ['rep.a@example.com']);
   assert.equal(sent[0].from, 'E&O <alerts@example.com>');
-  assert.match(sent[0].subject, /marked Gil G as Ordered/);
+  assert.match(sent[0].subject, /Your lead Gil G was Ordered/);
   assert.match(sent[0].html, new RegExp(`https://eo.example.com/#/r/${ref.id}`));
 
   // Users who turned alerts off, or have no email, get nothing.
