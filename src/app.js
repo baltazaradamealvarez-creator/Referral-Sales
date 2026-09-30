@@ -21,6 +21,10 @@ const DEFAULT_SETTINGS = {
   email_from_name: '',
   email_reply_to: '',
   entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nServices: \nNotes: ',
+  affiliate_enabled: '0',
+  affiliate_levels: '15,5',
+  affiliate_commission: '0',
+  affiliate_approval: '1',
 };
 
 class HttpError extends Error {
@@ -32,6 +36,7 @@ class HttpError extends Error {
 
 function createApp(db) {
   const app = express();
+  let affiliates = null; // set once the affiliate routes are mounted, below
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
@@ -382,6 +387,9 @@ function createApp(db) {
 
     const user = db.prepare('SELECT * FROM users WHERE username = ? OR (email <> \'\' AND email = lower(?)) ORDER BY username = ? DESC LIMIT 1')
       .get(username, username, username);
+    if (user && user.approval_pending && auth.verifyPassword(password, user.password_hash)) {
+      throw new HttpError(403, 'Your account is waiting for an admin to approve it. You\'ll get an email when it\'s ready.');
+    }
     if (!user || !user.active || !auth.verifyPassword(password, user.password_hash)) {
       attempts.push(now);
       loginAttempts.set(key, attempts);
@@ -415,6 +423,7 @@ function createApp(db) {
       email: u.email, phone: u.phone || '', email_alerts: !!u.email_alerts, email_enabled: mail.emailConfig(getSettings()).enabled,
       dashboard_layout: parseLayout(u.dashboard_layout),
       payments: u.role === 'admin' || u.role === 'manager' || !!u.payments_enabled,
+      affiliate: getSettings().affiliate_enabled === '1',
     };
   }));
 
@@ -710,7 +719,19 @@ function createApp(db) {
         db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, ?, ?)')
           .run(ref.id, u.id, ref.status, body.status);
         if (ref.created_by !== u.id) notify(ref.created_by, ref.id, `${u.full_name} marked ${leadLabel(ref)} as ${body.status}`);
+        // An order with no commission yet gets the default one (Affiliate settings).
+        const def = Number(getSettings().affiliate_commission) || 0;
+        if (body.status === 'Ordered' && ref.commission == null && def > 0 && body.commission === undefined) {
+          db.prepare('UPDATE referrals SET commission = ? WHERE id = ?').run(def, ref.id);
+        }
       }
+      if (body.commission !== undefined) {
+        if (!isAdmin(u)) throw new HttpError(403, 'Only an admin can set the commission.');
+        const c = body.commission === null || body.commission === '' ? null : Number(body.commission);
+        if (c != null && (!Number.isFinite(c) || c < 0 || c > 100000)) throw new HttpError(400, 'The commission must be a dollar amount.');
+        db.prepare(`UPDATE referrals SET commission = ?, ${touch} WHERE id = ?`).run(c == null ? null : Math.round(c * 100) / 100, ref.id);
+      }
+      if (body.status !== undefined || body.commission !== undefined) affiliates.syncEarnings(ref.id);
       if (body.account_number !== undefined) {
         if (!manage) throw new HttpError(403, 'Only a manager or dispatch can set the account number.');
         db.prepare(`UPDATE referrals SET account_number = ?, ${touch} WHERE id = ?`).run(String(body.account_number).trim().slice(0, 100), ref.id);
@@ -781,7 +802,10 @@ function createApp(db) {
   app.delete('/api/referrals/:id', wrap((req) => {
     requireRole(req, 'admin');
     const ref = getReferral(req.params.id);
-    db.prepare('DELETE FROM referrals WHERE id = ?').run(ref.id);
+    tx(db, () => {
+      affiliates.syncEarnings(ref.id, { removed: true });
+      db.prepare('DELETE FROM referrals WHERE id = ?').run(ref.id);
+    });
     return { ok: true };
   }));
 
@@ -1467,6 +1491,7 @@ function createApp(db) {
   require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
   require('./history').mount(app, db, { requireRole, wrap, HttpError, logAudit });
   require('./payments').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify });
+  affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

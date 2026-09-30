@@ -326,6 +326,41 @@ const MIGRATIONS = [
   ALTER TABLE referrals ADD COLUMN lead_flags TEXT NOT NULL DEFAULT '';
   CREATE INDEX idx_referrals_score ON referrals(lead_score);
   `,
+  // v10: affiliate program (sponsors, per-sale commission, earnings ledger, payouts)
+  `
+  ALTER TABLE users ADD COLUMN sponsor_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE users ADD COLUMN affiliate_code TEXT;
+  ALTER TABLE users ADD COLUMN approval_pending INTEGER NOT NULL DEFAULT 0;
+  CREATE UNIQUE INDEX idx_users_affiliate_code ON users(affiliate_code);
+  CREATE INDEX idx_users_sponsor ON users(sponsor_id);
+  ALTER TABLE referrals ADD COLUMN commission REAL;
+
+  CREATE TABLE affiliate_payouts (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount REAL NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  -- One row per change: a sale adds, a cancellation or lower commission adds a negative row.
+  -- What someone is owed = the sum of their rows not yet in a payout.
+  CREATE TABLE affiliate_earnings (
+    id INTEGER PRIMARY KEY,
+    referral_id INTEGER REFERENCES referrals(id) ON DELETE SET NULL,
+    earner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    seller_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    level INTEGER NOT NULL,
+    pct REAL NOT NULL,
+    base REAL NOT NULL,
+    amount REAL NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'sale' CHECK (kind IN ('sale','adjustment','reversal')),
+    payout_id INTEGER REFERENCES affiliate_payouts(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_aff_earner ON affiliate_earnings(earner_id, payout_id);
+  CREATE INDEX idx_aff_referral ON affiliate_earnings(referral_id);
+  `,
 ];
 
 

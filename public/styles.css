@@ -928,3 +928,11 @@ kbd { font: .8em ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px sol
 .score-meter .sm-fakes { color: var(--danger); font-weight: 600; list-style: none; padding-left: 0; }
 .score-tips { margin: .8rem 0 0; padding: .55rem .75rem; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: .86rem; }
 .rtable td.c-status { white-space: nowrap; }
+
+/* affiliate */
+.aff-hero { display: grid; grid-template-columns: 1.3fr 1fr; gap: 1.2rem; align-items: center;
+  background: linear-gradient(135deg, var(--brand-soft), var(--surface) 70%); }
+.aff-link input { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; }
+.aff-stats { margin-top: 1rem; }
+.aff-settings .field { margin-top: .8rem; max-width: 420px; }
+@media (max-width: 760px) { .aff-hero { grid-template-columns: 1fr; } }
