@@ -910,3 +910,21 @@ kbd { font: .8em ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px sol
 .help-nudge span { flex: 1 1 220px; }
 @media (max-width: 860px) { .help-layout { grid-template-columns: 1fr; } .help-toc { position: static; } }
 @media print { .topbar, .tabbar, .help-toc, .help-nudge { display: none !important; } .help-layout { display: block; } }
+
+/* lead quality score */
+.score-badge { display: inline-block; min-width: 2.6em; text-align: center; padding: .08rem .4rem; border-radius: 999px; font-size: .75rem; font-weight: 700;
+  color: var(--sc); background: color-mix(in srgb, var(--sc) 14%, transparent); border: 1px solid color-mix(in srgb, var(--sc) 35%, transparent); white-space: nowrap; vertical-align: middle; }
+.score-badge.big { font-size: .9rem; padding: .15rem .6rem; }
+.score-meter { margin: .2rem 0 .7rem; padding: .6rem .75rem; border-radius: 10px; background: var(--surface-2); }
+.score-meter .sm-top { display: flex; align-items: baseline; gap: .5rem; }
+.score-meter .sm-label { font-size: .82rem; color: var(--muted); font-weight: 600; }
+.score-meter .sm-pct { color: var(--sc); font-size: 1.1rem; margin-left: auto; }
+.score-meter .sm-band { color: var(--sc); font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.score-meter .sm-bar { height: 8px; border-radius: 99px; margin-top: .35rem; overflow: hidden;
+  background: linear-gradient(90deg, hsl(0 72% 42% / .18), hsl(60 72% 42% / .18), hsl(125 72% 42% / .18)); }
+.score-meter .sm-bar span { display: block; height: 100%; border-radius: 99px; background: var(--sc); transition: width .25s ease, background-color .25s; }
+.score-meter ul { margin: .45rem 0 0; padding-left: 1.1rem; font-size: .84rem; }
+.score-meter .sm-tips { color: var(--muted); }
+.score-meter .sm-fakes { color: var(--danger); font-weight: 600; list-style: none; padding-left: 0; }
+.score-tips { margin: .8rem 0 0; padding: .55rem .75rem; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: .86rem; }
+.rtable td.c-status { white-space: nowrap; }
