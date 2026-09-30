@@ -67,6 +67,7 @@
   const worksLeads = () => seesAll() || isManager();
   const managesUsers = () => isAdmin() || isManager();
   const canMoveCard = (r) => seesAll() || (isManager() && r.team_id === state.me.team_id);
+  const defaultRoute = () => (role() === 'rep' ? '#/new' : '#/home');
   const roleLabel = (r) => ({ admin: 'Admin', manager: 'Manager', dispatch: 'Dispatch', rep: 'Rep' }[r] || r);
 
   function highlightMentions(text) {
@@ -93,15 +94,18 @@
   // ---------- shell ----------
 
   function navLinks() {
-    const links = [['#/new', 'New Referral']];
-    if (seesAll()) links.push([`#/referrals?scope=assigned`, 'My Queue', 'queue']);
-    links.push(['#/board', 'Board']);
-    links.push(['#/referrals', worksLeads() ? 'Customers' : 'My Referrals']);
-    if (seesAll()) links.push(['#/duplicates', 'Duplicates']);
-    links.push(['#/sales', 'Sales']);
-    if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team']);
+    const links = [['#/home', 'Home', 'home', '🏠']];
+    links.push(['#/new', 'New Referral', 'new', '➕']);
+    if (seesAll()) links.push(['#/referrals?scope=assigned', 'My Queue', 'queue', '🎧']);
+    links.push(['#/board', 'Board', 'board', '🗂']);
+    links.push(['#/referrals', worksLeads() ? 'Customers' : 'My Referrals', 'customers', '👥']);
+    if (seesAll()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
+    links.push(['#/sales', 'Sales', 'sales', '📈']);
+    if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
     return links;
   }
+  // The phone tab bar shows these four; the rest go under "More".
+  const TAB_KEYS = ['home', 'new', 'board', 'customers'];
 
   function isActive(href) {
     const [route, qs] = location.hash.split('?');
@@ -111,49 +115,198 @@
       if (hQs) return route === hRoute && scope === 'assigned';
       return (route === hRoute && scope !== 'assigned') || route.startsWith('#/r/');
     }
-    return (route || '#/new') === hRoute;
+    return (route || defaultRoute()) === hRoute;
   }
 
   function badges() {
     const me = state.me;
     const bell = document.getElementById('bellBtn');
     if (bell) bell.innerHTML = `🔔${me.unread ? `<span class="badge">${me.unread > 99 ? '99+' : me.unread}</span>` : ''}`;
-    const q = document.querySelector('[data-nav="queue"]');
-    if (q) q.innerHTML = `My Queue${me.queue ? ` <span class="count">${me.queue}</span>` : ''}`;
+    document.querySelectorAll('[data-nav="queue"]').forEach((q) => {
+      const label = q.querySelector('.lbl') || q;
+      label.innerHTML = `My Queue${me.queue ? ` <span class="count">${me.queue}</span>` : ''}`;
+    });
   }
+
+  // ---------- theme (light / dark / follow the device) ----------
+
+  const THEME_KEY = 'eo-theme';
+  function getTheme() {
+    try { return localStorage.getItem(THEME_KEY) || 'system'; } catch { return 'system'; }
+  }
+  function applyTheme(t) {
+    const root = document.documentElement;
+    if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
+    const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#171e28' : '#0b63ce');
+  }
+  function setTheme(t) {
+    try { localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+    applyTheme(t);
+    if (location.hash.startsWith('#/home')) route_(); // charts re-read their colors
+  }
+  applyTheme(getTheme());
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (getTheme() === 'system') applyTheme('system'); });
+
+  // ---------- modal dialog ----------
+
+  function modal(html, { wide } = {}) {
+    closeModal();
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-back';
+    wrap.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
+    wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) closeModal(); });
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add('open'));
+    const first = wrap.querySelector('input, select, textarea, button:not([data-close])');
+    if (first) first.focus();
+    return wrap.querySelector('.modal');
+  }
+  function closeModal() { document.querySelectorAll('.modal-back').forEach((m) => m.remove()); }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeMenus(); } });
+
+  // ---------- tooltips for charts (any element with data-tip) ----------
+
+  const tip = document.createElement('div');
+  tip.id = 'tip';
+  tip.setAttribute('role', 'tooltip');
+  document.body.appendChild(tip);
+  function showTip(html, x, y) {
+    tip.innerHTML = html;
+    tip.classList.add('show');
+    const r = tip.getBoundingClientRect();
+    let left = x + 14;
+    let top = y + 14;
+    if (left + r.width > innerWidth - 8) left = x - r.width - 14;
+    if (top + r.height > innerHeight - 8) top = y - r.height - 14;
+    tip.style.left = `${Math.max(8, left)}px`;
+    tip.style.top = `${Math.max(8, top)}px`;
+  }
+  function hideTip() { tip.classList.remove('show'); }
+  document.addEventListener('mousemove', (e) => {
+    const el = e.target.closest?.('[data-tip]');
+    if (el) showTip(el.dataset.tip, e.clientX, e.clientY);
+    else if (!e.target.closest?.('.chart-hit')) hideTip();
+  });
+  document.addEventListener('touchstart', (e) => {
+    const el = e.target.closest?.('[data-tip]');
+    if (el) { const t = e.touches[0]; showTip(el.dataset.tip, t.clientX, t.clientY); } else hideTip();
+  }, { passive: true });
+
+  // ---------- shell ----------
+
+  function closeMenus() {
+    document.querySelectorAll('.menu-pop.open, .sheet.open, .search-results.open').forEach((m) => m.classList.remove('open'));
+    document.querySelector('.topbar')?.classList.remove('searching');
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.menu') && !e.target.closest('.search') && !e.target.closest('.sheet') && !e.target.closest('[data-more]')) closeMenus();
+  });
 
   function shell(content, opts = {}) {
     const me = state.me;
+    const links = navLinks();
+    const theme = getTheme();
+    const tabs = links.filter((l) => TAB_KEYS.includes(l[2]));
+    const more = links.filter((l) => !TAB_KEYS.includes(l[2]));
     $app.innerHTML = `
       <header class="topbar"><div class="topbar-inner ${opts.wide ? 'wide' : ''}">
-        <a class="brand" href="#/new"><span class="logo">E&amp;O</span><span>E&amp;O Spectrum Referrals<small>${esc(me.team_name || (seesAll() ? 'All teams' : ''))}</small></span></a>
-        <nav class="nav">${navLinks().map(([h, l, key]) => `<a href="${h}" ${key ? `data-nav="${key}"` : ''} class="${isActive(h) ? 'active' : ''}">${l}</a>`).join('')}</nav>
+        <a class="brand" href="#/home"><span class="logo">E&amp;O</span><span class="brand-text">E&amp;O Spectrum Referrals<small>${esc(me.team_name || (seesAll() ? 'All teams' : ''))}</small></span></a>
+        <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
+        <div class="search">
+          <button class="icon-btn search-toggle" id="searchToggle" aria-label="Search">🔍</button>
+          <input id="gsearch" type="search" placeholder="Search customers…  /" autocomplete="off" aria-label="Search customers">
+          <div class="search-results" id="gresults"></div>
+        </div>
         <div class="top-actions">
           <a class="icon-btn" id="bellBtn" href="#/notifications" title="Notifications" aria-label="Notifications"></a>
           <div class="menu">
-            <button class="icon-btn" id="menuBtn" aria-label="Account">👤</button>
-            ${state.menuOpen ? `<div class="menu-pop">
+            <button class="icon-btn" id="menuBtn" aria-label="Account" aria-haspopup="true">👤</button>
+            <div class="menu-pop" id="menuPop">
               <div class="who"><b>${esc(me.full_name)}</b><div class="small muted">@${esc(me.username)} · ${roleLabel(me.role)}</div></div>
               <a href="#/account">My account</a>
-              <button id="changePwBtn">Change password</button>
+              <div class="menu-theme"><span class="small muted">Appearance</span>
+                <div class="seg small-seg">${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-set="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
               <button id="logoutBtn">Sign out</button>
-            </div>` : ''}
+            </div>
           </div>
         </div>
       </div></header>
-      <main class="${opts.wide ? 'wide' : ''}">${content}</main>`;
+      <main class="${opts.wide ? 'wide' : ''}">${content}</main>
+      <nav class="tabbar" aria-label="Main">
+        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
+        <button data-more class="${more.some(([h]) => isActive(h)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
+      </nav>
+      <div class="sheet" id="moreSheet">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}"><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
+        <a href="#/account"><span class="ti">👤</span><span>My account</span></a></div>`;
     badges();
-    document.getElementById('menuBtn').onclick = (e) => { e.stopPropagation(); state.menuOpen = !state.menuOpen; route_(); };
-    if (state.menuOpen) {
-      document.getElementById('logoutBtn').onclick = async () => {
-        await api('/logout', { method: 'POST', body: {} }).catch(() => {});
-        state.me = null; state.menuOpen = false; peopleCache = null;
-        renderLogin();
-      };
-      document.getElementById('changePwBtn').onclick = () => { state.menuOpen = false; renderChangePassword(false); };
-    }
+
+    const pop = document.getElementById('menuPop');
+    document.getElementById('menuBtn').onclick = () => { const open = !pop.classList.contains('open'); closeMenus(); pop.classList.toggle('open', open); };
+    pop.querySelectorAll('[data-theme-set]').forEach((b) => {
+      b.onclick = () => { setTheme(b.dataset.themeSet); pop.querySelectorAll('[data-theme-set]').forEach((x) => x.classList.toggle('on', x === b)); };
+    });
+    document.getElementById('logoutBtn').onclick = async () => {
+      await api('/logout', { method: 'POST', body: {} }).catch(() => {});
+      state.me = null; peopleCache = null;
+      renderLogin();
+    };
+    const sheet = document.getElementById('moreSheet');
+    document.querySelector('[data-more]').onclick = () => { const open = !sheet.classList.contains('open'); closeMenus(); sheet.classList.toggle('open', open); };
+    setupSearch();
   }
-  document.addEventListener('click', () => { if (state.menuOpen) { state.menuOpen = false; route_(); } });
+
+  // ---------- global search ----------
+
+  function setupSearch() {
+    const input = document.getElementById('gsearch');
+    const box = document.getElementById('gresults');
+    const bar = document.querySelector('.topbar');
+    let sel = -1;
+    let items = [];
+    document.getElementById('searchToggle').onclick = () => { bar.classList.add('searching'); input.focus(); };
+    const draw = (data) => {
+      const q = input.value.trim();
+      items = [
+        ...data.referrals.map((r) => ({ href: `#/r/${r.id}`, html: `<b>${esc(leadName(r))}</b> ${pill(r.status)}<div class="small muted">${esc([r.phone, r.email, r.address].filter(Boolean).join(' · '))}</div><div class="small muted">${esc(r.created_by_name)}${r.team_name ? ` · ${esc(r.team_name)}` : ''}</div>` })),
+        ...data.users.map((u) => ({ href: `#/referrals?scope=${seesAll() ? 'all' : 'team'}&user_id=${u.id}`, html: `👤 <b>${esc(u.full_name)}</b> <span class="small muted">@${esc(u.username)} · ${roleLabel(u.role)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</span>` })),
+      ];
+      items.push({ href: `#/referrals?q=${encodeURIComponent(q)}`, html: `<span class="muted">See all results for “${esc(q)}” →</span>` });
+      sel = -1;
+      box.innerHTML = (data.referrals.length || data.users.length ? '' : '<div class="sr-empty muted small">No customers match.</div>')
+        + items.map((it, i) => `<a href="${it.href}" data-i="${i}">${it.html}</a>`).join('');
+      box.classList.add('open');
+    };
+    const run = debounce(async () => {
+      const q = input.value.trim();
+      if (q.length < 2) { box.classList.remove('open'); return; }
+      try { draw(await api('/search?q=' + encodeURIComponent(q))); } catch { /* ignore */ }
+    }, 180);
+    input.addEventListener('input', run);
+    input.addEventListener('focus', () => { if (input.value.trim().length >= 2) run(); });
+    input.addEventListener('keydown', (e) => {
+      const links = [...box.querySelectorAll('a')];
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        sel = e.key === 'ArrowDown' ? Math.min(links.length - 1, sel + 1) : Math.max(0, sel - 1);
+        links.forEach((a, i) => a.classList.toggle('on', i === sel));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const target = links[sel >= 0 ? sel : 0];
+        if (target) location.hash = target.getAttribute('href').slice(1);
+        input.blur(); closeMenus();
+      }
+    });
+    box.addEventListener('click', () => { closeMenus(); input.value = ''; });
+  }
+  document.addEventListener('keydown', (e) => {
+    const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '');
+    if (e.key === '/' && !typing && document.getElementById('gsearch')) {
+      e.preventDefault();
+      document.querySelector('.topbar')?.classList.add('searching');
+      document.getElementById('gsearch').focus();
+    }
+  });
 
   async function refreshMe() {
     state.me = await api('/me');
@@ -172,8 +325,9 @@
         <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
         <div id="loginErr" style="margin-top:.8rem"></div>
         <button class="btn primary big" style="margin-top:1rem">Sign in</button>
-        <p class="small muted" style="margin-bottom:0">Forgot your password? Ask your manager to reset it.</p>
+        <p style="margin:.9rem 0 0;text-align:center"><button type="button" class="link-btn small" id="forgotBtn">Forgot your password?</button></p>
       </form></div>`;
+    document.getElementById('forgotBtn').onclick = () => renderForgot(document.getElementById('u').value);
     document.getElementById('u').focus();
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -182,10 +336,61 @@
         peopleCache = null;
         await refreshMe();
         if (state.me.must_change_password) return renderChangePassword(true);
-        if (!location.hash || location.hash === '#/') location.hash = '#/new';
+        if (!location.hash || location.hash === '#/') location.hash = defaultRoute();
         route_();
       } catch (err) {
         document.getElementById('loginErr').innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
+      }
+    };
+  }
+
+  // Step 1: ask for a code. Step 2: enter it with a new password.
+  function renderForgot(prefill = '', step = 1, note = '') {
+    $app.innerHTML = `
+      <div class="login-wrap"><form class="card login" id="fpForm">
+        <div class="logo">E&amp;O</div>
+        <h1>${step === 1 ? 'Reset your password' : 'Check your email'}</h1>
+        ${step === 1 ? `
+          <p class="muted" style="margin-top:0">Enter your username or email. If your account has an email address, we'll send you a 6-digit code.</p>
+          <div class="field"><label for="fpLogin">Username or email</label><input id="fpLogin" autocomplete="username" autocapitalize="none" value="${esc(prefill)}" required></div>`
+        : `
+          <p class="muted" style="margin-top:0">${note || 'If that account has an email address, a code is on its way. It expires in 15 minutes.'}</p>
+          <div class="field"><label for="fpCode">6-digit code</label><input id="fpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required style="font-size:1.4rem;letter-spacing:.3em"></div>
+          <div class="field"><label for="fpNew">New password <span class="muted small">(8+ characters)</span></label><input id="fpNew" type="password" autocomplete="new-password" minlength="8" required></div>`}
+        <div id="fpErr" style="margin-top:.8rem"></div>
+        <button class="btn primary big" style="margin-top:1rem">${step === 1 ? 'Send me a code' : 'Reset password & sign in'}</button>
+        <p style="margin:.9rem 0 0;text-align:center" class="small">
+          ${step === 2 ? '<button type="button" class="link-btn small" id="fpAgain">Send a new code</button> · ' : ''}
+          <button type="button" class="link-btn small" id="fpBack">Back to sign in</button></p>
+      </form></div>`;
+    const err = (m) => { document.getElementById('fpErr').innerHTML = `<div class="alert err">${esc(m)}</div>`; };
+    document.getElementById('fpBack').onclick = () => renderLogin();
+    const again = document.getElementById('fpAgain');
+    if (again) again.onclick = () => renderForgot(prefill, 1);
+    document.getElementById('fpForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('.btn.primary');
+      btn.disabled = true;
+      try {
+        if (step === 1) {
+          const login = document.getElementById('fpLogin').value.trim();
+          const r = await api('/password/forgot', { method: 'POST', body: { login } });
+          if (!r.email_enabled) {
+            document.getElementById('fpErr').innerHTML = '<div class="alert warn">Email isn\'t set up for this app yet. Ask your manager or an admin to reset your password.</div>';
+            return;
+          }
+          renderForgot(login, 2);
+        } else {
+          await api('/password/reset', { method: 'POST', body: { login: prefill, code: document.getElementById('fpCode').value, password: document.getElementById('fpNew').value } });
+          await refreshMe();
+          toast('Password reset. Welcome back!');
+          location.hash = defaultRoute();
+          route_();
+        }
+      } catch (ex) {
+        err(ex.message);
+      } finally {
+        btn.disabled = false;
       }
     };
   }
@@ -215,7 +420,7 @@
         await api('/me/password', { method: 'POST', body: { current: form.cur.value, next: form.nw.value } });
         await refreshMe();
         toast('Password saved');
-        location.hash = '#/new';
+        location.hash = defaultRoute();
         route_();
       } catch (ex) {
         err.innerHTML = `<div class="alert err">${esc(ex.message)}</div>`;
@@ -398,8 +603,8 @@
           ${seesAll() ? `<select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
           ${seesAll() && scope === 'all' ? `<select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
         </div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Customer</th><th class="hide-sm">Contact</th><th class="hide-sm">Address</th>${worksLeads() ? '<th class="hide-sm">Rep</th>' : ''}${worksLeads() ? '<th class="hide-sm">Dispatch</th>' : ''}<th>Status</th><th class="hide-sm">Entered</th></tr></thead>
+        <div class="table-wrap"><table class="rtable leads-table">
+          <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Rep</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
           <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table></div>
         <p class="small muted" id="count"></p>
@@ -434,13 +639,13 @@
       if (!tbody) return;
       tbody.innerHTML = rows.length ? rows.map((r) => `
         <tr class="click" data-id="${r.id}">
-          <td><b>${esc(leadName(r))}</b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
-          <td class="hide-sm">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
-          <td class="hide-sm small">${esc(r.address)}</td>
-          ${worksLeads() ? `<td class="hide-sm small">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
-          ${worksLeads() ? `<td class="hide-sm small">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
-          <td>${pill(r.status)}</td>
-          <td class="hide-sm small muted">${when(r.created_at)}</td>
+          <td class="c-main"><b>${esc(leadName(r))}</b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
+          <td class="c-contact" data-label="Contact">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
+          <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
+          ${worksLeads() ? `<td class="small" data-label="Rep">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
+          ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
+          <td class="c-status">${pill(r.status)}</td>
+          <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
         </tr>`).join('') : '<tr><td colspan="7" class="muted">No referrals match.</td></tr>';
       document.getElementById('count').textContent = `${rows.length}${rows.length === 500 ? '+' : ''} referral${rows.length === 1 ? '' : 's'}`;
       bindLeadItems(tbody);
@@ -759,7 +964,7 @@
   // ---------- duplicates log ----------
 
   async function renderDuplicates() {
-    if (!seesAll()) { location.hash = '#/new'; return; }
+    if (!seesAll()) { location.hash = defaultRoute(); return; }
     const rows = await api('/duplicates');
     shell(`
       <div class="card">
@@ -849,29 +1054,80 @@
 
   // ---------- team / users ----------
 
+  // Small in-app prompt (replaces window.prompt). Resolves to the value, or null if cancelled.
+  function askModal({ title, label, value = '', type = 'text', hint = '', ok = 'Save' }) {
+    return new Promise((resolve) => {
+      const m = modal(`<form><h2>${esc(title)}</h2>
+        <div class="field"><label for="askIn">${esc(label)}</label><input id="askIn" type="${type}" value="${esc(value)}"></div>
+        ${hint ? `<p class="small muted">${hint}</p>` : ''}
+        <div class="row" style="justify-content:flex-end;margin-top:1rem"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">${esc(ok)}</button></div></form>`);
+      const input = m.querySelector('#askIn');
+      input.select();
+      m.querySelector('form').onsubmit = (e) => { e.preventDefault(); const v = input.value; closeModal(); resolve(v); };
+      m.parentElement.addEventListener('click', (e) => { if (e.target === m.parentElement || e.target.closest('[data-close]')) resolve(null); });
+    });
+  }
+
+  const ago = (iso) => (iso ? `<span title="${esc(fullDate(iso))}">${when(iso)}</span>` : '<span class="muted">never</span>');
+  const daysSince = (iso) => (iso ? (Date.now() - parseDate(iso)) / 86400000 : Infinity);
+  function browserName(ua) {
+    const b = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+    const os = /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+    return os ? `${b} on ${os}` : b;
+  }
+
   async function renderTeam() {
-    if (!managesUsers()) { location.hash = '#/new'; return; }
-    const [users, teams, settings] = await Promise.all([api('/users'), api('/teams'), isAdmin() ? api('/settings') : Promise.resolve(null)]);
+    if (!managesUsers()) { location.hash = defaultRoute(); return; }
+    const [users, teams, settings, security, emailCfg] = await Promise.all([
+      api('/users'), api('/teams'),
+      isAdmin() ? api('/settings') : Promise.resolve(null),
+      isAdmin() ? api('/admin/security') : Promise.resolve(null),
+      isAdmin() ? api('/admin/email') : Promise.resolve(null),
+    ]);
+    const emailOn = state.me.email_enabled;
     const flash = state.flash; state.flash = null;
     const roles = ['rep', 'manager', 'dispatch', 'admin'];
+    const q = query();
+    const filter = q.show || 'active';
+    const shown = users.filter((u) => (filter === 'all' ? true : filter === 'inactive' ? !u.active : u.active));
 
     shell(`
-      ${flash ? `<div class="card" style="border-color:var(--ok)"><div class="alert ok" style="margin-bottom:.6rem">${esc(flash.title)}</div>
-        <p style="margin:0 0 .4rem">Give <b>${esc(flash.username)}</b> this temporary password. They'll pick their own when they sign in:</p>
-        <span class="secret">${esc(flash.password)}</span> <button class="btn small" id="copyPw">Copy</button></div>` : ''}
+      ${flash ? `<div class="card flash">
+        <div class="alert ok" style="margin-bottom:.6rem">${esc(flash.title)}</div>
+        ${flash.emailed ? `<p style="margin:0">✉ We emailed the sign-in details to <b>${esc(flash.emailed)}</b>.</p>`
+          : `${flash.emailError ? `<div class="alert warn small" style="margin-bottom:.6rem">The email didn't go out: ${esc(flash.emailError)}</div>` : ''}
+            <p style="margin:0 0 .4rem">Give <b>${esc(flash.username)}</b> this temporary password. They'll pick their own when they sign in:</p>
+            <span class="secret">${esc(flash.password)}</span> <button class="btn small" id="copyPw">Copy</button>`}</div>` : ''}
+      ${isAdmin() ? `
+      <div class="card">
+        <div class="row between"><h2 style="margin:0">Account activity</h2><span class="small muted">Signed-in = used the app in that window</span></div>
+        <div class="stats sec-stats" style="margin-top:.8rem">
+          <div class="stat"><div class="n">${security.active_today}<span class="of">/${security.users}</span></div><div class="l">Active today</div></div>
+          <div class="stat"><div class="n">${security.active_7d}</div><div class="l">Active this week</div></div>
+          <div class="stat"><div class="n">${security.never_signed_in}</div><div class="l">Never signed in</div></div>
+          <div class="stat"><div class="n">${security.inactive_30d}</div><div class="l">Away 30+ days</div></div>
+          <div class="stat"><div class="n">${security.old_passwords}</div><div class="l">Password 90+ days old</div></div>
+          <div class="stat ${security.failed_24h >= 5 ? 'warn' : ''}"><div class="n">${security.failed_24h}</div><div class="l">Failed sign-ins (24h)</div></div>
+        </div>
+        ${security.recent_failed.length ? `<details style="margin-top:.8rem"><summary class="small">Recent failed sign-ins</summary>
+          <div class="table-wrap"><table class="rtable"><thead><tr><th>When</th><th>Tried as</th><th>Why</th><th>IP</th></tr></thead><tbody>
+          ${security.recent_failed.map((f) => `<tr><td data-label="When">${ago(f.created_at)}</td><td data-label="Tried as"><b>${esc(f.username)}</b>${f.full_name ? ` <span class="muted small">${esc(f.full_name)}</span>` : ''}</td><td data-label="Why">${esc(f.reason)}</td><td data-label="IP" class="small muted">${esc(f.ip)}</td></tr>`).join('')}
+          </tbody></table></div></details>` : ''}
+      </div>` : ''}
       <div class="grid-2">
         <form class="card" id="addUser">
           <h2>Add a ${isAdmin() ? 'user' : 'rep to ' + esc(state.me.team_name || 'your team')}</h2>
           <div class="field"><label for="au_name">Full name</label><input id="au_name" name="full_name" required></div>
           <div class="field"><label for="au_user">Username</label><input id="au_user" name="username" autocapitalize="none" placeholder="e.g. jsmith" required></div>
-          <div class="field"><label for="au_email">Email <span class="muted small">(optional, for alerts)</span></label><input id="au_email" name="email" type="email" autocapitalize="none"></div>
+          <div class="field"><label for="au_email">Email</label><input id="au_email" name="email" type="email" autocapitalize="none" placeholder="for alerts, welcome email and password resets"></div>
           ${isAdmin() ? `
             <div class="field"><label for="au_role">Role</label><select id="au_role" name="role">${roles.map((r) => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select>
               <p class="small muted" style="margin:.3rem 0 0" id="roleHelp"></p></div>
             <div class="field"><label for="au_team">Team</label><select id="au_team" name="team_id"><option value="">— none (admin & dispatch only) —</option>${teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>` : ''}
+          <label class="check" style="margin-top:.9rem"><input type="checkbox" id="au_welcome" ${emailOn ? 'checked' : 'disabled'}> Email them a welcome with their sign-in details</label>
+          ${emailOn ? '' : '<p class="small muted" style="margin:.2rem 0 0">Available once email is switched on.</p>'}
           <div id="addErr" style="margin-top:.6rem"></div>
           <button class="btn primary" style="margin-top:.8rem">Add user</button>
-          <p class="small muted" style="margin-bottom:0">A temporary password is created for them.</p>
         </form>
         ${isAdmin() ? `
         <div class="card">
@@ -879,7 +1135,7 @@
           <ul class="lead-list">${teams.map((t) => `<li style="cursor:default"><div class="who"><b>${esc(t.name)}</b><span>${t.members} active member${t.members === 1 ? '' : 's'}</span></div><button class="btn small" data-rename="${t.id}" data-name="${esc(t.name)}">Rename</button></li>`).join('') || '<li class="muted">No teams yet — add one below.</li>'}</ul>
           <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
         </div>` : `
-        <div class="card"><h2>Tips</h2><p class="muted small">Reps sign in with the username and temporary password you give them.<br>If someone forgets their password, hit <b>Reset password</b> and give them the new one.<br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
+        <div class="card"><h2>Tips</h2><p class="muted small">Add each rep's email so they get a welcome email, alerts, and can reset their own password with an emailed code.<br><br>If someone is locked out, hit <b>Reset password</b>. You can email them the new temporary password or read it to them.<br><br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
       </div>
       ${isAdmin() ? `
       <div class="grid-2">
@@ -892,67 +1148,47 @@
           <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
           <button class="btn primary">Save settings</button>
         </form>
-        <div class="card">
-          <h2>Email alerts</h2>
-          <div id="emailStatus" class="small muted">Checking…</div>
-          <h2 style="margin-top:1.4rem">Backup</h2>
-          <p class="small muted" style="margin-top:0">Download a full copy of all referrals, users and comments. Keep it somewhere safe.</p>
-          <a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a>
-          <h2 style="margin-top:1.4rem">Export</h2>
-          <p class="small muted" style="margin-top:0">All referrals as a spreadsheet (CSV). Filtered exports are on the Customers page.</p>
-          <a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals</a>
-        </div>
+        <form class="card" id="emailForm">
+          <h2>Email</h2>
+          ${emailCfg.enabled ? `<p class="small" style="margin:0 0 .8rem"><b class="ok-text">✓ On.</b> Emails arrive from <b>${esc(emailCfg.from)}</b></p>`
+            : '<p class="small" style="margin:0 0 .8rem"><b>Off.</b> In Render, open your service → <b>Environment</b> and add <code>RESEND_API_KEY</code>. The app restarts and email switches on.</p>'}
+          <div class="field"><label for="fromName">Sender name</label><input id="fromName" value="${esc(settings.email_from_name)}" placeholder="E&amp;O Referrals" maxlength="60">
+            <p class="small muted" style="margin:.3rem 0 0">What people see in their inbox instead of “noreply”. Sending address: <b>${esc(emailCfg.address)}</b>${emailCfg.address === 'onboarding@resend.dev' ? ' (Resend\'s test address — set <code>EMAIL_FROM</code> in Render to use your own domain)' : ''}.</p></div>
+          <div class="field"><label for="replyTo">Replies go to <span class="muted small">(optional)</span></label><input id="replyTo" type="email" value="${esc(settings.email_reply_to)}" placeholder="office@yourcompany.com">
+            <p class="small muted" style="margin:.3rem 0 0">When someone hits Reply, it goes here instead of the no-reply address.</p></div>
+          <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${emailCfg.enabled ? '<button type="button" class="btn" id="testEmail">✉ Send me a test</button>' : ''}</div>
+          <div id="testRes" class="small" style="margin-top:.5rem"></div>
+          <h2 style="margin-top:1.4rem">Backup & export</h2>
+          <div class="row"><a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a><a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals (CSV)</a></div>
+        </form>
       </div>` : ''}
       <div class="card">
-        <h2>${isAdmin() ? 'All users' : 'Team members'}</h2>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Name</th><th>Role</th>${isAdmin() ? '<th>Team</th>' : ''}<th class="num">Referrals</th><th class="num">Ordered</th>${isAdmin() ? '<th class="num">Queue</th>' : ''}<th></th></tr></thead>
-          <tbody>${users.map((u) => {
+        <div class="row between"><h2 style="margin:0">${isAdmin() ? 'All users' : 'Team members'}</h2>
+          <div class="seg" id="showSeg">${[['active', 'Active'], ['inactive', 'Deactivated'], ['all', 'All']].map(([k, l]) => `<button data-k="${k}" class="${filter === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="table-wrap" style="margin-top:.6rem"><table class="rtable users-table">
+          <thead><tr><th>Name</th><th>Role</th>${isAdmin() ? '<th>Team</th>' : ''}<th>Last active</th><th>Password changed</th><th class="num">Referrals</th><th class="num">Ordered</th><th></th></tr></thead>
+          <tbody>${shown.map((u) => {
             const manageable = isAdmin() || (u.role === 'rep');
             const self = u.id === state.me.id;
-            return `<tr style="${u.active ? '' : 'opacity:.55'}">
-              <td><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · temp password' : ''}</div>
+            const pwOld = !u.must_change_password && daysSince(u.password_changed_at) > 90;
+            return `<tr class="${u.active ? '' : 'inactive'}">
+              <td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
                 <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div></td>
-              <td>${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}</td>
-              ${isAdmin() ? `<td><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
-              <td class="num"><a href="#/referrals?scope=${isAdmin() ? 'all' : 'team'}&user_id=${u.id}">${u.referral_count}</a></td>
-              <td class="num">${u.ordered_count}</td>
-              ${isAdmin() ? `<td class="num">${u.role === 'dispatch' || u.open_assigned ? `<a href="#/referrals?scope=all&assigned_to=${u.id}">${u.open_assigned}</a>` : ''}</td>` : ''}
-              <td style="white-space:nowrap;text-align:right">${manageable && !self ? `
-                <button class="btn small" data-reset="${u.id}" data-username="${esc(u.username)}">Reset password</button>
+              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}</td>
+              ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
+              <td data-label="Last active">${ago(u.last_seen_at || u.last_login_at)}<div class="small muted">${u.login_count} sign-in${u.login_count === 1 ? '' : 's'}${u.failed_7d ? ` · <span class="warn-text">${u.failed_7d} failed</span>` : ''}</div></td>
+              <td data-label="Password changed">${u.password_changed_at ? `${ago(u.password_changed_at)}${pwOld ? ' <span class="tag">90+ days</span>' : ''}` : '<span class="muted">never</span>'}</td>
+              <td data-label="Referrals" class="num"><a href="#/referrals?scope=${isAdmin() ? 'all' : 'team'}&user_id=${u.id}">${u.referral_count}</a>${u.role === 'dispatch' || u.open_assigned ? `<div class="small muted">${u.open_assigned} in queue</div>` : ''}</td>
+              <td data-label="Ordered" class="num">${u.ordered_count}</td>
+              <td class="actions">${manageable ? `<button class="btn small" data-history="${u.id}" data-name="${esc(u.full_name)}">History</button>` : ''}${manageable && !self ? `
+                <button class="btn small" data-reset="${u.id}" data-username="${esc(u.username)}" data-name="${esc(u.full_name)}" data-hasemail="${u.email ? 1 : 0}" data-mail="${esc(u.email)}">Reset password</button>
                 <button class="btn small ${u.active ? 'danger' : ''}" data-active="${u.id}" data-to="${u.active ? 0 : 1}">${u.active ? 'Deactivate' : 'Reactivate'}</button>` : ''}</td>
             </tr>`;
-          }).join('')}</tbody>
+          }).join('') || `<tr><td colspan="8" class="muted">Nobody here.</td></tr>`}</tbody>
         </table></div>
       </div>`);
 
-    const emailStatus = document.getElementById('emailStatus');
-    if (emailStatus) {
-      const cfg = await api('/admin/email');
-      emailStatus.innerHTML = cfg.enabled
-        ? `<p style="margin:0 0 .6rem"><b style="color:var(--ok)">On.</b> Sending from <b>${esc(cfg.from)}</b>.${cfg.app_url ? '' : ' Links in emails are off until APP_URL is set.'}</p>
-           <button class="btn small" id="testEmail">✉ Send me a test email</button><span id="testRes" style="margin-left:.5rem"></span>`
-        : `<p style="margin:0"><b>Off.</b> In Render, open your service → <b>Environment</b> and add <code>RESEND_API_KEY</code> (and <code>EMAIL_FROM</code>, e.g. <code>E&amp;O Referrals &lt;alerts@yourdomain.com&gt;</code>). The app restarts and alerts switch on.</p>`;
-      const tb = document.getElementById('testEmail');
-      if (tb) tb.onclick = async () => {
-        const out = document.getElementById('testRes');
-        tb.disabled = true;
-        try {
-          const r = await api('/admin/test-email', { method: 'POST', body: {} });
-          out.innerHTML = `<span style="color:var(--ok)">Sent to ${esc(r.to)} ✓</span>`;
-        } catch (err) {
-          out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
-        } finally { tb.disabled = false; }
-      };
-    }
-    document.querySelectorAll('[data-email]').forEach((b) => {
-      b.onclick = async () => {
-        const email = prompt('Email address (leave empty to remove)', b.dataset.current);
-        if (email === null) return;
-        try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
-      };
-    });
-
+    document.querySelectorAll('#showSeg button').forEach((b) => { b.onclick = () => { location.hash = `#/team?show=${b.dataset.k}`; }; });
     const copy = document.getElementById('copyPw');
     if (copy) copy.onclick = () => { navigator.clipboard?.writeText(flash.password); toast('Copied'); };
 
@@ -971,15 +1207,19 @@
     document.getElementById('addUser').onsubmit = async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target));
+      body.send_welcome = document.getElementById('au_welcome').checked;
       try {
         const r = await api('/users', { method: 'POST', body });
         peopleCache = null;
-        state.flash = { title: `${body.full_name} was added.`, username: r.username, password: r.temp_password };
+        state.flash = { title: `${body.full_name} was added.`, username: r.username, password: r.temp_password,
+          emailed: r.welcome && r.welcome.sent ? r.welcome.to : null, emailError: r.welcome && r.welcome.error };
         renderTeam();
+        window.scrollTo(0, 0);
       } catch (err) {
         document.getElementById('addErr').innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
       }
     };
+
     const settingsForm = document.getElementById('settingsForm');
     if (settingsForm) settingsForm.onsubmit = async (e) => {
       e.preventDefault();
@@ -988,6 +1228,36 @@
         toast('Settings saved');
       } catch (err) { toast(err.message); }
     };
+    const emailForm = document.getElementById('emailForm');
+    if (emailForm) {
+      emailForm.onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          await api('/settings', { method: 'PATCH', body: { email_from_name: document.getElementById('fromName').value, email_reply_to: document.getElementById('replyTo').value } });
+          toast('Email settings saved');
+          renderTeam();
+        } catch (err) { toast(err.message); }
+      };
+      const tb = document.getElementById('testEmail');
+      if (tb) tb.onclick = async () => {
+        const out = document.getElementById('testRes');
+        tb.disabled = true;
+        try {
+          const r = await api('/admin/test-email', { method: 'POST', body: {} });
+          out.innerHTML = `<span class="ok-text">✓ Sent to ${esc(r.to)}</span>`;
+        } catch (err) {
+          out.innerHTML = `<span class="err-text">${esc(err.message)}</span>`;
+        } finally { tb.disabled = false; }
+      };
+    }
+
+    document.querySelectorAll('[data-email]').forEach((b) => {
+      b.onclick = async () => {
+        const email = await askModal({ title: 'Email address', label: 'Email', type: 'email', value: b.dataset.current, hint: 'Used for alerts, the welcome email and password-reset codes. Leave empty to remove.' });
+        if (email === null) return;
+        try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
+      };
+    });
     const addTeam = document.getElementById('addTeam');
     if (addTeam) addTeam.onsubmit = async (e) => {
       e.preventDefault();
@@ -995,20 +1265,40 @@
     };
     document.querySelectorAll('[data-rename]').forEach((b) => {
       b.onclick = async () => {
-        const name = prompt('New team name', b.dataset.name);
+        const name = await askModal({ title: 'Rename team', label: 'Team name', value: b.dataset.name });
         if (!name) return;
         try { await api('/teams/' + b.dataset.rename, { method: 'PATCH', body: { name } }); renderTeam(); } catch (err) { toast(err.message); }
       };
     });
-    document.querySelectorAll('[data-reset]').forEach((b) => {
+    document.querySelectorAll('[data-history]').forEach((b) => {
       b.onclick = async () => {
-        if (!confirm(`Reset the password for @${b.dataset.username}? Their current password will stop working.`)) return;
-        try {
-          const r = await api(`/users/${b.dataset.reset}/reset-password`, { method: 'POST', body: {} });
-          state.flash = { title: 'Password reset.', username: b.dataset.username, password: r.temp_password };
-          renderTeam();
-          window.scrollTo(0, 0);
-        } catch (err) { toast(err.message); }
+        const rows = await api(`/users/${b.dataset.history}/logins`);
+        modal(`<h2>Sign-in history — ${esc(b.dataset.name)}</h2>
+          ${rows.length ? `<div class="table-wrap" style="max-height:60vh;overflow:auto"><table class="rtable"><thead><tr><th>When</th><th>Result</th><th>Device</th><th>IP</th></tr></thead><tbody>
+          ${rows.map((r) => `<tr><td data-label="When">${esc(fullDate(r.created_at))}</td><td data-label="Result">${r.success ? `<span class="ok-text">✓ Signed in</span>${r.reason ? ` <span class="small muted">(${esc(r.reason)})</span>` : ''}` : `<span class="err-text">✕ ${esc(r.reason || 'failed')}</span>`}</td><td data-label="Device" class="small">${esc(browserName(r.user_agent))}</td><td data-label="IP" class="small muted">${esc(r.ip)}</td></tr>`).join('')}
+          </tbody></table></div>` : '<p class="muted">No sign-ins recorded yet.</p>'}
+          <div class="row" style="justify-content:flex-end;margin-top:1rem"><button class="btn" data-close>Close</button></div>`, { wide: true });
+      };
+    });
+    document.querySelectorAll('[data-reset]').forEach((b) => {
+      b.onclick = () => {
+        const hasEmail = b.dataset.hasemail === '1';
+        const m = modal(`<form><h2>Reset password for ${esc(b.dataset.name)}?</h2>
+          <p>Their current password stops working and they're signed out everywhere. They'll get a temporary password and pick a new one when they sign in.</p>
+          ${hasEmail && emailOn ? `<label class="check"><input type="checkbox" id="rsEmail" checked> Email the temporary password to ${esc(b.dataset.mail)}</label>` : ''}
+          <div class="row" style="justify-content:flex-end;margin-top:1rem"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Reset password</button></div></form>`);
+        m.querySelector('form').onsubmit = async (e) => {
+          e.preventDefault();
+          const sendEmail = !!m.querySelector('#rsEmail')?.checked;
+          closeModal();
+          try {
+            const r = await api(`/users/${b.dataset.reset}/reset-password`, { method: 'POST', body: { send_email: sendEmail } });
+            state.flash = { title: 'Password reset.', username: b.dataset.username, password: r.temp_password,
+              emailed: r.emailed && r.emailed.sent ? r.emailed.to : null, emailError: r.emailed && r.emailed.error };
+            renderTeam();
+            window.scrollTo(0, 0);
+          } catch (err) { toast(err.message); }
+        };
       };
     });
     document.querySelectorAll('[data-active]').forEach((b) => {
@@ -1016,13 +1306,347 @@
         try { await api('/users/' + b.dataset.active, { method: 'PATCH', body: { active: b.dataset.to === '1' } }); peopleCache = null; renderTeam(); } catch (err) { toast(err.message); }
       };
     });
-    document.querySelectorAll('select[data-role]').forEach((s) => {
-      s.onchange = async () => { try { await api('/users/' + s.dataset.role, { method: 'PATCH', body: { role: s.value } }); peopleCache = null; toast('Role updated'); renderTeam(); } catch (err) { toast(err.message); } };
+    document.querySelectorAll('select[data-role]').forEach((sel) => {
+      sel.onchange = async () => { try { await api('/users/' + sel.dataset.role, { method: 'PATCH', body: { role: sel.value } }); peopleCache = null; toast('Role updated'); renderTeam(); } catch (err) { toast(err.message); } };
     });
-    document.querySelectorAll('select[data-team]').forEach((s) => {
-      s.onchange = async () => { try { await api('/users/' + s.dataset.team, { method: 'PATCH', body: { team_id: s.value || null } }); peopleCache = null; toast('Team updated'); } catch (err) { toast(err.message); } };
+    document.querySelectorAll('select[data-team]').forEach((sel) => {
+      sel.onchange = async () => { try { await api('/users/' + sel.dataset.team, { method: 'PATCH', body: { team_id: sel.value || null } }); peopleCache = null; toast('Team updated'); } catch (err) { toast(err.message); } };
     });
   }
+
+  // ---------- dashboard ----------
+
+  const WIDGET_INFO = {
+    kpis: { title: 'Key numbers', size: 'full', about: 'Entered, ordered, conversion and more, compared with the previous period.' },
+    insights: { title: 'Insights', size: 'full', about: 'Things worth knowing, worked out from your numbers.' },
+    trend: { title: 'Daily trend', size: 'full', about: 'Referrals entered and orders marked, day by day.' },
+    status: { title: 'Status mix', size: 'half', about: 'Where the period\'s referrals stand now.' },
+    funnel: { title: 'Funnel', size: 'half', about: 'Entered → worked → ordered.' },
+    services: { title: 'Services', size: 'half', about: 'What customers want, and what converts.' },
+    leaderboard: { title: 'Leaderboard', size: 'half', about: 'Top reps by orders.' },
+    teams: { title: 'Teams', size: 'half', about: 'Every team side by side.' },
+    dispatch: { title: 'Dispatch workload', size: 'half', about: 'Open leads per dispatcher, and unassigned leads.' },
+    stale: { title: 'Needs attention', size: 'half', about: 'Leads still New after 3+ days.' },
+    installs: { title: 'Upcoming installs', size: 'half', about: 'Installs in the next two weeks.' },
+    activity: { title: 'Recent activity', size: 'half', about: 'Latest status changes and comments.' },
+  };
+
+  const localYmd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function dashRange(key, custom) {
+    const d = new Date();
+    const back = (n) => { const x = new Date(d); x.setDate(d.getDate() - n); return localYmd(x); };
+    switch (key) {
+      case 'today': return { from: localYmd(d), to: localYmd(d) };
+      case '7d': return { from: back(6), to: localYmd(d) };
+      case '30d': return { from: back(29), to: localYmd(d) };
+      case 'month': return { from: localYmd(new Date(d.getFullYear(), d.getMonth(), 1)), to: localYmd(d) };
+      case 'lastmonth': return { from: localYmd(new Date(d.getFullYear(), d.getMonth() - 1, 1)), to: localYmd(new Date(d.getFullYear(), d.getMonth(), 0)) };
+      case '90d': return { from: back(89), to: localYmd(d) };
+      case 'year': return { from: `${d.getFullYear()}-01-01`, to: localYmd(d) };
+      case 'custom': return custom;
+      default: return {};
+    }
+  }
+  const PERIODS = [['today', 'Today'], ['7d', '7 days'], ['30d', '30 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['90d', '90 days'], ['year', 'This year'], ['all', 'All time'], ['custom', 'Custom']];
+
+  async function renderHome() {
+    const params = query();
+    const period = params.period || 'month';
+    const range = dashRange(period, { from: params.from, to: params.to });
+    const qs = new URLSearchParams({ tz: String(new Date().getTimezoneOffset()) });
+    if (range.from) { qs.set('from', range.from); qs.set('to', range.to || range.from); }
+    if (params.team_id) qs.set('team_id', params.team_id);
+    if (params.user_id) qs.set('user_id', params.user_id);
+    const [d, ppl, teams] = await Promise.all([
+      api('/dashboard?' + qs.toString()), people(), seesAll() ? api('/teams') : Promise.resolve([]),
+    ]);
+    const layout = (state.me.dashboard_layout || d.layout_default).filter((w) => d.allowed.includes(w));
+    const editing = !!state.dashEdit;
+    const draft = editing ? state.dashEdit : layout;
+    const hour = new Date().getHours();
+    const hello = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    const periodLabel = period === 'custom' && range.from ? `${dayDate(range.from)} – ${dayDate(range.to || range.from)}` : (PERIODS.find((p) => p[0] === period) || [0, 'All time'])[1];
+
+    shell(`
+      <div class="dash-head">
+        <div><h1 style="margin:0">${hello}, ${esc(state.me.full_name.split(' ')[0])}</h1>
+          <p class="muted" style="margin:.2rem 0 0">${esc(periodLabel)}${d.prev ? ` · compared with ${esc(dayDate(d.prev.from))} – ${esc(dayDate(d.prev.to))}` : ''}</p></div>
+        <div class="row">
+          <a class="btn primary" href="#/new">➕ New referral</a>
+          <button class="btn" id="customize">${editing ? '✓ Done' : '⚙ Customize'}</button>
+        </div>
+      </div>
+      <div class="dash-filters">
+        <div class="seg" id="periodSeg">${PERIODS.map(([k, l]) => `<button data-k="${k}" class="${period === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" value="${esc(range.to || '')}"></span>` : ''}
+        ${seesAll() ? `<select id="dTeam"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+        ${worksLeads() ? `<select id="dUser"><option value="">${isManager() ? 'Whole team' : 'Everyone'}</option>${ppl.credit.filter((p) => !params.team_id || String(p.team_id) === params.team_id).map((p) => `<option value="${p.id}" ${params.user_id === String(p.id) ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>` : ''}
+      </div>
+      ${editing ? `<div class="card edit-bar"><b>Customize your dashboard.</b> <span class="muted small">Use ↑ ↓ to reorder and ✕ to remove. Add widgets below. Your layout is saved to your account.</span>
+        <div class="row" style="margin-top:.6rem"><button class="btn small" id="resetLayout">Reset to default</button></div></div>` : ''}
+      <div class="dash" id="dash">
+        ${draft.map((w, i) => `
+          <section class="card widget ${WIDGET_INFO[w].size}" data-w="${w}">
+            <header class="wh"><h2>${WIDGET_INFO[w].title}</h2>
+              ${editing ? `<span class="wtools"><button class="icon-btn" data-up="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="icon-btn" data-down="${i}" ${i === draft.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button><button class="icon-btn" data-rm="${i}" aria-label="Remove">✕</button></span>` : ''}
+            </header>
+            <div class="wb" data-body="${w}"></div>
+          </section>`).join('') || '<p class="muted">No widgets. Add some below.</p>'}
+      </div>
+      ${editing ? `<div class="card" style="margin-top:1rem"><h2>Add widgets</h2>
+        <div class="add-grid">${d.allowed.filter((w) => !draft.includes(w)).map((w) => `<button class="add-w" data-add="${w}"><b>＋ ${WIDGET_INFO[w].title}</b><span class="small muted">${WIDGET_INFO[w].about}</span></button>`).join('') || '<p class="muted small">Everything is already on your dashboard.</p>'}</div></div>` : ''}`);
+
+    const setParam = (patch) => {
+      const p = { ...query(), ...patch };
+      for (const k of Object.keys(p)) if (!p[k]) delete p[k];
+      location.hash = '#/home?' + new URLSearchParams(p).toString();
+    };
+    document.querySelectorAll('#periodSeg button').forEach((b) => {
+      b.onclick = () => {
+        if (b.dataset.k === 'custom') {
+          const r = range.from ? range : dashRange('30d');
+          setParam({ period: 'custom', from: r.from, to: r.to });
+        } else setParam({ period: b.dataset.k, from: '', to: '' });
+      };
+    });
+    const cFrom = document.getElementById('cFrom');
+    if (cFrom) {
+      const upd = () => { const f = cFrom.value; const t = document.getElementById('cTo').value; if (f && t) setParam({ from: f, to: t }); };
+      cFrom.onchange = upd; document.getElementById('cTo').onchange = upd;
+    }
+    const dTeam = document.getElementById('dTeam'); if (dTeam) dTeam.onchange = () => setParam({ team_id: dTeam.value, user_id: '' });
+    const dUser = document.getElementById('dUser'); if (dUser) dUser.onchange = () => setParam({ user_id: dUser.value });
+
+    const saveLayout = async (list) => {
+      try {
+        await api('/me', { method: 'PATCH', body: { dashboard_layout: list } });
+        await refreshMe();
+      } catch (err) { toast(err.message); }
+    };
+    document.getElementById('customize').onclick = async () => {
+      if (editing) {
+        await saveLayout(state.dashEdit);
+        state.dashEdit = null;
+        toast('Dashboard saved');
+      } else {
+        state.dashEdit = [...layout];
+      }
+      renderHome();
+    };
+    if (editing) {
+      const move = (i, j) => { const a = state.dashEdit; [a[i], a[j]] = [a[j], a[i]]; renderHome(); };
+      document.querySelectorAll('[data-up]').forEach((b) => { b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1); });
+      document.querySelectorAll('[data-down]').forEach((b) => { b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1); });
+      document.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => { state.dashEdit.splice(+b.dataset.rm, 1); renderHome(); }; });
+      document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => { state.dashEdit.push(b.dataset.add); renderHome(); }; });
+      document.getElementById('resetLayout').onclick = async () => {
+        await saveLayout(null);
+        state.dashEdit = [...d.layout_default];
+        renderHome();
+      };
+    }
+
+    for (const w of draft) {
+      const el = document.querySelector(`[data-body="${w}"]`);
+      try { WIDGET_RENDER[w](el, d); } catch (e) { el.innerHTML = `<p class="muted small">Couldn't draw this widget.</p>`; console.error(e); }
+    }
+    // Redraw the trend line when the width changes.
+    clearTimeout(renderHome._rs);
+    window.onresize = () => {
+      clearTimeout(renderHome._rs);
+      renderHome._rs = setTimeout(() => {
+        const el = document.querySelector('[data-body="trend"]');
+        if (el && location.hash.startsWith('#/home')) WIDGET_RENDER.trend(el, d);
+      }, 150);
+    };
+  }
+
+  const fmt = (n) => Number(n || 0).toLocaleString();
+  const empty = (msg) => `<p class="muted small empty-w">${msg}</p>`;
+
+  // A delta chip: arrow + words, never color alone. `better` says which direction is good.
+  function delta(cur, prev, { unit = '', better = 'up', points = false } = {}) {
+    if (prev == null || cur == null) return '';
+    const diff = points ? Math.round((cur - prev) * 10) / 10 : prev ? Math.round(((cur - prev) / prev) * 100) : null;
+    if (diff == null) return prev === 0 && cur > 0 ? '<span class="delta up good">▲ new</span>' : '';
+    if (diff === 0) return '<span class="delta flat">— same</span>';
+    const up = diff > 0;
+    const good = better === 'none' ? 'neutral' : (up === (better === 'up') ? 'good' : 'bad');
+    return `<span class="delta ${up ? 'up' : 'down'} ${good}">${up ? '▲' : '▼'} ${Math.abs(diff)}${points ? ' pts' : '%'}${unit}</span>`;
+  }
+
+  // Horizontal bars (one hue). rows: [{label, value, sub, tip, href}]
+  function barList(rows, { max } = {}) {
+    const m = max || Math.max(1, ...rows.map((r) => r.value));
+    return `<div class="bars">${rows.map((r) => `
+      <${r.href ? `a href="${r.href}"` : 'div'} class="bar-row" data-tip="${esc(r.tip || `${r.label}: ${fmt(r.value)}`)}">
+        <span class="bar-label">${r.label}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${Math.max(r.value ? 1.5 : 0, (r.value / m) * 100)}%"></span></span>
+        <span class="bar-val">${fmt(r.value)}${r.sub ? ` <span class="muted small">${r.sub}</span>` : ''}</span>
+      </${r.href ? 'a' : 'div'}>`).join('')}</div>`;
+  }
+
+  const WIDGET_RENDER = {
+    kpis(el, d) {
+      const k = d.kpis;
+      const p = d.prev_kpis || {};
+      const tiles = [
+        ['Entered', fmt(k.entered), delta(k.entered, p.entered)],
+        ['Ordered', fmt(k.ordered), delta(k.ordered, p.ordered)],
+        ['Conversion', `${k.conversion}%`, delta(k.conversion, p.conversion, { points: true })],
+        ['Open', fmt(k.open), delta(k.open, p.open, { better: 'none' }), 'New + Passed'],
+        ['Days to order', k.avg_days_to_order == null ? '—' : k.avg_days_to_order, delta(k.avg_days_to_order, p.avg_days_to_order, { better: 'down' }), 'average'],
+      ];
+      el.innerHTML = `<div class="kpis">${tiles.map(([l, v, dl, sub]) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div><div class="kd">${dl || (sub ? `<span class="muted small">${sub}</span>` : '&nbsp;')}</div></div>`).join('')}</div>`;
+    },
+
+    insights(el, d) {
+      const icon = { good: '▲', warn: '⚠', info: 'ℹ' };
+      el.innerHTML = d.insights.length ? `<ul class="insights">${d.insights.map((i) => `
+        <li class="ins ${i.tone}"><span class="ins-i" aria-hidden="true">${icon[i.tone]}</span><span>${esc(i.text)}</span>${i.link ? `<a class="small" href="${i.link}">View</a>` : ''}</li>`).join('')}</ul>`
+        : empty('Nothing stands out yet. Insights appear as referrals come in.');
+    },
+
+    trend(el, d) {
+      const pts = d.trend;
+      if (!pts.length || pts.every((p) => !p.entered && !p.ordered)) { el.innerHTML = empty('No referrals in this period yet.'); return; }
+      const W = Math.max(280, el.clientWidth || 600);
+      const H = 220;
+      const pad = { l: 34, r: 64, t: 12, b: 26 };
+      const iw = W - pad.l - pad.r;
+      const ih = H - pad.t - pad.b;
+      const maxV = Math.max(1, ...pts.map((p) => Math.max(p.entered, p.ordered)));
+      const step = maxV <= 4 ? 1 : Math.ceil(maxV / 4);
+      const top = Math.ceil(maxV / step) * step;
+      const x = (i) => pad.l + (pts.length === 1 ? iw / 2 : (i / (pts.length - 1)) * iw);
+      const y = (v) => pad.t + ih - (v / top) * ih;
+      const line = (key) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join('');
+      const grid = [];
+      for (let v = 0; v <= top; v += step) grid.push(`<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" class="gl"/><text x="${pad.l - 6}" y="${y(v) + 4}" class="axt" text-anchor="end">${v}</text>`);
+      const lbl = (i) => new Date(pts[i].date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      const xl = [...new Set([0, Math.floor((pts.length - 1) / 2), pts.length - 1])];
+      const last = pts.length - 1;
+      const tot = pts.reduce((a, p) => ({ e: a.e + p.entered, o: a.o + p.ordered }), { e: 0, o: 0 });
+      // Direct labels at the line ends, nudged apart if they'd overlap.
+      let yE = y(pts[last].entered) + 4;
+      let yO = y(pts[last].ordered) + 4;
+      if (Math.abs(yE - yO) < 13) { if (yE <= yO) { yE -= 7; yO += 7; } else { yE += 7; yO -= 7; } }
+      el.innerHTML = `
+        <div class="legend"><span><i class="sw s1"></i>Entered <b>${fmt(tot.e)}</b></span><span><i class="sw s2"></i>Marked ordered <b>${fmt(tot.o)}</b></span></div>
+        <div class="chart-wrap">
+          <svg class="chart" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Daily referrals entered and orders marked">
+            ${grid.join('')}
+            ${xl.map((i) => `<text x="${x(i)}" y="${H - 6}" class="axt" text-anchor="${i === 0 ? 'start' : i === last ? 'end' : 'middle'}">${lbl(i)}</text>`).join('')}
+            <path d="${line('entered')}" class="ln s1"/>
+            <path d="${line('ordered')}" class="ln s2"/>
+            <text x="${x(last) + 8}" y="${yE}" class="dl">Entered</text>
+            <text x="${x(last) + 8}" y="${yO}" class="dl">Ordered</text>
+            <g class="xh" style="display:none"><line class="xl" y1="${pad.t}" y2="${pad.t + ih}"/><circle r="4.5" class="dot s1"/><circle r="4.5" class="dot s2"/></g>
+            <rect class="chart-hit" x="${pad.l}" y="${pad.t}" width="${iw}" height="${ih}" fill="transparent"/>
+          </svg>
+        </div>
+        <details class="tview"><summary class="small muted">Show as table</summary>
+          <div class="table-wrap"><table><thead><tr><th>Date</th><th class="num">Entered</th><th class="num">Marked ordered</th></tr></thead>
+          <tbody>${pts.filter((p) => p.entered || p.ordered).reverse().map((p) => `<tr><td>${esc(dayDate(p.date))}</td><td class="num">${p.entered}</td><td class="num">${p.ordered}</td></tr>`).join('')}</tbody></table></div></details>`;
+      const svg = el.querySelector('svg');
+      const hit = svg.querySelector('.chart-hit');
+      const xh = svg.querySelector('.xh');
+      const [d1, d2] = xh.querySelectorAll('circle');
+      const xline = xh.querySelector('line');
+      const move = (clientX, clientY) => {
+        const r = svg.getBoundingClientRect();
+        const sx = ((clientX - r.left) / r.width) * W;
+        const i = Math.max(0, Math.min(last, Math.round(((sx - pad.l) / iw) * last)));
+        const p = pts[i];
+        xh.style.display = '';
+        xline.setAttribute('x1', x(i)); xline.setAttribute('x2', x(i));
+        d1.setAttribute('cx', x(i)); d1.setAttribute('cy', y(p.entered));
+        d2.setAttribute('cx', x(i)); d2.setAttribute('cy', y(p.ordered));
+        showTip(`<b>${esc(dayDate(p.date))}</b><div><i class="sw s1"></i>Entered <b>${p.entered}</b></div><div><i class="sw s2"></i>Marked ordered <b>${p.ordered}</b></div>`, clientX, clientY);
+      };
+      hit.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
+      hit.addEventListener('mouseleave', () => { xh.style.display = 'none'; hideTip(); });
+      hit.addEventListener('touchmove', (e) => { const t = e.touches[0]; move(t.clientX, t.clientY); }, { passive: true });
+      hit.addEventListener('touchstart', (e) => { const t = e.touches[0]; move(t.clientX, t.clientY); }, { passive: true });
+    },
+
+    status(el, d) {
+      const k = d.kpis;
+      if (!k.entered) { el.innerHTML = empty('No referrals in this period.'); return; }
+      el.innerHTML = barList(STATUSES.map((s) => ({
+        label: pill(s), value: k.by_status[s], sub: `${Math.round((k.by_status[s] / k.entered) * 100)}%`,
+        tip: `${s}: ${k.by_status[s]} of ${k.entered}`, href: `#/referrals?status=${s}`,
+      })), { max: k.entered });
+    },
+
+    funnel(el, d) {
+      const top = d.funnel[0].n;
+      if (!top) { el.innerHTML = empty('No referrals in this period.'); return; }
+      el.innerHTML = barList(d.funnel.map((f, i) => ({
+        label: esc(f.stage), value: f.n, sub: i ? `${Math.round((f.n / top) * 100)}%` : '',
+        tip: `${f.stage}: ${f.n}${i ? ` (${Math.round((f.n / top) * 100)}% of entered)` : ''}`,
+      })), { max: top }) + '<p class="small muted" style="margin:.5rem 0 0">Worked = moved past New.</p>';
+    },
+
+    services(el, d) {
+      const any = d.services.some((s) => s.entered);
+      el.innerHTML = any ? barList(d.services.map((s) => ({
+        label: esc(s.service), value: s.entered, sub: s.entered ? `${s.conversion}% ordered` : '',
+        tip: `${s.service}: ${s.entered} referrals, ${s.ordered} ordered (${s.conversion}%)`, href: `#/referrals?service=${s.service}`,
+      }))) : empty('No services recorded in this period.');
+    },
+
+    leaderboard(el, d) {
+      const lb = d.leaderboard;
+      if (!lb.length) { el.innerHTML = empty('No referrals from the team in this period.'); return; }
+      el.innerHTML = barList(lb.map((r, i) => ({
+        label: `<span class="rank">${i + 1}</span>${esc(r.full_name)}${r.me ? ' <span class="tag">you</span>' : ''}${seesAll() && r.team_name ? ` <span class="muted small">${esc(r.team_name)}</span>` : ''}`,
+        value: r.ordered, sub: `of ${r.entered} · ${r.conversion}%`,
+        tip: `${r.full_name}: ${r.ordered} ordered of ${r.entered} entered (${r.conversion}%)`,
+        href: worksLeads() ? `#/referrals?user_id=${r.id}` : undefined,
+      })));
+    },
+
+    teams(el, d) {
+      if (!d.teams || !d.teams.length) { el.innerHTML = empty('No teams yet.'); return; }
+      el.innerHTML = barList(d.teams.map((t) => ({
+        label: esc(t.name), value: t.ordered, sub: `of ${t.entered} · ${t.conversion}%`,
+        tip: `${t.name}: ${t.ordered} ordered of ${t.entered} entered (${t.conversion}%)`, href: `#/home?${new URLSearchParams({ ...query(), team_id: t.id })}`,
+      }))) + '<p class="small muted" style="margin:.5rem 0 0">Bars show orders. Click a team to focus the dashboard on it.</p>';
+    },
+
+    dispatch(el, d) {
+      if (!d.dispatch) { el.innerHTML = ''; return; }
+      const x = d.dispatch;
+      el.innerHTML = `<p style="margin:0 0 .6rem">${x.unassigned ? `<a href="#/referrals?scope=unassigned"><b>${x.unassigned}</b> open lead${x.unassigned === 1 ? '' : 's'} unassigned</a>` : '✓ Every open lead has a dispatcher.'}</p>`
+        + (x.people.length ? barList(x.people.map((p) => ({
+          label: esc(p.full_name), value: p.open, sub: `open · ${p.ordered} ordered`,
+          tip: `${p.full_name}: ${p.open} open, ${p.ordered} ordered this period`, href: `#/referrals?scope=all&assigned_to=${p.id}`,
+        }))) : empty('No dispatchers yet. Add one under Admin.'));
+    },
+
+    stale(el, d) {
+      el.innerHTML = d.stale.length ? `<ul class="mini-list">${d.stale.map((r) => `
+        <li><a href="#/r/${r.id}"><b>${esc(leadName(r))}</b><span class="muted small">${esc(r.rep)}${r.phone ? ` · ${esc(r.phone)}` : ''}</span></a><span class="age ${r.days >= 7 ? 'old' : ''}">${r.days}d</span></li>`).join('')}</ul>
+        ${d.stale_count > d.stale.length ? `<a class="small" href="#/referrals?status=New">All ${d.stale_count} →</a>` : ''}`
+        : empty('✓ Nothing waiting. No lead has sat in New for 3+ days.');
+    },
+
+    installs(el, d) {
+      el.innerHTML = d.installs.length ? `<ul class="mini-list">${d.installs.map((r) => `
+        <li><a href="#/r/${r.id}"><b>${esc(leadName(r))}</b><span class="muted small">${esc(r.address || r.rep)}</span></a><span class="when-chip ${r.install_date === d.today ? 'today' : ''}">${r.install_date === d.today ? 'Today' : esc(dayDate(r.install_date))}</span></li>`).join('')}</ul>`
+        : empty('No installs scheduled in the next two weeks.');
+    },
+
+    activity(el, d) {
+      el.innerHTML = d.activity.length ? `<ul class="feed">${d.activity.map((a) => `
+        <li><a href="#/r/${a.referral_id}">${a.kind === 'comment'
+          ? `💬 <b>${esc(a.actor)}</b> commented on <b>${esc(leadName(a))}</b><span class="muted small feed-q">${esc(a.body)}</span>`
+          : a.from_status ? `🔄 <b>${esc(a.actor)}</b> moved <b>${esc(leadName(a))}</b> to ${pill(a.to_status)}`
+            : `➕ <b>${esc(a.actor)}</b> entered <b>${esc(leadName(a))}</b>`}</a><span class="muted small">${when(a.at)}</span></li>`).join('')}</ul>`
+        : empty('No activity yet.');
+    },
+  };
 
   // ---------- my account ----------
 
@@ -1034,12 +1658,26 @@
         <p class="muted" style="margin-top:0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p>
         <div class="field"><label for="em">Email</label><input id="em" type="email" autocapitalize="none" placeholder="you@example.com" value="${esc(me.email)}"></div>
         <label class="check" style="margin-top:.9rem"><input type="checkbox" id="ea" ${me.email_alerts ? 'checked' : ''}> Email me my alerts</label>
-        <p class="small muted" style="margin:.3rem 0 0">Status changes on your leads, @mentions, comments on your leads, and leads assigned to you or entered for you.</p>
+        <p class="small muted" style="margin:.3rem 0 0">Status changes on your leads, @mentions, comments on your leads, and leads assigned to you or entered for you. Your email also lets you reset a forgotten password yourself.</p>
         ${me.email_enabled ? '' : '<div class="alert warn small" style="margin-top:.8rem">Email alerts aren\'t switched on for this app yet. You\'ll still see everything under 🔔.</div>'}
         <div id="acctErr" style="margin-top:.8rem"></div>
         <div class="row" style="margin-top:1rem"><button class="btn primary">Save</button><button type="button" class="btn" id="pwBtn">Change password</button></div>
-      </form>`);
+      </form>
+      <div class="card narrow">
+        <h2>Appearance</h2>
+        <div class="seg" id="themeSeg">${[['system', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-t="${k}" class="${getTheme() === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <h2 style="margin-top:1.4rem">Security</h2>
+        <p class="small muted" style="margin-top:0">Signed in on a shared or lost device? Sign out everywhere except here.</p>
+        <button class="btn" id="logoutAll">Sign out other devices</button>
+      </div>`);
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
+    document.querySelectorAll('#themeSeg button').forEach((b) => {
+      b.onclick = () => { setTheme(b.dataset.t); document.querySelectorAll('#themeSeg button').forEach((x) => x.classList.toggle('on', x === b)); };
+    });
+    document.getElementById('logoutAll').onclick = async () => {
+      const r = await api('/me/logout-all', { method: 'POST', body: {} });
+      toast(r.signed_out ? `Signed out ${r.signed_out} other session${r.signed_out === 1 ? '' : 's'}` : 'No other sessions');
+    };
     document.getElementById('acctForm').onsubmit = async (e) => {
       e.preventDefault();
       try {
@@ -1073,7 +1711,7 @@
   async function route_() {
     if (!state.me) return renderLogin();
     if (state.me.must_change_password) return renderChangePassword(true);
-    const h = location.hash.split('?')[0] || '#/new';
+    const h = location.hash.split('?')[0] || defaultRoute();
     try {
       let m;
       if ((m = h.match(/^#\/r\/(\d+)$/))) return await renderReferral(m[1]);
@@ -1084,7 +1722,10 @@
       if (h === '#/team') return await renderTeam();
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();
-      return await renderNew();
+      if (h === '#/home') return await renderHome();
+      if (h === '#/new') return await renderNew();
+      location.replace(defaultRoute());
+      return undefined;
     } catch (e) {
       if (state.me) toast(e.message);
     }
@@ -1094,6 +1735,8 @@
     state.menuOpen = false;
     if (state.me) await refreshMe().catch(() => {});
     if (!location.hash.startsWith('#/r/')) state.editing = null;
+    if (!location.hash.startsWith('#/home')) state.dashEdit = null;
+    closeMenus(); closeModal(); hideTip();
     route_();
   });
 

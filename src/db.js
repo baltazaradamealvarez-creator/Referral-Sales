@@ -139,6 +139,40 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
   ALTER TABLE users ADD COLUMN email_alerts INTEGER NOT NULL DEFAULT 1;
   `,
+  // v4: account activity, emailed password-reset codes, saved dashboard layouts
+  `
+  ALTER TABLE users ADD COLUMN last_login_at TEXT;
+  ALTER TABLE users ADD COLUMN last_seen_at TEXT;
+  ALTER TABLE users ADD COLUMN password_changed_at TEXT;
+  ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN dashboard_layout TEXT NOT NULL DEFAULT '';
+
+  CREATE TABLE login_events (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    username TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_login_user ON login_events(user_id, id);
+  CREATE INDEX idx_login_time ON login_events(created_at);
+
+  CREATE TABLE password_resets (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_reset_user ON password_resets(user_id, id);
+  CREATE INDEX idx_history_ref ON status_history(referral_id);
+  CREATE INDEX idx_ref_created ON referrals(created_at);
+  `,
 ];
 
 function migrate(db) {

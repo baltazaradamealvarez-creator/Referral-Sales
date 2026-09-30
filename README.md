@@ -11,6 +11,14 @@ A simple web app for entering Spectrum sales referrals, dispatching them and tra
 - **Comments with @mentions** and **notifications** (🔔) for mentions, status changes, assignments and comments on your leads. These can also go out by **email** through [Resend](https://resend.com), and each user can turn email off under **My account**.
 - **Customers view** with search and filters for status, service, rep, team and dispatcher, plus **Export CSV**.
 - **Sales dashboards:** your own numbers, your team's totals and a per-rep breakdown. Admins and dispatch also see every team, each dispatcher's workload and sales by service.
+- **Dashboard (Home).** Everyone gets a dashboard for their own scope: reps see their own numbers, managers their team, dispatch and admins everything, with a filter by team or rep. It shows key numbers compared with the previous period, a daily trend chart, the status mix, a funnel, services, a leaderboard, team and dispatch workload, stale leads, upcoming installs and recent activity. **Customize** lets each person add, remove and reorder widgets, and the layout is saved to their account. Periods: today, 7/30/90 days, this or last month, this year, all time, or custom dates.
+- **Insights.** Plain-language notes worked out from the numbers, for example: "Conversion is 35%, down 9 points", "14 leads have sat in New for 3+ days", "Voice leads convert best", "23 open leads have no dispatcher". Each one links to the matching leads.
+- **Search** in the top bar (press **/**) finds customers by name, phone, email, address or account number, and admins and managers can also find users. It only shows what you're allowed to see.
+- **Dark mode** that follows your device, or pick Light or Dark under 👤 or **My account**.
+- **Built for phones:** a bottom tab bar, list rows that turn into cards, and a full-width search.
+- **Forgot password:** sign-in page → **Forgot your password?** → a 6-digit code is emailed (valid 15 minutes, 5 tries) → choose a new password and you're signed in. Users can also sign in with their email address.
+- **Welcome emails** with sign-in details when you add someone, and an option to email a temporary password when you reset one. Emails come from **E&O Referrals** (you can change the name on the Admin page) instead of a bare "noreply", and you can set a reply-to address.
+- **Account activity (admins):** who's active today or this week, who has never signed in, passwords over 90 days old, and failed sign-ins. Each user has a last-active time, a password-changed date and a **History** of sign-ins (time, device, IP). **Sign out other devices** is under My account.
 - **User management.** Managers add reps to their team, reset passwords and deactivate or reactivate reps. Admins manage all users, roles, teams and settings, and can download a backup.
 
 ## Who can see what
@@ -50,7 +58,7 @@ Environment variables:
 | `ADMIN_USERNAME` | `admin` | First admin's username (used only when the database is empty) |
 | `ADMIN_PASSWORD` | random | First admin's password (used only when the database is empty) |
 | `RESEND_API_KEY` | — | Turns on email alerts. Leave it unset to keep email off. |
-| `EMAIL_FROM` | `E&O Referrals <onboarding@resend.dev>` | Sender address. It must be on a domain you verified in Resend. |
+| `EMAIL_FROM` | `onboarding@resend.dev` | Sending address, on a domain you verified in Resend. The display name ("E&O Referrals") is added automatically and can be changed on the Admin page. |
 | `APP_URL` | Render's own URL | The site address used for links in emails. Only needed with a custom domain. |
 
 Run the tests with `npm test`.
@@ -92,7 +100,8 @@ It uses Render's **Starter** plan, because free plans can't keep a disk and woul
 src/server.js      starts the app
 src/app.js         API routes and permission rules
 scripts/           reset-password.js for locked-out accounts
-src/email.js       email alerts through Resend
+src/email.js       emails through Resend (alerts, welcome, reset codes)
+src/dashboard.js   dashboard numbers and insights
 src/normalize.js   lead parsing and phone/email/address matching
 src/db.js          SQLite schema and automatic upgrades
 src/auth.js        password hashing (scrypt) and sessions
