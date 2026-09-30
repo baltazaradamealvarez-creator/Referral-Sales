@@ -17,6 +17,23 @@ function inviteStatus(inv) {
   return 'active';
 }
 
+// The sign-up form shared by invite links and affiliate links.
+function readSignupForm(body, { cleanEmail, HttpError }) {
+  const b = body || {};
+  const fullName = String(b.full_name || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+  const username = String(b.username || '').trim().toLowerCase();
+  const email = cleanEmail(b.email);
+  const phone = String(b.phone || '').trim().slice(0, 30);
+  const password = String(b.password || '');
+  if (!fullName) throw new HttpError(400, 'Enter your full name.');
+  if (!/^[a-z0-9._-]{2,40}$/.test(username)) throw new HttpError(400, 'Username: 2–40 letters, numbers, dots, dashes or underscores.');
+  if (!email) throw new HttpError(400, 'Enter your email address — it’s used for alerts and password resets.');
+  if (phone && phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'That phone number looks too short.');
+  if (password.length < 8) throw new HttpError(400, 'Your password needs at least 8 characters.');
+  if (password !== String(b.password_confirm ?? password)) throw new HttpError(400, 'The two passwords don’t match.');
+  return { fullName, username, email, phone, password };
+}
+
 function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail }) {
   const joinHits = new Map();
 
@@ -142,18 +159,7 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
 
   app.post('/api/join/:token', awrap(async (req, res) => {
     if (!rateLimit(joinHits, `post:${req.ip}`, 20, 15 * 60 * 1000)) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
-    const b = req.body || {};
-    const fullName = String(b.full_name || '').trim().replace(/\s+/g, ' ').slice(0, 100);
-    const username = String(b.username || '').trim().toLowerCase();
-    const email = cleanEmail(b.email);
-    const phone = String(b.phone || '').trim().slice(0, 30);
-    const password = String(b.password || '');
-    if (!fullName) throw new HttpError(400, 'Enter your full name.');
-    if (!/^[a-z0-9._-]{2,40}$/.test(username)) throw new HttpError(400, 'Username: 2–40 letters, numbers, dots, dashes or underscores.');
-    if (!email) throw new HttpError(400, 'Enter your email address — it’s used for alerts and password resets.');
-    if (phone && phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'That phone number looks too short.');
-    if (password.length < 8) throw new HttpError(400, 'Your password needs at least 8 characters.');
-    if (password !== String(b.password_confirm ?? password)) throw new HttpError(400, 'The two passwords don’t match.');
+    const { fullName, username, email, phone, password } = readSignupForm(req.body, { cleanEmail, HttpError });
 
     // Claim a use and create the account together, so a single-use link can't be used twice.
     db.exec('BEGIN IMMEDIATE');
@@ -199,4 +205,4 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
   }));
 }
 
-module.exports = { mount, inviteStatus };
+module.exports = { mount, inviteStatus, readSignupForm, ROLE_LABEL };

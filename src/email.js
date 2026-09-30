@@ -195,6 +195,22 @@ function inviteEmail({ url, roleLabel, teamName, invitedBy, expiresAt, message }
   return { subject: `${invitedBy} invited you to E&O Spectrum Referrals`, text, html };
 }
 
+// A member emails their personal affiliate link to a friend.
+function affiliateInviteEmail({ url, fromName, message }, settings) {
+  const note = String(message || '').trim().slice(0, 500);
+  const text = `Hi,\n\n${fromName} invited you to sell Spectrum with E&O and earn commission on every sale.\n${note ? `\n"${note}"\n` : ''}`
+    + `\nSign up here (takes about a minute):\n${url}\n\n— E&O Spectrum Referrals`;
+  const html = layout({
+    greeting: 'Hi,',
+    bodyHtml: `<p>${esc(fromName)} invited you to sell Spectrum with <b>E&amp;O</b> and earn commission on every sale.</p>
+      ${note ? `<p style="background:#f0f3f8;border-radius:10px;padding:12px 14px;margin:16px 0">${esc(note)}</p>` : ''}
+      <p>Tap the button, fill in your details and pick a username and password. It takes about a minute.</p>`,
+    button: { href: url, label: 'Join the team' },
+    footer: `If the button doesn't work, paste this into your browser:<br><span style="word-break:break-all">${esc(url)}</span><br>Didn't expect this? You can ignore it.`,
+  });
+  return { subject: `${fromName} invited you to join E&O Spectrum Referrals`, text, html };
+}
+
 function payoutChangedEmail({ fullName, summary }, settings) {
   const { appUrl } = emailConfig(settings);
   const text = `Hi ${fullName},\n\nYour payout details in E&O Spectrum Referrals were just saved: ${summary}.\n\n`
@@ -209,4 +225,4 @@ function payoutChangedEmail({ fullName, summary }, settings) {
   return { subject: 'Your payout details were changed', text, html };
 }
 
-module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, quickStart, inviteEmail, payoutChangedEmail, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };
+module.exports = { emailConfig, sendEmail, alertEmail, welcomeEmail, quickStart, inviteEmail, affiliateInviteEmail, payoutChangedEmail, tempPasswordEmail, resetCodeEmail, parseFrom, formatFrom };

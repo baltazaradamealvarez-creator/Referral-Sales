@@ -122,6 +122,7 @@
     links.push(['#/sales', 'Sales', 'sales', '📈']);
     if (managesUsers()) links.push(['#/team', isAdmin() ? 'Admin' : 'My Team', 'team', '⚙']);
     if (state.me.payments) links.push(['#/payments', 'Payments', 'payments', '💳']);
+    if (state.me.affiliate || isAdmin()) links.push(['#/affiliate', 'Affiliate', 'affiliate', '💸']);
     if (isAdmin()) links.push(['#/audit-logs', 'Audit Logs', 'audit', '🔒']);
     links.push(['#/help', 'Help', 'help', '❓']);
     return links;
@@ -1047,6 +1048,10 @@
                     <span class="field-label">Account #</span>
                     ${fv(r.account_number ? esc(r.account_number) : '')}
                   </div>
+                  ${r.commission != null ? `<div class="field-row">
+                    <span class="field-label">Commission</span>
+                    <span class="field-value">$${Number(r.commission).toFixed(2)}</span>
+                  </div>` : ''}
                   <div class="field-row">
                     <span class="field-label">Install Date</span>
                     ${r.install_date ? `<span class="field-value">${esc(dayDate(r.install_date))}</span>` : empty}
@@ -1078,6 +1083,7 @@
             <form id="acctForm" class="fix-grid" style="margin:0">
               <div><label for="acct">Spectrum account / order #</label><input id="acct" name="acct" value="${esc(r.account_number)}"></div>
               <div><label for="inst">Install date</label><input id="inst" name="inst" type="date" value="${esc(r.install_date)}"></div>
+              ${isAdmin() ? `<div><label for="comm">Commission ($)</label><input id="comm" name="comm" type="number" min="0" step="0.01" inputmode="decimal" value="${r.commission != null ? esc(r.commission) : ''}" placeholder="paid to the seller"></div>` : ''}
               <div class="full"><button class="btn">Save</button></div>
             </form>
           </div>` : ''}
@@ -1153,7 +1159,9 @@
     if (acctForm) acctForm.onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await api('/referrals/' + r.id, { method: 'PATCH', body: { account_number: acctForm.acct.value, install_date: acctForm.inst.value } });
+        const body = { account_number: acctForm.acct.value, install_date: acctForm.inst.value };
+        if (acctForm.comm) body.commission = acctForm.comm.value === '' ? null : Number(acctForm.comm.value);
+        await api('/referrals/' + r.id, { method: 'PATCH', body });
         toast('Saved');
         renderReferral(id);
       } catch (err) { toast(err.message); }
@@ -2015,6 +2023,128 @@
     load();
   }
 
+  // ---------- affiliate program ----------
+
+  const usd = (n) => `${n < 0 ? '−' : ''}$${Math.abs(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  async function renderAffiliate() {
+    if (!state.me.affiliate && !isAdmin()) { location.hash = defaultRoute(); return; }
+    const [mine, adm] = await Promise.all([
+      state.me.affiliate ? api('/affiliate/me') : Promise.resolve(null),
+      isAdmin() ? api('/affiliate/admin') : Promise.resolve(null),
+    ]);
+    const lvlText = (levels) => levels.map((p, i) => `<b>${p}%</b> ${i === 0 ? 'on sales by people you invite' : i === 1 ? 'on sales by the people they invite' : `on level ${i + 1}`}`)
+      .join(', ').replace(/, ([^,]*)$/, ' and $1');
+    const kindLabel = { sale: 'Sale', adjustment: 'Commission changed', reversal: 'Cancelled — taken back' };
+    shell(`
+      ${mine ? `
+      <div class="card aff-hero">
+        <div>
+          <h1 style="margin:0">Make extra money 💸</h1>
+          <p style="margin:.4rem 0 0">Invite friends to sell with E&amp;O. You earn ${lvlText(mine.levels)}, as a share of each sale's commission and on top of your own pay.</p>
+          <p class="small muted" style="margin:.3rem 0 0">You earn when their customer orders, not when they sign up.${mine.approval ? ' New sign-ups are approved by an admin first.' : ''}</p>
+        </div>
+        <div class="aff-link">
+          <label for="affLink" class="small">Your personal sign-up link</label>
+          <div class="row" style="flex-wrap:nowrap"><input id="affLink" readonly value="${esc(mine.link)}" style="flex:1;min-width:0"><button class="btn primary" id="affCopy">Copy</button></div>
+          <div class="row" style="margin-top:.5rem">${navigator.share ? '<button class="btn small" id="affShare">📤 Share</button>' : ''}<a class="btn small" href="sms:?&body=${encodeURIComponent(`Want to make extra money selling Spectrum? Join my team: ${mine.link}`)}">💬 Text it</a>${state.me.email_enabled ? '<button class="btn small" id="affEmail">✉ Email it</button>' : ''}</div>
+        </div>
+      </div>
+      <div class="stats aff-stats">
+        <div class="stat"><div class="n">${usd(mine.stats.owed)}</div><div class="l">Owed to you</div></div>
+        <div class="stat"><div class="n">${usd(mine.stats.month)}</div><div class="l">Earned this month</div></div>
+        <div class="stat"><div class="n">${usd(mine.stats.paid)}</div><div class="l">Paid to you so far</div></div>
+        <div class="stat"><div class="n">${mine.stats.by_level[1] || 0}<span class="of"> + ${Object.entries(mine.stats.by_level).filter(([l]) => l !== '1').reduce((n, [, c]) => n + c, 0)}</span></div><div class="l">Your recruits + theirs</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><h2>People you invited</h2>
+          ${mine.direct.length ? `<ul class="lead-list">${mine.direct.map((d) => `<li style="cursor:default"><div class="who"><b>${esc(d.full_name)}</b><span>joined ${when(d.created_at)}${d.approval_pending ? ' · <span class="warn-text">waiting for approval</span>' : ''}${d.recruits ? ` · invited ${d.recruits}` : ''}</span></div>
+            <div style="text-align:right"><b>${usd(d.earned_from)}</b><div class="small muted">${d.orders_month} order${d.orders_month === 1 ? '' : 's'} this month</div></div></li>`).join('')}</ul>`
+            : '<p class="muted">Nobody yet. Share your link to get started.</p>'}
+        </div>
+        <div class="card"><h2>Your earnings</h2>
+          ${mine.earnings.length ? `<div class="table-wrap"><table class="rtable"><thead><tr><th>When</th><th>Sale by</th><th>Level</th><th class="num">Amount</th></tr></thead><tbody>
+            ${mine.earnings.map((e) => `<tr><td data-label="When">${when(e.created_at)}</td><td data-label="Sale by">${esc(e.seller_name || '—')}<div class="small muted">${kindLabel[e.kind]} · ${e.pct}% of ${usd(e.base)}</div></td>
+              <td data-label="Level">${e.level}</td><td data-label="Amount" class="num ${e.amount < 0 ? 'warn-text' : ''}"><b>${usd(e.amount)}</b>${e.payout_id ? '<div class="small muted">paid</div>' : ''}</td></tr>`).join('')}
+            </tbody></table></div>` : '<p class="muted">No earnings yet. You earn when someone you invited makes a sale.</p>'}
+          ${state.me.payments ? '<p class="small muted" style="margin:.8rem 0 0">Make sure your <a href="#/payments">payout details</a> are up to date.</p>' : ''}
+        </div>
+      </div>` : ''}
+      ${adm ? `
+      <div class="card">
+        <h2>Affiliate program settings <span class="small muted">(admins)</span></h2>
+        <form id="affSettings" class="aff-settings">
+          <label class="check"><input type="checkbox" name="enabled" ${adm.settings.enabled ? 'checked' : ''}> Program on (everyone gets a personal sign-up link)</label>
+          <div class="field"><label for="aff_levels">Percent of the commission, per level</label><input id="aff_levels" name="levels" value="${esc(adm.settings.levels.join(', '))}" placeholder="15, 5">
+            <p class="small muted" style="margin:.3rem 0 0">Level 1 is the person who invited the seller, level 2 the person who invited them, and so on. Up to 5 levels, 0–50% each.</p></div>
+          <div class="field"><label for="aff_comm">Default commission per sale ($)</label><input id="aff_comm" name="commission" type="number" min="0" step="0.01" value="${esc(adm.settings.commission)}">
+            <p class="small muted" style="margin:.3rem 0 0">Filled in when a lead is marked Ordered. Change it per lead on the lead's page.</p></div>
+          <label class="check"><input type="checkbox" name="approval" ${adm.settings.approval ? 'checked' : ''}> New sign-ups need my approval</label>
+          <div style="margin-top:.9rem"><button class="btn primary">Save</button></div>
+        </form>
+      </div>
+      ${adm.pending.length ? `<div class="card"><h2>Waiting for approval (${adm.pending.length})</h2>
+        <div class="table-wrap"><table class="rtable"><thead><tr><th>Name</th><th>Contact</th><th>Invited by</th><th>Signed up</th><th></th></tr></thead><tbody>
+        ${adm.pending.map((u) => `<tr><td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</div></td>
+          <td data-label="Contact" class="small">${esc(u.email)}${u.phone ? `<div>${esc(u.phone)}</div>` : ''}</td><td data-label="Invited by">${esc(u.sponsor_name || '—')}</td><td data-label="Signed up">${when(u.created_at)}</td>
+          <td class="actions"><button class="btn small primary" data-approve="${u.id}">Approve</button> <button class="btn small danger" data-reject="${u.id}" data-name="${esc(u.full_name)}">Reject</button></td></tr>`).join('')}
+        </tbody></table></div></div>` : ''}
+      <div class="card"><div class="row between"><h2 style="margin:0">Affiliate earnings by person</h2><span class="small muted">“Mark paid” after you've sent the money.</span></div>
+        <div class="table-wrap" style="margin-top:.6rem"><table class="rtable"><thead><tr><th>Person</th><th>Invited by</th><th class="num">Recruits</th><th class="num">Owed</th><th class="num">All-time</th><th></th></tr></thead><tbody>
+        ${adm.members.map((m) => `<tr class="${m.active ? '' : 'inactive'}"><td data-label="Person"><b>${esc(m.full_name)}</b><div class="small muted">${roleLabel(m.role)}${m.last_paid ? ` · last paid ${when(m.last_paid)}` : ''}</div></td>
+          <td data-label="Invited by"><select data-sponsor="${m.id}" style="width:auto;max-width:180px"><option value="">— nobody —</option>${adm.members.filter((x) => x.id !== m.id).map((x) => `<option value="${x.id}" ${m.sponsor_id === x.id ? 'selected' : ''}>${esc(x.full_name)}</option>`).join('')}</select></td>
+          <td data-label="Recruits" class="num">${m.recruits}</td><td data-label="Owed" class="num"><b class="${m.owed < 0 ? 'warn-text' : ''}">${usd(m.owed)}</b></td><td data-label="All-time" class="num">${usd(m.lifetime)}</td>
+          <td class="actions">${m.owed > 0 ? `<button class="btn small" data-paid="${m.id}" data-name="${esc(m.full_name)}" data-amt="${m.owed}">Mark paid</button>${m.has_payout_details ? '' : '<div class="small warn-text">no payout details</div>'}` : ''}</td></tr>`).join('')}
+        </tbody></table></div></div>
+      ${adm.payouts.length ? `<div class="card"><h2>Recent affiliate payouts</h2><div class="table-wrap"><table class="rtable"><thead><tr><th>When</th><th>To</th><th class="num">Amount</th><th>Note</th><th>By</th></tr></thead><tbody>
+        ${adm.payouts.map((p) => `<tr><td data-label="When">${when(p.created_at)}</td><td data-label="To">${esc(p.full_name)}</td><td data-label="Amount" class="num">${usd(p.amount)}</td><td data-label="Note" class="small">${esc(p.note)}</td><td data-label="By" class="small muted">${esc(p.paid_by || '')}</td></tr>`).join('')}
+        </tbody></table></div></div>` : ''}` : ''}`);
+
+    if (mine) {
+      document.getElementById('affLink').onfocus = (e) => e.target.select();
+      document.getElementById('affCopy').onclick = async () => toast((await copyText(mine.link)) ? 'Link copied' : 'Copy failed — select the link and copy it');
+      const share = document.getElementById('affShare');
+      if (share) share.onclick = () => navigator.share({ title: 'Join my team', text: 'Want to make extra money selling Spectrum? Join my team:', url: mine.link }).catch(() => {});
+      const em = document.getElementById('affEmail');
+      if (em) em.onclick = () => {
+        const m = modal(`<h2>Email your link</h2>
+          <form id="affMail"><div class="field"><label for="am_to">To <span class="muted small">(up to 10, separated by commas)</span></label><textarea id="am_to" rows="2" autocapitalize="none" required></textarea></div>
+          <div class="field"><label for="am_msg">Personal message <span class="muted small">(optional)</span></label><input id="am_msg" maxlength="500" placeholder="Hey! I've been making extra money with this…"></div>
+          <div id="amErr"></div>
+          <div class="row" style="justify-content:flex-end;margin-top:.8rem"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Send</button></div></form>`);
+        m.querySelector('#affMail').onsubmit = async (e) => {
+          e.preventDefault();
+          try {
+            const r = await api('/affiliate/invite', { method: 'POST', body: { emails: m.querySelector('#am_to').value, message: m.querySelector('#am_msg').value } });
+            closeModal();
+            const ok = r.emailed.filter((x) => x.sent).map((x) => x.email);
+            toast(ok.length ? `Sent to ${ok.join(', ')}` : 'Nothing was sent');
+          } catch (err) { m.querySelector('#amErr').innerHTML = `<div class="alert err small">${esc(err.message)}</div>`; }
+        };
+      };
+    }
+    if (adm) {
+      const f = document.getElementById('affSettings');
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          await api('/affiliate/settings', { method: 'PATCH', body: { enabled: f.enabled.checked, approval: f.approval.checked, levels: f.levels.value, commission: f.commission.value || 0 } });
+          await refreshMe(); toast('Affiliate settings saved'); renderAffiliate();
+        } catch (err) { toast(err.message); }
+      };
+      document.querySelectorAll('[data-approve]').forEach((b) => { b.onclick = async () => { try { await api(`/affiliate/approve/${b.dataset.approve}`, { method: 'POST', body: { approve: true } }); toast('Approved — they can sign in now'); renderAffiliate(); } catch (err) { toast(err.message); } }; });
+      document.querySelectorAll('[data-reject]').forEach((b) => { b.onclick = async () => { if (!confirm(`Reject ${b.dataset.name}? Their sign-up is deleted.`)) return; try { await api(`/affiliate/approve/${b.dataset.reject}`, { method: 'POST', body: { approve: false } }); toast('Sign-up rejected'); renderAffiliate(); } catch (err) { toast(err.message); } }; });
+      document.querySelectorAll('[data-sponsor]').forEach((sel) => { sel.onchange = async () => { try { await api(`/affiliate/sponsor/${sel.dataset.sponsor}`, { method: 'PATCH', body: { sponsor_id: sel.value || null } }); toast('Saved'); } catch (err) { toast(err.message); renderAffiliate(); } }; });
+      document.querySelectorAll('[data-paid]').forEach((b) => {
+        b.onclick = async () => {
+          const note = prompt(`Mark ${usd(b.dataset.amt)} as paid to ${b.dataset.name}? Add a note if you like (e.g. "Zelle 10/3"):`, '');
+          if (note === null) return;
+          try { await api('/affiliate/payouts', { method: 'POST', body: { user_id: Number(b.dataset.paid), note } }); toast('Marked as paid'); renderAffiliate(); } catch (err) { toast(err.message); }
+        };
+      });
+    }
+  }
+
   // ---------- payments ----------
 
   const PAY_METHODS = { bank: 'Bank account', bit: 'Bit', bitcoin: 'Bitcoin wallet' };
@@ -2263,11 +2393,12 @@
 
   // ---------- join with an invite link (public) ----------
 
-  async function renderJoin(token) {
+  async function renderJoin(token, affiliate) {
+    const joinApi = `/api/${affiliate ? 'join-a' : 'join'}/${encodeURIComponent(token)}`;
     $app.innerHTML = '<div class="login-wrap"><div class="card login"><p class="muted">Checking your invite…</p></div></div>';
     let info;
     try {
-      const res = await fetch(`/api/join/${encodeURIComponent(token)}`, { credentials: 'same-origin' });
+      const res = await fetch(joinApi, { credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'This invite link isn’t valid.');
       info = data;
@@ -2282,7 +2413,8 @@
       <div class="login-wrap"><form class="card login join" id="joinForm" autocomplete="on">
         ${lockup()}
         <h1>Create your account</h1>
-        <p class="muted" style="margin-top:0">${esc(info.invited_by)} invited you to join as a <b>${esc(info.role_label)}</b>${info.team_name ? ` on <b>${esc(info.team_name)}</b>` : ''}.</p>
+        <p class="muted" style="margin-top:0">${esc(info.invited_by)} invited you to join as a <b>${esc(info.role_label)}</b>${info.team_name ? ` on <b>${esc(info.team_name)}</b>` : ''}.${info.affiliate ? ' You earn commission on every sale you make.' : ''}</p>
+        ${info.approval ? '<p class="small muted" style="margin-top:0">An admin approves new accounts. We\'ll email you when yours is ready.</p>' : ''}
         ${signedIn}
         <div class="field"><label for="j_name">Full name</label><input id="j_name" autocomplete="name" required maxlength="100"></div>
         <div class="field"><label for="j_email">Email</label><input id="j_email" type="email" autocomplete="email" autocapitalize="none" required>
@@ -2307,7 +2439,7 @@
     };
     nameIn.focus();
     const out = document.getElementById('joinSignOut');
-    if (out) out.onclick = async () => { await api('/logout', { method: 'POST', body: {} }).catch(() => {}); state.me = null; renderJoin(token); };
+    if (out) out.onclick = async () => { await api('/logout', { method: 'POST', body: {} }).catch(() => {}); state.me = null; renderJoin(token, affiliate); };
     document.getElementById('joinForm').onsubmit = async (e) => {
       e.preventDefault();
       const err = document.getElementById('joinErr');
@@ -2316,13 +2448,20 @@
       const btn = e.target.querySelector('.btn.primary');
       btn.disabled = true;
       try {
-        const res = await fetch(`/api/join/${encodeURIComponent(token)}`, {
+        const res = await fetch(joinApi, {
           method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ full_name: nameIn.value, email: document.getElementById('j_email').value, phone: document.getElementById('j_phone').value,
             username: userIn.value, password: pw, password_confirm: document.getElementById('j_pw2').value }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+        if (data.pending) {
+          $app.innerHTML = `<div class="login-wrap"><div class="card login">${lockup()}
+            <h1>You're signed up 🎉</h1>
+            <p>An admin will approve your account shortly. We'll email <b>${esc(document.getElementById('j_email').value)}</b> when it's ready, then you can sign in with <b>${esc(userIn.value.toLowerCase())}</b> and the password you chose.</p>
+            <p style="margin-top:1rem"><a class="btn" href="#/">Go to sign in</a></p></div></div>`;
+          return;
+        }
         state.welcome = { emailed: data.welcome && data.welcome.sent };
         await refreshMe();
         location.hash = '#/help?welcome=1';
@@ -2425,6 +2564,16 @@
         <li>Enter your sign-in password and tap <b>Save payout details</b>.</li></ol>
         <p>Account numbers are encrypted. You only see the last 4 digits; admins can see the full details, and every look is recorded. You get an email each time your details change. If you didn't change them, change your password and tell your admin.</p>
         ${isAdmin() ? '<p><b>Admins:</b> managers always have the Payments tab. Switch it on for a rep or dispatcher with the <b>Payments tab</b> box under Admin → All users. <b>Show full details</b> on the Payments page reveals what you need to pay someone.</p>' : ''}` });
+    }
+    if (state.me.affiliate || isAdmin()) {
+      S.push({ id: 'affiliate', title: 'Affiliate program: invite friends, earn extra', roles: 'all', body: `
+        <ol><li>Open <a href="#/affiliate"><b>Affiliate</b></a> and copy <b>your personal sign-up link</b>, or tap Share, Text it or Email it.</li>
+        <li>Friends who sign up with it join as reps${state.me.team_name ? ` on ${esc(state.me.team_name)}` : ''}. You're recorded as the person who invited them.</li>
+        <li>When one of them makes a sale and the customer <b>orders</b>, you earn a percentage of that sale's commission, <b>15%</b> by default. When the people <i>they</i> invite sell, you earn <b>5%</b>. This is on top of your own pay.</li></ol>
+        <ul><li>You earn from sales only, never just for someone signing up.</li>
+        <li>If an order is cancelled, that earning is taken back. If it was already paid, it comes off your next payout.</li>
+        <li>The Affiliate page shows who you invited, what you've earned from each person, and what you're owed.</li></ul>
+        ${isAdmin() ? '<p><b>Admins:</b> switch the program on, set the percentages per level and the default commission per sale, and choose whether new sign-ups need your approval, all on the Affiliate page. Set or change a sale\'s commission on the lead\'s page (Update Status → Commission). Use <b>Mark paid</b> after sending someone their earnings. For people who were here before the program, set <b>Invited by</b> in the table.</p>' : ''}` });
     }
     S.push({ id: 'faq', title: 'Common questions', roles: 'all', body: `
       <dl class="help-faq">
@@ -3133,8 +3282,8 @@
 
 
   async function route_() {
-    const join = location.hash.match(/^#\/join\/([A-Za-z0-9_-]{10,64})$/);
-    if (join) return renderJoin(join[1]);
+    const join = location.hash.match(/^#\/join\/(a\/)?([A-Za-z0-9_-]{6,64})$/);
+    if (join) return renderJoin(join[2], !!join[1]);
     if (!state.me) return renderLogin();
     if (state.me.must_change_password) return renderChangePassword(true);
     const h = location.hash.split('?')[0] || defaultRoute();
@@ -3149,6 +3298,7 @@
       if (h === '#/audit-logs') return await renderAuditLogs();
       if (h === '#/team') return await renderTeam();
       if (h === '#/payments') return await renderPayments();
+      if (h === '#/affiliate') return await renderAffiliate();
 
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();
