@@ -808,41 +808,233 @@
     const ppl = r.can_assign ? await people() : { dispatchers: [] };
     const editing = state.editing === r.id;
     const rs = new Set((r.services || '').split(',').map((x) => x.trim()).filter(Boolean));
+
+    // Helpers
+    const initials = (name) => (name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+    const empty = '<span class="field-value empty">—</span>';
+    const fv = (v) => v ? `<span class="field-value">${v}</span>` : empty;
+    const daysSince = (dateStr) => { const d = new Date(dateStr); const now = new Date(); return Math.floor((now - d) / 86400000); };
+    const svcCount = rs.size;
+    const createdDays = daysSince(r.created_at);
+    const estVal = r.est_monthly_value || 0;
+    const priority = r.lead_priority || 'Standard';
+    const contactPref = r.contact_pref || 'Anytime';
+    const CONTACT_PREFS = ['Anytime', 'Morning', 'Afternoon', 'Evening', 'Weekend'];
+    const PRIORITIES = ['Low', 'Standard', 'High', 'Urgent'];
+
     shell(`
-      <p><a href="javascript:history.back()">← Back</a></p>
+      <p><a href="javascript:history.back()">← Back to list</a></p>
+
+      <!-- Record Header Card -->
+      <div class="card" style="margin-bottom:1rem">
+        <div class="record-header">
+          <div class="record-avatar">${initials(r.customer_name)}</div>
+          <div class="record-title-block">
+            <h1>${esc(leadName(r))}</h1>
+            <div class="record-subtitle">
+              ${r.company ? esc(r.company) + ' · ' : ''}#${r.id} · ${esc(r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${esc(r.entered_by_name)}` : ''}
+            </div>
+            <div class="record-meta-row">
+              ${pill(r.status)}
+              <span class="priority-badge ${esc(priority)}">${esc(priority)} Priority</span>
+              <span class="pref-chip">🕐 ${esc(contactPref)}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Highlights Strip -->
+        <div class="record-highlights">
+          <div class="highlight-tile">
+            <div class="hl-val" style="color:var(--ok)">${estVal ? '$' + estVal.toLocaleString('en-US', { minimumFractionDigits: 0 }) : '—'}</div>
+            <div class="hl-label">Est. Monthly</div>
+          </div>
+          <div class="highlight-tile">
+            <div class="hl-val">${svcCount}</div>
+            <div class="hl-label">Services</div>
+          </div>
+          <div class="highlight-tile">
+            <div class="hl-val">${createdDays}d</div>
+            <div class="hl-label">Age</div>
+          </div>
+          <div class="highlight-tile">
+            <div class="hl-val">${r.assigned_name ? esc(r.assigned_name.split(' ')[0]) : '—'}</div>
+            <div class="hl-label">Dispatcher</div>
+          </div>
+        </div>
+
+        ${r.can_edit ? `<div class="record-actions">
+          ${!editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
+          ${r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
+        </div>` : ''}
+      </div>
+
       <div class="grid-2">
+        <!-- LEFT COLUMN: Detail Sections -->
         <div class="stack">
           <div class="card">
-            <div class="row between"><h1 style="margin:0">${esc(leadName(r))}</h1>${pill(r.status)}</div>
-            <p class="small muted">#${r.id} · ${esc(r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${esc(r.entered_by_name)}` : ''} · ${fullDate(r.created_at)}</p>
             ${editing ? `
               <form id="editForm">
-                <div class="field"><label>Name</label><input name="name" value="${esc(r.customer_name)}"></div>
-                <div class="field"><label>Phone</label><input name="phone" value="${esc(r.phone)}"></div>
-                <div class="field"><label>Email</label><input name="email" value="${esc(r.email)}"></div>
-                <div class="field"><label>Address</label><input name="address" value="${esc(r.address)}"></div>
-                <div class="field"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
-                <div class="field"><label>Notes</label><textarea name="notes" rows="4">${esc(r.notes)}</textarea></div>
+                <h2 style="margin-bottom:.8rem">Edit Record</h2>
+                <div class="edit-grid">
+                  <div class="field"><label>Full Name</label><input name="name" value="${esc(r.customer_name)}" placeholder="Customer name"></div>
+                  <div class="field"><label>Company</label><input name="company" value="${esc(r.company || '')}" placeholder="Company / Organization"></div>
+                  <div class="field"><label>Phone</label><input name="phone" value="${esc(r.phone)}" placeholder="(555) 123-4567"></div>
+                  <div class="field"><label>Alt Phone</label><input name="alt_phone" value="${esc(r.alt_phone || '')}" placeholder="Secondary number"></div>
+                  <div class="field"><label>Email</label><input name="email" value="${esc(r.email)}" placeholder="email@example.com"></div>
+                  <div class="field"><label>Contact Preference</label>
+                    <select name="contact_pref">${CONTACT_PREFS.map((p) => `<option ${contactPref === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
+                  </div>
+                  <div class="field full"><label>Address</label><input name="address" value="${esc(r.address)}" placeholder="Street address"></div>
+                  <div class="field"><label>City</label><input name="city" value="${esc(r.city || '')}" placeholder="City"></div>
+                  <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" placeholder="ZIP code"></div>
+                  <div class="field full"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
+                  <div class="field"><label>Lead Priority</label>
+                    <select name="lead_priority">${PRIORITIES.map((p) => `<option ${priority === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
+                  </div>
+                  <div class="field"><label>Est. Monthly Value ($)</label><input name="est_monthly_value" type="number" step="0.01" min="0" value="${estVal}" placeholder="0.00"></div>
+                  <div class="field full"><label>Package Details</label><textarea name="package_details" rows="2" placeholder="e.g. Internet 500, TV Select, Mobile line">${esc(r.package_details || '')}</textarea></div>
+                  <div class="field full"><label>Notes</label><textarea name="notes" rows="3" placeholder="Internal notes about this lead">${esc(r.notes)}</textarea></div>
+                </div>
                 <div id="editErr" style="margin-top:.6rem"></div>
-                <div class="row" style="margin-top:.8rem"><button class="btn primary">Save</button><button type="button" class="btn" id="cancelEdit">Cancel</button></div>
-              </form>` : `
-              <dl class="kv">
-                <dt>Phone</dt><dd>${r.phone ? `<a href="tel:${esc(r.phone.replace(/[^\d+]/g, ''))}">${esc(r.phone)}</a>` : '<span class="muted">—</span>'}</dd>
-                <dt>Email</dt><dd>${r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : '<span class="muted">—</span>'}</dd>
-                <dt>Address</dt><dd>${r.address ? `<a href="https://maps.google.com/?q=${encodeURIComponent(r.address)}" target="_blank" rel="noopener">${esc(r.address)}</a>` : '<span class="muted">—</span>'}</dd>
-                <dt>Services</dt><dd>${svcTags(r.services) || '<span class="muted">—</span>'}</dd>
-                <dt>Notes</dt><dd style="white-space:pre-wrap">${esc(r.notes) || '<span class="muted">—</span>'}</dd>
-                <dt>Account #</dt><dd>${esc(r.account_number) || '<span class="muted">—</span>'}</dd>
-                <dt>Install</dt><dd>${r.install_date ? esc(dayDate(r.install_date)) : '<span class="muted">—</span>'}</dd>
-                <dt>Dispatch</dt><dd>${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">Unassigned</span>'}</dd>
-                <dt>Updated</dt><dd>${fullDate(r.updated_at)}</dd>
-              </dl>
-              ${r.raw_text ? `<details class="raw"><summary class="small">Original entry</summary><pre>${esc(r.raw_text)}</pre></details>` : ''}
-              ${r.can_edit ? '<button class="btn small" id="editBtn" style="margin-top:.8rem">Edit details</button>' : ''}`}
+                <div class="row" style="margin-top:.8rem"><button class="btn primary">💾 Save Changes</button><button type="button" class="btn" id="cancelEdit">Cancel</button></div>
+              </form>
+            ` : `
+              <!-- CONTACT INFORMATION -->
+              <div class="record-section" data-section="contact">
+                <div class="record-section-header" data-toggle-section>
+                  <h3>Contact Information</h3>
+                  <span class="section-chevron">▼</span>
+                </div>
+                <div class="record-fields">
+                  <div class="field-row">
+                    <span class="field-label">Full Name</span>
+                    ${fv(esc(r.customer_name))}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Company</span>
+                    ${fv(r.company ? esc(r.company) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Phone</span>
+                    ${r.phone ? `<span class="field-value"><a href="tel:${esc(r.phone.replace(/[^\\d+]/g, ''))}">${esc(r.phone)}</a></span>` : empty}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Alt Phone</span>
+                    ${r.alt_phone ? `<span class="field-value"><a href="tel:${esc(r.alt_phone.replace(/[^\\d+]/g, ''))}">${esc(r.alt_phone)}</a></span>` : empty}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Email</span>
+                    ${r.email ? `<span class="field-value"><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></span>` : empty}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Preferred Contact</span>
+                    <span class="field-value"><span class="pref-chip">🕐 ${esc(contactPref)}</span></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- LOCATION -->
+              <div class="record-section" data-section="location">
+                <div class="record-section-header" data-toggle-section>
+                  <h3>Location</h3>
+                  <span class="section-chevron">▼</span>
+                </div>
+                <div class="record-fields">
+                  <div class="field-row full-width">
+                    <span class="field-label">Address</span>
+                    ${r.address ? `<span class="field-value"><a href="https://maps.google.com/?q=${encodeURIComponent(r.address)}" target="_blank" rel="noopener">📍 ${esc(r.address)}</a></span>` : empty}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">City</span>
+                    ${fv(r.city ? esc(r.city) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">ZIP Code</span>
+                    ${fv(r.zip ? esc(r.zip) : '')}
+                  </div>
+                </div>
+              </div>
+
+              <!-- LEAD DETAILS -->
+              <div class="record-section" data-section="lead">
+                <div class="record-section-header" data-toggle-section>
+                  <h3>Lead Details</h3>
+                  <span class="section-chevron">▼</span>
+                </div>
+                <div class="record-fields">
+                  <div class="field-row">
+                    <span class="field-label">Priority</span>
+                    <span class="field-value"><span class="priority-badge ${esc(priority)}">${esc(priority)}</span></span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Est. Monthly Value</span>
+                    ${estVal ? `<span class="field-value value-highlight">$${estVal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>` : empty}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Created By</span>
+                    <span class="field-value">${esc(r.created_by_name)}${r.team_name ? ` <span class="muted small">(${esc(r.team_name)})</span>` : ''}</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Created</span>
+                    <span class="field-value">${fullDate(r.created_at)}</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Last Updated</span>
+                    <span class="field-value">${fullDate(r.updated_at)}</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Dispatch</span>
+                    <span class="field-value">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">Unassigned</span>'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ACCOUNT & SERVICES -->
+              <div class="record-section" data-section="account">
+                <div class="record-section-header" data-toggle-section>
+                  <h3>Account &amp; Services</h3>
+                  <span class="section-chevron">▼</span>
+                </div>
+                <div class="record-fields">
+                  <div class="field-row">
+                    <span class="field-label">Services</span>
+                    <span class="field-value">${svcTags(r.services) || '<span class="empty">—</span>'}</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Package Details</span>
+                    ${fv(r.package_details ? esc(r.package_details) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Account #</span>
+                    ${fv(r.account_number ? esc(r.account_number) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Install Date</span>
+                    ${r.install_date ? `<span class="field-value">${esc(dayDate(r.install_date))}</span>` : empty}
+                  </div>
+                </div>
+              </div>
+
+              <!-- NOTES -->
+              <div class="record-section" data-section="notes">
+                <div class="record-section-header" data-toggle-section>
+                  <h3>Notes</h3>
+                  <span class="section-chevron">▼</span>
+                </div>
+                <div class="record-fields single-col">
+                  <div class="field-row full-width">
+                    <span class="field-value" style="white-space:pre-wrap">${esc(r.notes) || '<span class="empty">No notes recorded.</span>'}</span>
+                  </div>
+                </div>
+              </div>
+
+              ${r.raw_text ? `<details class="raw" style="margin-top:.5rem"><summary class="small muted" style="cursor:pointer">View original entry text</summary><pre style="margin:.5rem 0 0;padding:.7rem;background:var(--surface-2);border-radius:8px;font-size:.82rem;overflow-x:auto">${esc(r.raw_text)}</pre></details>` : ''}
+            `}
           </div>
+
           ${r.can_manage ? `
           <div class="card">
-            <h2>Update status</h2>
+            <h2>Update Status</h2>
             <div class="seg" id="statusSeg" style="margin-bottom:.9rem">${STATUSES.map((s) => `<button data-s="${s}" class="${r.status === s ? 'on' : ''}">${s}</button>`).join('')}</div>
             <form id="acctForm" class="fix-grid" style="margin:0">
               <div><label for="acct">Spectrum account / order #</label><input id="acct" name="acct" value="${esc(r.account_number)}"></div>
@@ -850,32 +1042,42 @@
               <div class="full"><button class="btn">Save</button></div>
             </form>
           </div>` : ''}
+
           ${r.can_assign ? `
           <div class="card">
-            <h2>Dispatch</h2>
+            <h2>Dispatch Assignment</h2>
             <div class="row">
               <select id="assignSel" style="flex:1;width:auto;min-width:0"><option value="">Unassigned</option>${ppl.dispatchers.map((d) => `<option value="${d.id}" ${r.assigned_to === d.id ? 'selected' : ''}>${esc(d.full_name)}${d.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select>
               ${r.assigned_to !== state.me.id ? '<button class="btn primary" id="takeBtn">Take it</button>' : ''}
             </div>
           </div>` : ''}
+        </div>
+
+        <!-- RIGHT COLUMN: Activity Sidebar -->
+        <div class="activity-sidebar">
           <div class="card">
-            <h2>History</h2>
+            <h2>Activity Timeline</h2>
             <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${esc(h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
           </div>
-        </div>
-        <div class="card">
-          <h2>Comments</h2>
-          <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
-          <div id="comments">${r.comments.length ? r.comments.map((c) => `
-            <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+          <div class="card">
+            <h2>Comments</h2>
+            <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
+            <div id="comments">${r.comments.length ? r.comments.map((c) => `
+              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+            </div>
+            <form id="commentForm" style="margin-top:1rem">
+              <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
+              <div id="mentionBox"></div>
+              <button class="btn primary" style="margin-top:.5rem">Post comment</button>
+            </form>
           </div>
-          <form id="commentForm" style="margin-top:1rem">
-            <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
-            <div id="mentionBox"></div>
-            <button class="btn primary" style="margin-top:.5rem">Post comment</button>
-          </form>
         </div>
       </div>`);
+
+    // Section collapse toggles
+    document.querySelectorAll('[data-toggle-section]').forEach((hdr) => {
+      hdr.onclick = () => hdr.closest('.record-section').classList.toggle('collapsed');
+    });
 
     const editBtn = document.getElementById('editBtn');
     if (editBtn) editBtn.onclick = () => { state.editing = r.id; renderReferral(id); };

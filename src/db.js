@@ -243,7 +243,19 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_audit_created ON audit_logs(created_at);
   `,
+  // v6: rich enterprise contact & account record fields
+  `
+  ALTER TABLE referrals ADD COLUMN company TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN city TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN zip TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN alt_phone TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN contact_pref TEXT NOT NULL DEFAULT 'Anytime';
+  ALTER TABLE referrals ADD COLUMN package_details TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN lead_priority TEXT NOT NULL DEFAULT 'Standard';
+  ALTER TABLE referrals ADD COLUMN est_monthly_value REAL NOT NULL DEFAULT 0.0;
+  `,
 ];
+
 
 
 function migrate(db) {
