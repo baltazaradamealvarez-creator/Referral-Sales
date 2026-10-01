@@ -28,6 +28,7 @@ async function setup() {
       get: (p) => call('GET', p),
       post: (p, b = {}) => call('POST', p, b),
       patch: (p, b) => call('PATCH', p, b),
+      del: (p) => call('DELETE', p, {}),
       async login(username, password, newPassword) {
         const r = await call('POST', '/login', { username, password });
         assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -328,7 +329,7 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 15);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 17);
 
 
   assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
@@ -338,6 +339,8 @@ test('upgrades a database created by the first version without losing data', asy
   assert.equal(ref.assigned_to, null);
   assert.equal(ref.services, '');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments').get().n, 1);
+  db.prepare("UPDATE referrals SET status='Working' WHERE id=?").run(ref.id);
+  assert.equal(db.prepare('SELECT status FROM referrals WHERE id=?').get(ref.id).status,'Working');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 1);
   db.prepare("INSERT INTO users (username, full_name, password_hash, role) VALUES ('d', 'D', 'x', 'dispatch')").run();
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -349,6 +352,31 @@ test('upgrades a database created by the first version without losing data', asy
   const again = openDb(file);
   assert.equal(again.prepare('SELECT COUNT(*) AS n FROM referrals').get().n, 1);
   again.close();
+});
+
+test('Working leads stay open across filters, workload, reports and first-touch tracking; deleting test records is admin-only and audited',async(t)=>{
+  const s=await setup();t.after(()=>s.server.close());
+  const made=await s.repA.c.post('/referrals',{name:'Carla Vega',phone:'512-867-5309',services:['Internet']});
+  assert.equal(made.status,201);const id=made.body.id;
+  assert.equal((await s.repA.c.patch(`/referrals/${id}`,{status:'Working'})).status,403);
+  assert.equal((await s.mgrB.c.patch(`/referrals/${id}`,{status:'Working'})).status,404);
+  const update=await s.mgrA.c.patch(`/referrals/${id}`,{status:'Working'});
+  assert.equal(update.status,200);assert.equal(update.body.status,'Working');assert.ok(update.body.first_touch_at);
+  assert.ok((await s.admin.get('/me')).body.statuses.includes('Working'));
+  const stats=(await s.admin.get('/stats')).body;assert.ok(stats.statuses.includes('Working'));assert.equal(stats.unassigned,1);
+  const dashboard=(await s.admin.get('/dashboard?period=all')).body;assert.equal(dashboard.kpis.open,1);assert.equal(dashboard.kpis.by_status.Working,1);
+  s.db.prepare("UPDATE referrals SET updated_at=datetime('now','-90 days') WHERE id=?").run(id);
+  assert.ok((await s.admin.get('/referrals?status=Working&closed_days=7')).body.some((r)=>r.id===id),'Working remains on the board even when old');
+  await s.repA.c.post('/referrals',{name:'Jorge Perez',phone:'512-867-5310'});
+  const report=await s.admin.post('/reports/0/run',{config:{filters:[{field:'status',value:'Working'}]}});
+  assert.equal(report.status,200);assert.deepEqual(report.body.rows.map((r)=>r.id),[id]);
+  await s.mgrA.c.post(`/referrals/${id}/comments`,{body:'Sample entry for a workflow check.'});
+  assert.equal((await s.repA.c.del(`/referrals/${id}`)).status,403);assert.equal((await s.mgrA.c.del(`/referrals/${id}`)).status,403);
+  assert.equal((await s.admin.del(`/referrals/${id}`)).status,200);
+  assert.equal((await s.admin.get(`/referrals/${id}`)).status,404);
+  assert.equal(s.db.prepare('SELECT COUNT(*) AS n FROM comments WHERE referral_id=?').get(id).n,0);
+  assert.ok(s.db.prepare("SELECT 1 FROM audit_logs WHERE action='referral.delete' AND resource_id=?").get(String(id)));
+  assert.deepEqual(s.db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 
 test('email alerts go through Resend only when configured and wanted', async (t) => {

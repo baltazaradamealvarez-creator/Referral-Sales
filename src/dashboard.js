@@ -87,7 +87,7 @@ function buildDashboard(db, u, q) {
     return {
       entered: c.total,
       ordered: c.Ordered,
-      open: c.New + c.Passed,
+      open: c.New + c.Working + c.Passed,
       dnq: c.DNQ,
       cancelled: c.Cancelled,
       conversion: pct(c.Ordered, c.total),
@@ -157,10 +157,10 @@ function buildDashboard(db, u, q) {
       FROM teams t LEFT JOIN referrals r ON r.team_id = t.id AND ${R}
       GROUP BY t.id ORDER BY ordered DESC, entered DESC, t.name`).map((x) => ({ ...x, ordered: x.ordered || 0, conversion: pct(x.ordered || 0, x.entered) }));
     out.dispatch = {
-      unassigned: get(`SELECT COUNT(*) AS n FROM referrals r WHERE ${S} AND r.assigned_to IS NULL AND r.status IN ('New', 'Passed')`, ...sp).n,
+      unassigned: get(`SELECT COUNT(*) AS n FROM referrals r WHERE ${S} AND r.assigned_to IS NULL AND r.status IN ('New', 'Working', 'Passed')`, ...sp).n,
       people: all(`
         SELECT u.id, u.full_name,
-          (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed') AND ${S}) AS open,
+          (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Working', 'Passed') AND ${S}) AS open,
           (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status = 'Ordered' AND ${S} AND ${R}) AS ordered
         FROM users u WHERE u.active = 1 AND u.role = 'dispatch' ORDER BY open DESC, u.full_name`, ...sp, ...sp),
     };

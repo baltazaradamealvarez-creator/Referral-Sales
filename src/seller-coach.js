@@ -168,7 +168,17 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');const out=sendCheckin(u,Date.now(),true);logAudit(req,'coach.checkin','user',u.id,'Manual check-in queued');return out;
   }));
   app.get('/api/coach/drafts',wrap((req)=>{
-    requireRole(req,'admin');return db.prepare("SELECT d.*,u.full_name AS seller_name,r.full_name AS reviewer_name FROM coach_drafts d JOIN users u ON u.id=d.seller_id LEFT JOIN users r ON r.id=d.reviewer_id ORDER BY CASE WHEN d.status IN ('pending','failed') THEN 0 ELSE 1 END,d.id DESC LIMIT 100").all();
+    requireRole(req,'admin');const hidden=req.query.hidden==='1';
+    return db.prepare(`SELECT d.*,u.full_name AS seller_name,r.full_name AS reviewer_name FROM coach_drafts d JOIN users u ON u.id=d.seller_id LEFT JOIN users r ON r.id=d.reviewer_id WHERE d.hidden_at IS ${hidden?'NOT ':''}NULL ORDER BY CASE WHEN d.status IN ('pending','failed') THEN 0 ELSE 1 END,d.id DESC LIMIT 100`).all();
+  }));
+  app.patch('/api/coach/drafts/:id/visibility',wrap((req)=>{
+    requireRole(req,'admin');const d=db.prepare('SELECT * FROM coach_drafts WHERE id=?').get(Number(req.params.id));
+    if(!d)throw new HttpError(404,'Draft not found.');
+    if(typeof req.body?.hidden!=='boolean')throw new HttpError(400,'Choose whether to hide or restore this draft.');
+    if(req.body.hidden&&!['sent','rejected'].includes(d.status))throw new HttpError(409,'Approve or reject this draft before hiding it.');
+    db.prepare('UPDATE coach_drafts SET hidden_at=? WHERE id=?').run(req.body.hidden?sqlTime(Date.now()):null,d.id);
+    logAudit(req,req.body.hidden?'coach.hide':'coach.restore','coach_draft',d.id,'Coaching draft visibility changed');
+    return {hidden:req.body.hidden};
   }));
   app.post('/api/coach/drafts/:id/review',wrap((req)=>{
     const actor=requireRole(req,'admin');const d=db.prepare('SELECT * FROM coach_drafts WHERE id=?').get(Number(req.params.id));

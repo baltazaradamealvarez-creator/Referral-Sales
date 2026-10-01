@@ -39,7 +39,10 @@ function detectStatus(text, approvedStatus = 'Ordered') {
   if (/\b(cancel+ed|cancel+ation|cancel|cancelad[oa]|cancelar|not interested|no le interesa|ya no quiere)\b/.test(cleaned)) found.add('Cancelled');
   if (/\b(ordered|order placed|ordenad[oa]|orden puesta|sold|vendid[oa]|venta (hecha|cerrada|lista)|installed|instalad[oa])\b/.test(cleaned)) found.add('Ordered');
   if (/\b(approved|approve|aprobad[oa]|aprobaron)\b/.test(cleaned)) found.add(approvedStatus);
-  if (!found.has('DNQ') && /\b(passed|paso|qualified|califica|calificad[oa]|in progress|en proceso|working on it|trabajando)\b/.test(cleaned)) found.add('Passed');
+  if (!found.has('DNQ') && /\b(passed|paso|qualified|califica|calificad[oa])\b/.test(cleaned)) found.add('Passed');
+  // Working is an activity stage, not qualification. A reported outcome takes precedence.
+  const activity = cleaned.replace(/\b(not|no|still not|not yet|todavia no|aun no)\s+(?:(?:yet|estoy|estamos|esta)\s+)?(?:working|in progress|trabajando|en proceso)\b/g, ' ');
+  if (!found.size && (/^\s*working\s*$/.test(activity) || /\b(working on (?:it|this lead|this customer)|in progress|en proceso|trabajando)\b/.test(activity))) found.add('Working');
   const list = [...found];
   if (list.length === 1) return { status: list[0] };
   if (list.length > 1) return { options: list };
@@ -57,7 +60,7 @@ function instructions(approvedStatus) {
     '',
     '• Every new lead is posted here.',
     '• *Reply* to a lead (swipe right on it) to add a note. The *first dispatcher to reply takes the lead*.',
-    `• Write *approved* (→ ${ap}), *passed*, *DNQ* or *cancelled* in your reply to change its status.`,
+    `• Write *working*, *approved* (→ ${ap}), *passed*, *DNQ* or *cancelled* in your reply to change its status.`,
     '• Add *@owner* to send your note to the rep who entered the lead.',
     '• Can\'t find the post? Start with the lead number: *#123 approved*.',
     '• Ask the assistant — start with *bot*: _bot what\'s waiting?_ · _bot remind me at 5pm to call #12_ · _bot how did we do this week?_ Reply to its answer to keep talking, or message this number privately.',
@@ -68,7 +71,7 @@ function instructions(approvedStatus) {
     '',
     '• Cada lead nuevo se publica aquí.',
     '• *Responde* a un lead (desliza a la derecha) para agregar una nota. El *primer dispatcher en responder toma el lead*.',
-    `• Escribe *aprobado* (→ ${ap}), *pasó*, *no califica* o *cancelado* en tu respuesta para cambiar el estado.`,
+    `• Escribe *trabajando*, *aprobado* (→ ${ap}), *pasó*, *no califica* o *cancelado* en tu respuesta para cambiar el estado.`,
     '• Agrega *@dueño* para enviar tu nota al vendedor que ingresó el lead.',
     '• ¿No encuentras el mensaje? Empieza con el número del lead: *#123 aprobado*.',
     '• Pregúntale al asistente — empieza con *bot*: _bot ¿qué está pendiente?_ · _bot recuérdame a las 5pm llamar al #12_ · _bot ¿cómo nos fue esta semana?_ Responde a su mensaje para seguir, o escríbele a este número en privado.',

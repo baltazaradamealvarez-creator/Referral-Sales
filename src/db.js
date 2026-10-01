@@ -4,7 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { DatabaseSync } = require('node:sqlite');
 
-const STATUSES = ['New', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
+const STATUSES = ['New', 'Working', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
 const ROLES = ['admin', 'manager', 'dispatch', 'rep'];
 const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
@@ -464,6 +464,18 @@ const MIGRATIONS = [
   CREATE INDEX idx_coach_drafts_status ON coach_drafts(status, created_at);
   CREATE UNIQUE INDEX idx_coach_message ON coach_drafts(chat, message_id) WHERE message_id <> '';
   `,
+  // v16: expand the status constraint, retaining every referral column and index.
+  (db) => {
+    const oldSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='referrals'").get().sql;
+    const expanded = oldSql.replace("'New','Passed','DNQ','Ordered','Cancelled'", "'New','Working','Passed','DNQ','Ordered','Cancelled'");
+    if (expanded === oldSql) throw new Error('Could not expand the referral status constraint.');
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='referrals' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(expanded.replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?referrals["`]?/i, 'CREATE TABLE referrals_next'));
+    db.exec('INSERT INTO referrals_next SELECT * FROM referrals; DROP TABLE referrals; ALTER TABLE referrals_next RENAME TO referrals;');
+    for (const item of objects) db.exec(item.sql);
+  },
+  // v17: reversible cleanup of completed coaching drafts.
+  `ALTER TABLE coach_drafts ADD COLUMN hidden_at TEXT;`,
 ];
 
 
@@ -475,7 +487,8 @@ function migrate(db) {
     db.exec('PRAGMA foreign_keys = OFF');
     try {
       tx(db, () => {
-        db.exec(MIGRATIONS[v - 2]);
+        const migration = MIGRATIONS[v - 2];
+        if (typeof migration === 'function') migration(db); else db.exec(migration);
         const broken = db.prepare('PRAGMA foreign_key_check').all();
         if (broken.length) throw new Error(`Migration to v${v} broke foreign keys: ${JSON.stringify(broken)}`);
         db.exec(`PRAGMA user_version = ${v}`);

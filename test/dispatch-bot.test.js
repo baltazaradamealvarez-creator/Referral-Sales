@@ -82,6 +82,13 @@ test('keywords: statuses in English and Spanish, negation and ambiguity', () => 
   assert.deepEqual(detectStatus('no califica, crédito negado'), { status: 'DNQ' });
   assert.deepEqual(detectStatus('No pasó'), { status: 'DNQ' });
   assert.deepEqual(detectStatus('pasó, lo estoy trabajando'), { status: 'Passed' });
+  assert.deepEqual(detectStatus('Working'), { status: 'Working' });
+  assert.deepEqual(detectStatus('working on it'), { status: 'Working' });
+  assert.deepEqual(detectStatus('lo estoy trabajando'), { status: 'Working' });
+  assert.deepEqual(detectStatus('en proceso'), { status: 'Working' });
+  assert.deepEqual(detectStatus('not working on it yet'), {});
+  assert.deepEqual(detectStatus('no estoy trabajando'), {});
+  assert.deepEqual(detectStatus('the phone is not working'), {});
   assert.deepEqual(detectStatus('customer cancelled'), { status: 'Cancelled' });
   assert.deepEqual(detectStatus('ya no quiere el servicio'), { status: 'Cancelled' });
   assert.deepEqual(detectStatus('not approved yet, calling back'), {});

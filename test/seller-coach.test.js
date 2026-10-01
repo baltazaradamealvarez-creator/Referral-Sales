@@ -186,3 +186,22 @@ test('manual preview explains the same send blockers and reports accepted and fa
   now+=3*86400000;wa.error='Connection lost';await a.post(`/coach/sellers/${rep.id}/checkin`);await settle();
   const failed=await preview();assert.equal(failed.send_status,'failed');assert.match(failed.last_error,/Connection lost/);assert.equal(failed.blocked,'','failed manual check-in can be retried');
 });
+
+test('admins can hide and restore completed coaching drafts without bypassing review or losing history',async(t)=>{
+  const {db,app,a,make,wa}=await setup(t);const rep=await make('rep','512-555-0191');
+  await app.locals.coach.handle(rep.u,'Tell me about commissions',{chat:'cleanup',messageId:'draft-1'});
+  const d=(await a.get('/coach/drafts')).body[0],url=`/coach/drafts/${d.id}/visibility`;
+  assert.equal((await rep.c.patch(url,{hidden:true})).status,403);
+  assert.equal((await a.patch(url,{hidden:true})).status,409,'pending review cannot be hidden');
+  await a.post(`/coach/drafts/${d.id}/review`,{action:'reject'});
+  assert.equal((await a.patch(url,{hidden:'yes'})).status,400);
+  assert.equal((await a.patch(url,{hidden:true})).status,200);
+  assert.equal((await a.get('/coach/drafts')).body.length,0);
+  assert.equal((await a.get('/coach/drafts?hidden=1')).body[0].id,d.id);
+  assert.equal(db.prepare('SELECT status FROM coach_drafts WHERE id=?').get(d.id).status,'rejected');
+  assert.equal((await a.patch(url,{hidden:false})).status,200);
+  assert.equal((await a.get('/coach/drafts')).body[0].id,d.id);
+  assert.equal((await a.get('/coach/drafts?hidden=1')).body.length,0);
+  assert.equal(wa.sent.length,0,'cleanup sends no messages');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action IN ('coach.hide','coach.restore')").get().n,2);
+});

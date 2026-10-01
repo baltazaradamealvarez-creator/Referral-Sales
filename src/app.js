@@ -15,7 +15,7 @@ const waFormat = require('../public/waformat');
 const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
-const OPEN_STATUSES = ['New', 'Passed'];
+const OPEN_STATUSES = ['New', 'Working', 'Passed'];
 
 const DEFAULT_SETTINGS = {
   auto_assign: '0',
@@ -351,7 +351,7 @@ function createApp(db, opts = {}) {
     return db.prepare(`
       SELECT u.id FROM users u
       WHERE u.role = 'dispatch' AND u.active = 1
-      ORDER BY (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')),
+      ORDER BY (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Working', 'Passed')),
         (SELECT MAX(r.assigned_at) FROM referrals r WHERE r.assigned_to = u.id), u.id
       LIMIT 1`).get()?.id ?? null;
   }
@@ -471,7 +471,7 @@ function createApp(db, opts = {}) {
     const u = requireUser(req);
     const unread = db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read = 0').get(u.id).n;
     const queue = seesAll(u)
-      ? db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE assigned_to = ? AND status IN ('New', 'Passed')").get(u.id).n
+      ? db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE assigned_to = ? AND status IN ('New', 'Working', 'Passed')").get(u.id).n
       : 0;
     return {
       id: u.id, username: u.username, full_name: u.full_name, role: u.role,
@@ -757,7 +757,7 @@ function createApp(db, opts = {}) {
     }
     // Board: closed leads (DNQ / Ordered / Cancelled) only from the last N days.
     if (query.closed_days && Number(query.closed_days) > 0) {
-      where.push(`(r.status IN ('New', 'Passed') OR r.updated_at >= datetime('now', ?))`);
+      where.push(`(r.status IN ('New', 'Working', 'Passed') OR r.updated_at >= datetime('now', ?))`);
       params.push(`-${Math.floor(Number(query.closed_days))} days`);
     }
     if (query.from) {
@@ -948,6 +948,7 @@ function createApp(db, opts = {}) {
     tx(db, () => {
       affiliates.syncEarnings(ref.id, { removed: true });
       db.prepare('DELETE FROM referrals WHERE id = ?').run(ref.id);
+      logAudit(req, 'referral.delete', 'referral', ref.id, `Deleted ${ref.customer_name} (${ref.status})`);
     });
     return { ok: true };
   }));
@@ -1063,7 +1064,7 @@ function createApp(db, opts = {}) {
         WHERE u.active = 1 AND u.role IN ('dispatch', 'admin')
         GROUP BY u.id HAVING u.role = 'dispatch' OR COUNT(r.id) > 0
         ORDER BY "Ordered" DESC, total DESC, u.full_name`).all(...rangeParams).map(zero);
-      out.unassigned = db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE assigned_to IS NULL AND status IN ('New', 'Passed')").get().n;
+      out.unassigned = db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE assigned_to IS NULL AND status IN ('New', 'Working', 'Passed')").get().n;
       out.services = SERVICES.map((s) => ({
         service: s,
         ...zero(db.prepare(`${countsSql()} FROM referrals r WHERE (', ' || r.services || ',') LIKE ?${rangeSql}`).get(`%, ${s},%`, ...rangeParams)),
@@ -1476,7 +1477,7 @@ function createApp(db, opts = {}) {
       SELECT u.id, u.username, u.full_name, u.email, u.phone, u.whatsapp, u.whatsapp_alerts, u.role, u.payments_enabled, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
-        (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned,
+        (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Working', 'Passed')) AS open_assigned,
         u.last_login_at, u.last_seen_at, u.password_changed_at, u.login_count,
         (SELECT COUNT(*) FROM login_events l WHERE l.user_id = u.id AND l.success = 0 AND l.created_at >= datetime('now', '-7 days')) AS failed_7d
       FROM users u LEFT JOIN teams t ON t.id = u.team_id

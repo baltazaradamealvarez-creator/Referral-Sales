@@ -3,7 +3,7 @@
 (() => {
   const $app = document.getElementById('app');
   const state = { me: null, menuOpen: false };
-  const STATUSES = ['New', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
+  const STATUSES = ['New', 'Working', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
   const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
   // ---------- utils ----------
@@ -12,9 +12,9 @@
 
   async function api(path, opts = {}) {
     const init = { method: opts.method || 'GET', headers: {}, credentials: 'same-origin' };
-    if (opts.body !== undefined) {
+    if (opts.body !== undefined || !['GET', 'HEAD'].includes(init.method.toUpperCase())) {
       init.headers['Content-Type'] = 'application/json';
-      init.body = JSON.stringify(opts.body);
+      init.body = JSON.stringify(opts.body === undefined ? {} : opts.body);
     }
     const res = await fetch('/api' + path, init);
     let data = null;
@@ -984,8 +984,9 @@
         ${r.lead_tips && r.lead_tips.length ? `<div class="score-tips"><b>To improve this lead:</b> ${r.lead_tips.map(esc).join(' · ')}</div>` : ''}
         <div class="record-actions" id="waActions">${waButtonsHtml()}
           ${r.can_edit && !editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
-          ${r.can_edit && r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
+          ${isAdmin() ? '<button class="btn small danger" id="deleteBtn">🗑 Delete record</button>' : ''}
         </div>
+        <p id="recordActionState" class="small" role="status" aria-live="polite"></p>
       </div>
 
       <div class="grid-2">
@@ -1223,6 +1224,19 @@
 
     const editBtn = document.getElementById('editBtn');
     if (editBtn) editBtn.onclick = () => { state.editing = r.id; renderReferral(id); };
+    const deleteBtn = document.getElementById('deleteBtn');
+    if (deleteBtn) deleteBtn.onclick = async () => {
+      if (!confirm(`Permanently delete #${r.id} ${r.customer_name}, including its comments and status history? This cannot be undone.${r.status === 'Ordered' ? ' Any affiliate earnings for this sale will be reversed.' : ''}`)) return;
+      deleteBtn.disabled = true;
+      const feedback = document.getElementById('recordActionState');
+      feedback.textContent = 'Deleting record…';
+      try {
+        await api(`/referrals/${r.id}`, { method: 'DELETE' });
+        state.editing = null;
+        toast(`Record #${r.id} deleted`);
+        location.hash = '#/referrals';
+      } catch (err) { feedback.textContent = err.message; feedback.classList.add('err-text'); deleteBtn.disabled = false; }
+    };
     bindWhatsapp(document.getElementById('waActions'), r);
     const fuForm = document.getElementById('fuForm');
     if (fuForm) {
@@ -1605,7 +1619,8 @@
   async function drawCoachCard() {
     const card=document.getElementById('coachCard'); if(!card)return;
     try {
-      const [s,sellers,drafts]=await Promise.all([api('/coach/settings'),api('/coach/sellers'),api('/coach/drafts')]);
+      const hiddenDrafts=!!state.coachHiddenDrafts;
+      const [s,sellers,drafts]=await Promise.all([api('/coach/settings'),api('/coach/sellers'),api('/coach/drafts'+(hiddenDrafts?'?hidden=1':''))]);
       if(!card.isConnected)return;
       card.innerHTML=`<div class="row between"><h2 style="margin:0">Seller coach</h2><span class="wa-state ${s.enabled?'ok':''}">${s.enabled?'On':'Off'}</span></div>
         <p class="small muted">Supportive private WhatsApp check-ins for sellers and managers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
@@ -1626,12 +1641,14 @@
             <p class="small muted">The coach quotes only documented offers. Missing prices, exceptions, unclear terms and difficult questions need owner review.</p></div>
           ${!s.ai||!s.connected?'<p class="alert warn small">Coaching needs the assistant enabled with its API key and WhatsApp connected. Settings can be saved now.</p>':''}
           <p id="coachSaveState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save coaching settings</button></form>
-        <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">Approval inbox</h3><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div>
+        <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">${hiddenDrafts?'Hidden coaching drafts':'Approval inbox'}</h3><div class="row"><button type="button" class="btn small" id="coachHidden">${hiddenDrafts?'Back to inbox':'View hidden drafts'}</button><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div></div>
+        <p class="small muted">Hide completed test drafts to clear the inbox. Hidden drafts can be restored. Pending or failed replies must be approved or rejected first.</p>
         <p class="small muted">Up to 100 recent drafts, with pending reviews first. Only the configured reviewer can approve or reject. “Sent” means accepted by WhatsApp, not confirmed read.</p>
         <div class="stack">${drafts.map((d)=>`<article class="coach-draft" data-coach-draft="${d.id}"><div class="row between"><b>${esc(d.seller_name)}</b><span class="tag">${esc(d.status)}</span></div><p class="small muted">${esc(fullDate(d.created_at))} · Reviewer: ${esc(d.reviewer_name||'Choose a reviewer')} · ${esc(d.reason)}</p>
           <p class="small" style="white-space:pre-wrap"><b>Seller asked:</b> ${esc(d.question)}</p>${d.error?`<p class="alert err small">${esc(d.error)}</p>`:''}
           <label for="coachReply${d.id}">Draft reply</label><textarea id="coachReply${d.id}" rows="3" maxlength="2000" ${!['pending','failed'].includes(d.status)?'readonly':''}>${esc(d.draft)}</textarea>
-          ${['pending','failed'].includes(d.status)&&state.me.id===s.reviewer_id?`<div class="row" style="margin-top:.6rem"><button type="button" class="btn primary" data-coach-approve="${d.id}">${d.status==='failed'?'Approve retry':'Approve & send'}</button><button type="button" class="btn danger" data-coach-reject="${d.id}">Reject</button></div>`:''}</article>`).join('')||'<p class="muted small">No seller replies waiting for approval.</p>'}</div>`;
+          ${['pending','failed'].includes(d.status)&&state.me.id===s.reviewer_id?`<div class="row" style="margin-top:.6rem"><button type="button" class="btn primary" data-coach-approve="${d.id}">${d.status==='failed'?'Approve retry':'Approve & send'}</button><button type="button" class="btn danger" data-coach-reject="${d.id}">Reject</button></div>`:''}
+          ${['sent','rejected'].includes(d.status)?`<button type="button" class="btn small" style="margin-top:.6rem" data-coach-hide="${d.id}">${hiddenDrafts?'Restore draft':'Hide draft'}</button>`:''}</article>`).join('')||'<p class="muted small">No drafts in this view.</p>'}</div>`;
       card.querySelector('#coachSettings').onsubmit=async(e)=>{
         e.preventDefault();const form=e.target;const btn=form.querySelector('.primary');btn.disabled=true;
         const result=card.querySelector('#coachSaveState');result.textContent='Saving…';
@@ -1675,6 +1692,12 @@
         finally{if(card.isConnected){select.disabled=false;refresh.disabled=false;refresh.hidden=false;}}
       };
       card.querySelector('#coachRefresh').onclick=drawCoachCard;
+      card.querySelector('#coachHidden').onclick=()=>{state.coachHiddenDrafts=!hiddenDrafts;drawCoachCard();};
+      card.querySelectorAll('[data-coach-hide]').forEach((b)=>{b.onclick=async()=>{
+        b.disabled=true;
+        try{await api(`/coach/drafts/${b.dataset.coachHide}/visibility`,{method:'PATCH',body:{hidden:!hiddenDrafts}});b.closest('[data-coach-draft]').remove();toast(hiddenDrafts?'Draft restored to the inbox':'Draft hidden. Use View hidden drafts to restore it.');}
+        catch(err){toast(err.message);b.disabled=false;}
+      };});
       for(const action of ['approve','reject'])card.querySelectorAll(`[data-coach-${action}]`).forEach((b)=>{b.onclick=async()=>{
         const id=b.getAttribute(`data-coach-${action}`);const article=b.closest('[data-coach-draft]');article.querySelectorAll('button').forEach((x)=>{x.disabled=true;});
         try{await api(`/coach/drafts/${id}/review`,{method:'POST',body:{action,text:article.querySelector('textarea').value}});toast(action==='approve'?'Approved reply queued':'Draft rejected');drawCoachCard();}
@@ -2332,7 +2355,7 @@
         ['Entered', fmt(k.entered), delta(k.entered, p.entered)],
         ['Ordered', fmt(k.ordered), delta(k.ordered, p.ordered)],
         ['Conversion', `${k.conversion}%`, delta(k.conversion, p.conversion, { points: true })],
-        ['Open', fmt(k.open), delta(k.open, p.open, { better: 'none' }), 'New + Passed'],
+        ['Open', fmt(k.open), delta(k.open, p.open, { better: 'none' }), 'New + Working + Passed'],
         ['Days to order', k.avg_days_to_order == null ? '—' : k.avg_days_to_order, delta(k.avg_days_to_order, p.avg_days_to_order, { better: 'down' }), 'average'],
       ];
       el.innerHTML = `<div class="kpis">${tiles.map(([l, v, dl, sub]) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div><div class="kd">${dl || (sub ? `<span class="muted small">${sub}</span>` : '&nbsp;')}</div></div>`).join('')}</div>`;
@@ -3062,6 +3085,7 @@
     S.push({ id: 'track', title: 'Following your leads', roles: 'all', body: `
       <table class="help-table"><thead><tr><th>Status</th><th>What it means</th></tr></thead><tbody>
       <tr><td>${pill('New')}</td><td>Just entered; not worked yet.</td></tr>
+      <tr><td>${pill('Working')}</td><td>Being contacted or followed up; qualification is still in progress.</td></tr>
       <tr><td>${pill('Passed')}</td><td>Checked and qualified; being worked.</td></tr>
       <tr><td>${pill('DNQ')}</td><td>Did not qualify.</td></tr>
       <tr><td>${pill('Ordered')}</td><td>The customer ordered. An account number and install date may be added.</td></tr>

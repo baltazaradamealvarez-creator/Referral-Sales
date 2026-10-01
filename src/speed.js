@@ -113,7 +113,7 @@ function mount(app, db, { requireUser, requireRole, wrap, HttpError, getSettings
         if (!r.sla_escalated_at && mins >= c.escalate) {
           let moved = null;
           if (c.autoReassign && r.assigned_to) {
-            moved = db.prepare(`SELECT u.id, u.full_name, (SELECT COUNT(*) FROM referrals x WHERE x.assigned_to = u.id AND x.status IN ('New', 'Passed')) AS open
+            moved = db.prepare(`SELECT u.id, u.full_name, (SELECT COUNT(*) FROM referrals x WHERE x.assigned_to = u.id AND x.status IN ('New', 'Working', 'Passed')) AS open
               FROM users u WHERE u.role = 'dispatch' AND u.active = 1 AND u.id <> ? ORDER BY open, u.id LIMIT 1`).get(r.assigned_to);
             if (moved) {
               db.prepare('UPDATE referrals SET assigned_to = ?, assigned_at = ? WHERE id = ?').run(moved.id, sqlTime(now), r.id);
