@@ -17,7 +17,8 @@
   },
   "homepage": "https://github.com/baltazaradamealvarez-creator/Referral-Sales#readme",
   "dependencies": {
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "web-push": "^3.6.7"
   },
   "private": true,
   "engines": {

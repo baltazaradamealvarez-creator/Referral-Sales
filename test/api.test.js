@@ -328,7 +328,7 @@ test('upgrades a database created by the first version without losing data', asy
   old.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
 
 
   assert.deepEqual({ ...db.prepare("SELECT email, email_alerts FROM users WHERE username = 'r'").get() }, { email: '', email_alerts: 1 });
@@ -395,7 +395,7 @@ test('email alerts go through Resend only when configured and wanted', async (t)
   assert.equal(sent[0].auth, 'Bearer re_test_123');
   assert.deepEqual(sent[0].to, ['rep.a@example.com']);
   assert.equal(sent[0].from, 'E&O <alerts@example.com>');
-  assert.match(sent[0].subject, /marked Gil G as Ordered/);
+  assert.match(sent[0].subject, /Your lead Gil G was Ordered/);
   assert.match(sent[0].html, new RegExp(`https://eo.example.com/#/r/${ref.id}`));
 
   // Users who turned alerts off, or have no email, get nothing.
@@ -604,7 +604,7 @@ test('leads need a name, obvious fakes are refused, and every lead gets a qualit
     assert.match((await post({ name: 'Test', phone: '512-867-1111' })).body.error, /isn’t a real name/);
     assert.match((await post({ name: 'Real Person', phone: '123-456-7890' })).body.error, /isn’t real/);
     assert.match((await post({ name: 'Real Person', email: 'rp@mailinator.com' })).body.error, /throw-away/);
-    const good = await post({ name: 'Real Person', phone: '512-867-1111', email: 'real.person@gmail.com', address: '9 Elm St, Austin TX 78701', services: ['Internet'] });
+    const good = await post({ name: 'Real Person', phone: '512-867-1111', email: 'real.person@gmail.com', address: '9 Elm St, Austin TX 78701', dob: '01/31/1980', services: ['Internet'] });
     assert.equal(good.status, 201);
     assert.equal(good.body.lead_score, 100);
     assert.deepEqual(good.body.lead_tips, []);

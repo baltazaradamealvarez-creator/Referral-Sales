@@ -54,7 +54,23 @@ test('parses a single line', () => {
 
 test('parses labelled lines', () => {
   const p = parseLeadText('Name: Ana Ruiz\nPhone: 214 555 7788\nAddress: 9 Pine Ct\nNotes: call after 5');
-  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', notes: 'call after 5', services: [] });
+  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', notes: 'call after 5', dob: '', services: [] });
+});
+
+test('date of birth: labelled (English or Spanish), or an unlabelled birth-year date', () => {
+  const { parseDob } = require('../src/normalize');
+  for (const [v, want] of [['01/31/1980', '1980-01-31'], ['1-31-80', '1980-01-31'], ['1980-01-31', '1980-01-31'], ['Jan 31, 1980', '1980-01-31'],
+    ['31 Jan 1980', '1980-01-31'], ['March 5th 1975', '1975-03-05'], ['02/30/1980', ''], ['13/01/1980', ''], ['01/31/2020', ''], ['soon', '']]) {
+    assert.equal(parseDob(v), want, v);
+  }
+  assert.equal(parseLeadText('Maria Lopez\nDOB: 03/14/1985\n512-867-5309').dob, '1985-03-14');
+  assert.equal(parseLeadText('Fecha de nacimiento: 14 mar 1985\nMaria').dob, '1985-03-14');
+  const p = parseLeadText('Maria Lopez 512-867-5309 born 03/14/1985 install 10/05/2026');
+  assert.equal(p.dob, '1985-03-14');
+  assert.match(p.notes, /install 10\/05\/2026/, 'a future date is not a birthday');
+  const bad = parseLeadText('Maria Lopez\nDOB: sometime in May');
+  assert.equal(bad.dob, '');
+  assert.match(bad.notes, /DOB: sometime in May/, 'kept in the notes');
 });
 
 test('finds an address in the middle of a sentence and keeps the rest as notes', () => {

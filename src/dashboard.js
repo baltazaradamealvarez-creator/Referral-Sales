@@ -7,14 +7,14 @@ const { STATUSES, SERVICES } = require('./db');
 
 const WIDGETS = [
   'kpis', 'insights', 'trend', 'status', 'funnel', 'services', 'leaderboard',
-  'teams', 'dispatch', 'stale', 'installs', 'activity',
+  'teams', 'dispatch', 'stale', 'installs', 'activity', 'speed', 'followups',
 ];
 
 const DEFAULT_LAYOUTS = {
-  rep: ['kpis', 'insights', 'trend', 'status', 'stale', 'installs', 'leaderboard', 'activity'],
-  manager: ['kpis', 'insights', 'trend', 'leaderboard', 'funnel', 'status', 'stale', 'installs', 'services', 'activity'],
-  dispatch: ['kpis', 'insights', 'dispatch', 'stale', 'installs', 'trend', 'status', 'activity'],
-  admin: ['kpis', 'insights', 'trend', 'teams', 'leaderboard', 'funnel', 'dispatch', 'services', 'status', 'stale', 'installs', 'activity'],
+  rep: ['kpis', 'followups', 'insights', 'trend', 'status', 'stale', 'installs', 'leaderboard', 'activity'],
+  manager: ['kpis', 'speed', 'followups', 'insights', 'trend', 'leaderboard', 'funnel', 'status', 'stale', 'installs', 'services', 'activity'],
+  dispatch: ['kpis', 'speed', 'followups', 'insights', 'dispatch', 'stale', 'installs', 'trend', 'status', 'activity'],
+  admin: ['kpis', 'speed', 'insights', 'trend', 'teams', 'leaderboard', 'funnel', 'dispatch', 'services', 'status', 'stale', 'installs', 'activity', 'followups'],
 };
 
 // Widgets a role may add. Team and dispatch comparisons need every team's data.

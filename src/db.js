@@ -361,6 +361,37 @@ const MIGRATIONS = [
   CREATE INDEX idx_aff_earner ON affiliate_earnings(earner_id, payout_id);
   CREATE INDEX idx_aff_referral ON affiliate_earnings(referral_id);
   `,
+  // v11: speed to lead, call-back reminders, phone push notifications, date of birth
+  `
+  ALTER TABLE referrals ADD COLUMN first_touch_at TEXT;
+  ALTER TABLE referrals ADD COLUMN first_touch_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE referrals ADD COLUMN sla_alerted_at TEXT;
+  ALTER TABLE referrals ADD COLUMN sla_escalated_at TEXT;
+  ALTER TABLE referrals ADD COLUMN follow_up_at TEXT;
+  ALTER TABLE referrals ADD COLUMN follow_up_note TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN follow_up_user INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE referrals ADD COLUMN follow_up_sent INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE referrals ADD COLUMN dob TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_referrals_untouched ON referrals(status, first_touch_at);
+  CREATE INDEX idx_referrals_follow_up ON referrals(follow_up_sent, follow_up_at);
+
+  -- Leads already worked: their first response is their first status change.
+  UPDATE referrals SET first_touch_at = (SELECT MIN(h.created_at) FROM status_history h WHERE h.referral_id = referrals.id AND h.from_status IS NOT NULL);
+  -- Don't alert about leads that existed before this feature.
+  UPDATE referrals SET sla_alerted_at = datetime('now'), sla_escalated_at = datetime('now');
+
+  CREATE TABLE push_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_ok_at TEXT
+  );
+  CREATE INDEX idx_push_user ON push_subscriptions(user_id);
+  `,
 ];
 
 

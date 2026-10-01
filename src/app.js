@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
 const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
-const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
+const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
 const OPEN_STATUSES = ['New', 'Passed'];
@@ -20,7 +20,10 @@ const DEFAULT_SETTINGS = {
   auto_assign: '0',
   email_from_name: '',
   email_reply_to: '',
-  entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nServices: \nNotes: ',
+  entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nDate of birth: \nServices: \nNotes: ',
+  // The message reps paste into WhatsApp for dispatch. {placeholders} are filled from the lead.
+  whatsapp_template: '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}',
+  whatsapp_number: '',
   affiliate_enabled: '0',
   affiliate_levels: '15,5',
   affiliate_commission: '0',
@@ -37,6 +40,8 @@ class HttpError extends Error {
 function createApp(db) {
   const app = express();
   let affiliates = null; // set once the affiliate routes are mounted, below
+  let speed = null; // speed-to-lead watcher, mounted below
+  let push = null; // phone push notifications, mounted below
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
@@ -190,7 +195,13 @@ function createApp(db) {
       package_details: pick('package_details').slice(0, 500),
       lead_priority: ['Low', 'Standard', 'High', 'Urgent'].includes(input.lead_priority) ? input.lead_priority : 'Standard',
       est_monthly_value: Math.max(0, Number(input.est_monthly_value) || 0),
+      dob: '',
     };
+    const dobRaw = input.dob != null && input.dob !== '' ? String(input.dob).trim() : '';
+    if (dobRaw) {
+      lead.dob = parseDob(dobRaw);
+      if (!lead.dob) throw new HttpError(400, 'Date of birth should be a real date, like 01/31/1980 (the customer must be at least 16).');
+    } else lead.dob = parsed.dob || '';
     if (opts.requireName !== false && !lead.name) throw new HttpError(400, 'Add the customer\'s name.');
     if (!lead.phone && !lead.email && !lead.address) {
       throw new HttpError(400, 'Add a phone number, email or address so we can check it isn\'t a duplicate.');
@@ -243,23 +254,29 @@ function createApp(db) {
   // In-app notification, plus an email when email is set up and the user wants alerts.
   // Emails go out after the request's transaction: a notification that was rolled back
   // no longer exists when the queue is flushed, so it is never emailed.
-  let emailQueue = [];
+  // Also pushed to the user's phones, and emailed when they want email alerts.
+  let noteQueue = [];
   function notify(userId, referralId, message) {
     const r = db.prepare('INSERT INTO notifications (user_id, referral_id, message) VALUES (?, ?, ?)').run(userId, referralId, message);
-    if (!mail.emailConfig(getSettings()).enabled) return;
-    if (!emailQueue.length) setImmediate(flushEmails);
-    emailQueue.push(Number(r.lastInsertRowid));
+    if (!noteQueue.length) setImmediate(flushNotifications);
+    noteQueue.push(Number(r.lastInsertRowid));
   }
 
-  function flushEmails() {
-    const ids = emailQueue;
-    emailQueue = [];
+  function flushNotifications() {
+    const ids = noteQueue;
+    noteQueue = [];
     const rows = db.prepare(`
-      SELECT n.referral_id, n.message, u.full_name, u.email
+      SELECT n.id, n.user_id, n.referral_id, n.message, u.full_name, u.email, u.email_alerts
       FROM notifications n JOIN users u ON u.id = n.user_id
-      WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1 AND u.email_alerts = 1 AND u.email <> ''`).all(...ids);
+      WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1`).all(...ids);
     const settings = getSettings();
+    const emailOn = mail.emailConfig(settings).enabled;
     for (const row of rows) {
+      if (push) {
+        push.sendPush(row.user_id, { body: row.message, url: row.referral_id ? `/#/r/${row.referral_id}` : '/#/notifications', tag: `n${row.id}` })
+          .catch((e) => console.error(`Push failed: ${e.message}`));
+      }
+      if (!emailOn || !row.email_alerts || !row.email) continue;
       const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id }, settings);
       mail.sendEmail({ to: row.email, ...msg }, settings).then((res) => {
         if (!res.ok) console.error(`Email to ${row.email} failed: ${res.error}`);
@@ -473,7 +490,43 @@ function createApp(db) {
     }
   }
 
-  app.get('/api/dashboard', wrap((req) => buildDashboard(db, requireUser(req), req.query)));
+  app.get('/api/dashboard', wrap((req) => {
+    const u = requireUser(req);
+    return { ...buildDashboard(db, u, req.query), speed: speedStats(u, req.query), followups: followUps(u) };
+  }));
+
+  // First-response times (in working minutes) for the dashboard, over the same scope and period.
+  function speedStats(u, q) {
+    const c = speed.config();
+    const tz = Math.max(-840, Math.min(840, Math.trunc(Number(q.tz) || 0)));
+    const local = (col) => `date(datetime(${col}, '${-tz >= 0 ? '+' : ''}${-tz} minutes'))`;
+    const where = [];
+    const p = [];
+    if (u.role === 'rep') { where.push('r.created_by = ?'); p.push(u.id); } else if (u.role === 'manager') { where.push('r.team_id = ?'); p.push(u.team_id ?? -1); } else if (q.team_id) { where.push('r.team_id = ?'); p.push(Number(q.team_id)); }
+    if (q.user_id && u.role !== 'rep') { where.push('r.created_by = ?'); p.push(Number(q.user_id)); }
+    const W = where.length ? where.join(' AND ') : '1 = 1';
+    const isDate = (x) => /^\d{4}-\d{2}-\d{2}$/.test(String(x || ''));
+    const R = isDate(q.from) ? `${local('r.created_at')} BETWEEN '${q.from}' AND '${isDate(q.to) ? q.to : '9999-12-31'}'` : '1 = 1';
+    const toMs = (x) => Date.parse(`${x.replace(' ', 'T')}Z`);
+    const mins = db.prepare(`SELECT r.created_at, r.first_touch_at FROM referrals r WHERE ${W} AND ${R} AND r.first_touch_at IS NOT NULL`).all(...p)
+      .map((r) => speed.businessMinutes(toMs(r.created_at), toMs(r.first_touch_at))).sort((a, b) => a - b);
+    const now = Date.now();
+    const waiting = db.prepare(`SELECT r.id, r.customer_name, r.phone, r.created_at, a.full_name AS assigned_name FROM referrals r
+      LEFT JOIN users a ON a.id = r.assigned_to WHERE ${W} AND r.status = 'New' AND r.first_touch_at IS NULL AND r.created_at >= datetime('now', '-14 days')
+      ORDER BY r.created_at LIMIT 8`).all(...p).map((r) => ({ ...r, minutes: speed.businessMinutes(toMs(r.created_at), now) }));
+    return {
+      target: c.minutes, escalate: c.escalate, count: mins.length,
+      avg: mins.length ? Math.round(mins.reduce((a, b) => a + b, 0) / mins.length) : null,
+      median: mins.length ? mins[Math.floor((mins.length - 1) / 2)] : null,
+      within_pct: mins.length ? Math.round((mins.filter((m) => m <= c.minutes).length / mins.length) * 100) : null,
+      waiting,
+    };
+  }
+
+  function followUps(u) {
+    return db.prepare(`SELECT id, customer_name, phone, follow_up_at, follow_up_note FROM referrals
+      WHERE follow_up_user = ? AND follow_up_sent = 0 AND follow_up_at IS NOT NULL ORDER BY follow_up_at LIMIT 10`).all(u.id);
+  }
 
   // ---------- global search ----------
 
@@ -496,9 +549,11 @@ function createApp(db) {
 
   // ---------- settings ----------
 
+  // Only the app settings people need; never internal values like the push keys.
   app.get('/api/settings', wrap((req) => {
     requireUser(req);
-    return getSettings();
+    const all = getSettings();
+    return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
   }));
 
   app.patch('/api/settings', wrap((req) => {
@@ -509,7 +564,17 @@ function createApp(db) {
     if (b.entry_template !== undefined) set.run('entry_template', String(b.entry_template).slice(0, 2000));
     if (b.email_from_name !== undefined) set.run('email_from_name', String(b.email_from_name).replace(/[\r\n"<>]/g, '').trim().slice(0, 60));
     if (b.email_reply_to !== undefined) set.run('email_reply_to', cleanEmail(b.email_reply_to));
-    return getSettings();
+    if (b.whatsapp_template !== undefined) {
+      const t = String(b.whatsapp_template).slice(0, 2000);
+      set.run('whatsapp_template', t.trim() ? t : DEFAULT_SETTINGS.whatsapp_template);
+    }
+    if (b.whatsapp_number !== undefined) {
+      const n = String(b.whatsapp_number).replace(/\D/g, '');
+      if (n && (n.length < 10 || n.length > 15)) throw new HttpError(400, 'Enter the WhatsApp number with country code, e.g. 1 512 555 0142.');
+      set.run('whatsapp_number', n.length === 10 ? `1${n}` : n);
+    }
+    const all = getSettings();
+    return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
   }));
 
   // ---------- people (for pickers) ----------
@@ -560,13 +625,13 @@ function createApp(db) {
         (customer_name, company, phone, alt_phone, email, address, city, zip, notes, services,
          contact_pref, package_details, lead_priority, est_monthly_value,
          raw_text, phone_key, email_key, address_key, address_zip,
-         created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?)`).run(
+         created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags, dob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?, ?)`).run(
         lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
         lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
         String(req.body.text || '').slice(0, 4000),
         lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip,
-        owner.id, u.id, owner.team_id ?? null, assignee, assignee, lead.score, lead.flags,
+        owner.id, u.id, owner.team_id ?? null, assignee, assignee, lead.score, lead.flags, lead.dob,
       );
       const id = Number(r.lastInsertRowid);
       db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, NULL, ?)').run(id, u.id, 'New');
@@ -694,8 +759,13 @@ function createApp(db) {
       FROM comments c JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
     const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name
       FROM status_history h JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
+    const toMs = (x) => Date.parse(`${x.replace(' ', 'T')}Z`);
+    const speedInfo = ref.first_touch_at
+      ? { response_minutes: speed.businessMinutes(toMs(ref.created_at), toMs(ref.first_touch_at)),
+        response_by: (db.prepare('SELECT full_name FROM users WHERE id = ?').get(ref.first_touch_by) || {}).full_name || '' }
+      : ref.status === 'New' ? { waiting_minutes: speed.businessMinutes(toMs(ref.created_at), Date.now()) } : {};
     return {
-      ...publicReferral(ref), comments, history,
+      ...publicReferral(ref), comments, history, ...speedInfo, speed_target: speed.config().minutes,
       can_manage: canManageReferral(u, ref),
       can_assign: seesAll(u),
       can_edit: canManageReferral(u, ref) || (ref.created_by === u.id && ref.status === 'New'),
@@ -718,7 +788,12 @@ function createApp(db) {
         db.prepare(`UPDATE referrals SET status = ?, ${touch} WHERE id = ?`).run(body.status, ref.id);
         db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, ?, ?)')
           .run(ref.id, u.id, ref.status, body.status);
-        if (ref.created_by !== u.id) notify(ref.created_by, ref.id, `${u.full_name} marked ${leadLabel(ref)} as ${body.status}`);
+        if (ref.created_by !== u.id) {
+          notify(ref.created_by, ref.id, body.status === 'Ordered'
+            ? `🎉 Your lead ${leadLabel(ref)} was Ordered! (${u.full_name})`
+            : `${u.full_name} marked ${leadLabel(ref)} as ${body.status}`);
+        }
+        speed.touch(ref, u.id);
         // An order with no commission yet gets the default one (Affiliate settings).
         const def = Number(getSettings().affiliate_commission) || 0;
         if (body.status === 'Ordered' && ref.commission == null && def > 0 && body.commission === undefined) {
@@ -754,9 +829,10 @@ function createApp(db) {
           db.prepare(`UPDATE referrals SET assigned_to = ?, assigned_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ${touch} WHERE id = ?`)
             .run(to, to, ref.id);
           if (to && to !== u.id) notify(to, ref.id, `${u.full_name} assigned ${leadLabel(ref)} to you`);
+          if (to === u.id) speed.touch(ref, u.id);
         }
       }
-      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value'];
+      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
       if (detailFields.some((f) => body[f] !== undefined)) {
         if (!manage && !(ref.created_by === u.id && ref.status === 'New')) {
           throw new HttpError(403, 'You can only edit details while the referral is New.');
@@ -776,6 +852,7 @@ function createApp(db) {
           package_details: body.package_details ?? ref.package_details,
           lead_priority: body.lead_priority ?? ref.lead_priority,
           est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
+          dob: body.dob ?? ref.dob,
         }, {
           requireName: body.name !== undefined || !!ref.customer_name,
           changed: new Set(['name', 'phone', 'email', 'address'].filter((f) => body[f] !== undefined)),
@@ -784,10 +861,10 @@ function createApp(db) {
         if (d) return { d, lead };
         db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, zip = ?,
           notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
-          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, ${touch} WHERE id = ?`).run(
+          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, dob = ?, ${touch} WHERE id = ?`).run(
           lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
           lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
-          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, ref.id,
+          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, lead.dob, ref.id,
         );
       }
       return null;
@@ -818,6 +895,7 @@ function createApp(db) {
 
     tx(db, () => {
       db.prepare('INSERT INTO comments (referral_id, user_id, body) VALUES (?, ?, ?)').run(ref.id, u.id, body);
+      speed.touch(ref, u.id);
       const audience = referralAudience(ref);
       const mentioned = new Set([...body.matchAll(/@([A-Za-z0-9._-]+)/g)].map((m) => m[1].toLowerCase()));
       const notified = new Set([u.id]);
@@ -1491,6 +1569,13 @@ function createApp(db) {
   require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
   require('./history').mount(app, db, { requireRole, wrap, HttpError, logAudit });
   require('./payments').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify });
+  speed = require('./speed').mount(app, db, {
+    requireUser, requireRole, wrap, HttpError, getSettings, logAudit, notify,
+    getViewableReferral: (u, id) => { const r = getReferral(id); if (!canViewReferral(u, r)) throw new HttpError(404, 'Referral not found.'); return r; },
+  });
+  app.locals.speed = speed;
+  push = require('./push').mount(app, db, { requireUser, wrap, HttpError });
+  require('./address').mount(app, db, { requireUser, wrap, HttpError, rateLimit });
   affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));

@@ -136,6 +136,8 @@
     score = Math.max(0, Math.min(100, score));
     const band = score >= 80 ? 'Strong' : score >= 60 ? 'Good' : score >= 35 ? 'Fair' : 'Weak';
     const tips = Object.values(checks).filter((c) => c.level === 'warn' || c.level === 'missing').map((c) => c.msg);
+    // Dispatch asks for the date of birth; it doesn't change the score, but it's flagged.
+    if (!lead.dob) tips.push('Add the date of birth (dispatch needs it).');
     return { score, band, color: scoreColor(score), checks, fakes, tips };
   }
 

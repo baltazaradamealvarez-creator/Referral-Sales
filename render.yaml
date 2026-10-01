@@ -20,6 +20,8 @@ services:
         sync: false
       - key: EMAIL_FROM      # e.g. E&O Referrals <alerts@yourdomain.com> (domain verified in Resend)
         sync: false
+      - key: GEOAPIFY_API_KEY  # optional: better address suggestions (free key at geoapify.com); without it the free Photon service is used
+        sync: false
       - key: PAYMENT_ENCRYPTION_KEY  # encrypts payout details; Render generates it once — don't change it
         generateValue: true
     disk:

@@ -287,6 +287,7 @@
           </div>
         </div>
       </div></header>
+      <div class="offline-bar" role="status">📶 You're offline. New leads are saved on this phone and sent when you're back.</div>
       <main class="${opts.wide ? 'wide' : ''}">${subTabsHtml()}${content}</main>
       <nav class="tabbar" aria-label="Main">
         ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
@@ -303,7 +304,7 @@
     });
     document.getElementById('logoutBtn').onclick = async () => {
       await api('/logout', { method: 'POST', body: {} }).catch(() => {});
-      state.me = null; peopleCache = null;
+      state.me = null; peopleCache = null; lsSet('eo-me', null);
       renderLogin();
     };
     const sheet = document.getElementById('moreSheet');
@@ -485,18 +486,25 @@
   // ---------- new referral (the easy box) ----------
 
   async function renderNew() {
-    const [settings, ppl] = await Promise.all([api('/settings'), people()]);
+    // Works without signal: settings come from the last visit, and leads are saved on the phone.
+    const [settings, ppl] = await Promise.all([
+      api('/settings').then((x) => { lsSet('eo-settings', { entry_template: x.entry_template }); return x; }).catch(() => lsGet('eo-settings', { entry_template: '' })),
+      people().catch(() => ({ credit: [], dispatchers: [] })),
+    ]);
     const creditOptions = ppl.credit.filter((p) => p.id !== state.me.id);
 
     shell(`
       <div class="narrow stack">
         ${helpNudge()}
+        <div id="phoneNudge"></div>
+        <div id="outboxBox"></div>
         <form class="card quick" id="quickForm" autocomplete="off">
           <div class="row between"><h1 style="margin:0">New referral</h1>
             ${settings.entry_template.trim() ? '<button type="button" class="btn small" id="tplBtn">📝 Use template</button>' : ''}</div>
           <p class="muted" style="margin-top:.3rem">Type or paste the customer's info however you like. Anything extra is kept as notes.</p>
           <textarea id="leadText" placeholder="Jane Smith&#10;512-555-0142&#10;jane@email.com&#10;123 Main St, Austin TX 78701&#10;wants internet + mobile, call after 5" aria-label="Customer info"></textarea>
           <div class="chips" id="chips"></div>
+          <div id="addrHint"></div>
           <div class="score-meter" id="scoreMeter" hidden></div>
           <div class="row" style="gap:.4rem;margin-bottom:.4rem"><span class="small muted">Services:</span>
             ${SERVICES.map((s) => `<button type="button" class="toggle" data-svc="${s}">${s}</button>`).join('')}</div>
@@ -509,6 +517,7 @@
               <div><label for="f_phone">Phone</label><input id="f_phone" inputmode="tel"></div>
               <div><label for="f_email">Email</label><input id="f_email" inputmode="email" autocapitalize="none"></div>
               <div><label for="f_address">Address</label><input id="f_address"></div>
+              <div><label for="f_dob">Date of birth</label><input id="f_dob" inputmode="numeric" placeholder="MM/DD/YYYY"></div>
               <div class="full"><label for="f_notes">Notes</label><textarea id="f_notes" rows="3"></textarea></div>
             </div>
           </div>
@@ -526,7 +535,7 @@
     const chips = document.getElementById('chips');
     const fixWrap = document.getElementById('fixWrap');
     const msg = document.getElementById('quickMsg');
-    const fields = ['name', 'phone', 'email', 'address', 'notes'];
+    const fields = ['name', 'phone', 'email', 'address', 'dob', 'notes'];
     const f = Object.fromEntries(fields.map((k) => [k, document.getElementById('f_' + k)]));
     const touched = new Set();
     const svc = new Set();
@@ -557,9 +566,25 @@
       if (fe) fe.onclick = () => { touched.add('email'); f.email.value = fix; if (ta.value.includes(vals.email)) ta.value = ta.value.replace(vals.email, fix); drawChips(); };
     };
 
+    // "Did you mean …?" for the address read from the box.
+    const addrHint = document.getElementById('addrHint');
+    const suggestAddress = debounce(async () => {
+      const a = currentVals().address;
+      if (!a || touched.has('address') || a.length < 6 || !/\d/.test(a)) { addrHint.innerHTML = ''; return; }
+      let best;
+      try { best = ((await api('/address/suggest?q=' + encodeURIComponent(a))).suggestions || [])[0]; } catch { best = null; }
+      const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!best || currentVals().address !== a || norm(best.label).startsWith(norm(a))) { addrHint.innerHTML = ''; return; }
+      if ((a.match(/^\s*\d+/) || [''])[0].trim() !== (best.line1.match(/^\d+/) || [''])[0]) { addrHint.innerHTML = ''; return; }
+      addrHint.innerHTML = `<div class="addr-hint">📍 Did you mean <b>${esc(best.label)}</b>? <button type="button" class="btn small" id="useAddr">Use it</button></div>`;
+      document.getElementById('useAddr').onclick = () => { touched.add('address'); f.address.value = best.label; addrHint.innerHTML = ''; drawChips(); };
+    }, 700);
+    attachAddressSuggest(f.address, (x) => { f.address.value = x.label; touched.add('address'); addrHint.innerHTML = ''; drawChips(); });
+
     const drawChips = () => {
       const vals = currentVals();
-      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', notes: 'Notes' };
+      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', dob: 'Date of birth', notes: 'Notes' };
+      if (vals.dob && /^\d{4}-\d{2}-\d{2}$/.test(vals.dob)) vals.dob = usDate(vals.dob);
       chips.innerHTML = fields
         .filter((k) => k !== 'notes' || vals.notes)
         .map((k) => `<span class="chip ${vals[k] ? 'on' : ''}">${vals[k] ? '✓' : '○'} ${label[k]}${vals[k] ? `: <b>${esc(vals[k].split('\n')[0])}</b>` : ''}</span>`)
@@ -568,13 +593,14 @@
           ? '<span class="chip warn">Needs a phone, email or address to check for duplicates</span>' : '')
         + (ta.value.trim() && !vals.name ? '<span class="chip warn">Needs the customer\'s name</span>' : '');
       drawScore();
+      suggestAddress();
     };
 
     const doParse = debounce(async () => {
       if (!ta.value.trim()) { parsed = {}; drawChips(); return; }
       try {
         parsed = await api('/parse', { method: 'POST', body: { text: ta.value } });
-        for (const k of fields) if (!touched.has(k)) f[k].value = parsed[k] || '';
+        for (const k of fields) if (!touched.has(k)) f[k].value = k === 'dob' ? usDate(parsed.dob) : parsed[k] || '';
         if (!svcTouched) { svc.clear(); (parsed.services || []).forEach((s) => svc.add(s)); drawServices(); }
         drawChips();
       } catch { /* ignore */ }
@@ -609,7 +635,9 @@
         const credit = document.getElementById('creditTo');
         if (credit && credit.value) body.credit_to = Number(credit.value);
         const ref = await api('/referrals', { method: 'POST', body });
-        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a></div>`;
+        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a>
+          <div class="wa-row">${waButtonsHtml()}</div></div>`;
+        bindWhatsapp(msg, ref);
         ta.value = '';
         for (const k of fields) f[k].value = '';
         touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
@@ -618,17 +646,35 @@
         loadRecent();
         ta.focus();
       } catch (err) {
+        if (!err.status) {
+          // No signal: keep it on the phone and send it later.
+          const body = { text: ta.value, services: [...svc] };
+          for (const k of fields) if (touched.has(k) || !fixWrap.hidden) body[k] = f[k].value;
+          const credit = document.getElementById('creditTo');
+          if (credit && credit.value) body.credit_to = Number(credit.value);
+          queueLead(body);
+          msg.innerHTML = '<div class="alert warn">📶 No signal. The lead is <b>saved on this phone</b> and will send by itself when you\'re back online.</div>';
+          ta.value = '';
+          for (const k of fields) f[k].value = '';
+          touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
+          drawChips(); drawServices(); drawOutbox();
+          return;
+        }
         const cls = err.status === 409 ? 'err' : 'warn';
         msg.innerHTML = `<div class="alert ${cls}">${err.status === 409 ? '⛔ ' : ''}${esc(err.message)}</div>`;
       } finally {
         btn.disabled = false;
       }
     };
+    drawOutbox();
+    phoneNudge();
+    flushOutbox();
 
     async function loadRecent() {
       const list = document.getElementById('recent');
       if (!list) return;
-      const rows = await api('/referrals?scope=mine&limit=8');
+      let rows;
+      try { rows = await api('/referrals?scope=mine&limit=8'); } catch { list.innerHTML = '<li class="muted" style="cursor:default">Your latest referrals show here when you\'re online.</li>'; return; }
       list.innerHTML = rows.length
         ? rows.map(leadItem).join('')
         : '<li class="muted" style="cursor:default">Nothing yet — your referrals will show up here.</li>';
@@ -902,6 +948,8 @@
             <div class="record-meta-row">
               ${pill(r.status)}
               ${scoreBadge(r.lead_score)}
+              ${r.response_minutes != null ? `<span class="speed-chip ${r.response_minutes <= r.speed_target ? 'ok' : 'slow'}" title="Time to first response, in working hours">⚡ Answered in ${fmtMins(r.response_minutes)}${r.response_by ? ` by ${esc(r.response_by.split(' ')[0])}` : ''}</span>`
+                : r.waiting_minutes != null ? `<span class="speed-chip wait ${r.waiting_minutes > r.speed_target ? 'late' : ''}" title="Working minutes since it came in">⏱ Waiting ${fmtMins(r.waiting_minutes)}</span>` : ''}
               <span class="priority-badge ${esc(priority)}">${esc(priority)} Priority</span>
               <span class="pref-chip">🕐 ${esc(contactPref)}</span>
             </div>
@@ -933,10 +981,10 @@
         </div>
 
         ${r.lead_tips && r.lead_tips.length ? `<div class="score-tips"><b>To improve this lead:</b> ${r.lead_tips.map(esc).join(' · ')}</div>` : ''}
-        ${r.can_edit ? `<div class="record-actions">
-          ${!editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
-          ${r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
-        </div>` : ''}
+        <div class="record-actions" id="waActions">${waButtonsHtml()}
+          ${r.can_edit && !editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
+          ${r.can_edit && r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
+        </div>
       </div>
 
       <div class="grid-2">
@@ -957,6 +1005,7 @@
                   </div>
                   <div class="field full"><label>Address</label><input name="address" value="${esc(r.address)}" placeholder="Street address"></div>
                   <div class="field"><label>City</label><input name="city" value="${esc(r.city || '')}" placeholder="City"></div>
+                  <div class="field"><label>Date of Birth</label><input name="dob" value="${esc(usDate(r.dob))}" placeholder="MM/DD/YYYY" inputmode="numeric"></div>
                   <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" placeholder="ZIP code"></div>
                   <div class="field full"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
                   <div class="field"><label>Lead Priority</label>
@@ -1084,6 +1133,10 @@
                     <span class="field-value">$${Number(r.commission).toFixed(2)}</span>
                   </div>` : ''}
                   <div class="field-row">
+                    <span class="field-label">Date of Birth</span>
+                    ${fv(r.dob ? esc(usDate(r.dob)) : '')}
+                  </div>
+                  <div class="field-row">
                     <span class="field-label">Install Date</span>
                     ${r.install_date ? `<span class="field-value">${esc(dayDate(r.install_date))}</span>` : empty}
                   </div>
@@ -1132,6 +1185,18 @@
         <!-- RIGHT COLUMN: Activity Sidebar -->
         <div class="activity-sidebar">
           <div class="card">
+            <h2>📞 Call-back reminder</h2>
+            ${r.follow_up_at && !r.follow_up_sent ? `<p style="margin-top:0">Reminder set for <b>${esc(fullDate(r.follow_up_at))}</b>${r.follow_up_note ? ` — ${esc(r.follow_up_note)}` : ''}</p>` : '<p class="small muted" style="margin-top:0">Get a notification when it\'s time to call this customer back.</p>'}
+            <div class="row fu-quick">${[['1h', 'In 1 hour'], ['t10', 'Tomorrow 10am'], ['t17', 'Tomorrow 5pm']].map(([k, l]) => `<button type="button" class="btn small" data-fu="${k}">${l}</button>`).join('')}</div>
+            <form id="fuForm" class="fu-form">
+              <input type="datetime-local" id="fuAt" aria-label="Call-back time" required>
+              <input id="fuNote" maxlength="200" placeholder="Note (optional)" aria-label="Note" value="${esc(r.follow_up_sent ? '' : r.follow_up_note || '')}">
+              <button class="btn primary">Set reminder</button>
+              ${r.follow_up_at && !r.follow_up_sent ? '<button type="button" class="btn" id="fuClear">Clear</button>' : ''}
+            </form>
+          </div>
+
+          <div class="card">
             <h2>Activity Timeline</h2>
             <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${esc(h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
           </div>
@@ -1157,8 +1222,35 @@
 
     const editBtn = document.getElementById('editBtn');
     if (editBtn) editBtn.onclick = () => { state.editing = r.id; renderReferral(id); };
+    bindWhatsapp(document.getElementById('waActions'), r);
+    const fuForm = document.getElementById('fuForm');
+    if (fuForm) {
+      const fuAt = document.getElementById('fuAt');
+      const localInput = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      if (r.follow_up_at && !r.follow_up_sent) fuAt.value = localInput(parseDate(r.follow_up_at));
+      const save = async (when) => {
+        try {
+          await api(`/referrals/${r.id}/follow-up`, { method: 'PUT', body: { at: when.toISOString(), note: document.getElementById('fuNote').value } });
+          toast(`Reminder set for ${when.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`);
+          renderReferral(id);
+        } catch (err) { toast(err.message); }
+      };
+      document.querySelectorAll('[data-fu]').forEach((b) => {
+        b.onclick = () => {
+          const d = new Date();
+          if (b.dataset.fu === '1h') d.setHours(d.getHours() + 1);
+          else { d.setDate(d.getDate() + 1); d.setHours(b.dataset.fu === 't10' ? 10 : 17, 0, 0, 0); }
+          save(d);
+        };
+      });
+      fuForm.onsubmit = (e) => { e.preventDefault(); if (fuAt.value) save(new Date(fuAt.value)); };
+      const fuClear = document.getElementById('fuClear');
+      if (fuClear) fuClear.onclick = async () => { await api(`/referrals/${r.id}/follow-up`, { method: 'PUT', body: { at: null } }); toast('Reminder cleared'); renderReferral(id); };
+    }
+
     const editForm = document.getElementById('editForm');
     if (editForm) {
+      attachAddressSuggest(editForm.address, (x) => { editForm.address.value = x.line1; if (x.city) editForm.city.value = x.city; if (x.zip) editForm.zip.value = x.zip; });
       document.querySelectorAll('[data-esvc]').forEach((b) => { b.onclick = () => b.classList.toggle('on'); });
       document.getElementById('cancelEdit').onclick = () => { state.editing = null; renderReferral(id); };
       editForm.onsubmit = async (e) => {
@@ -1378,11 +1470,13 @@
 
   async function renderTeam() {
     if (!managesUsers()) { location.hash = defaultRoute(); return; }
-    const [users, teams, settings, security, emailCfg] = await Promise.all([
+    const onSettingsTab = isAdmin() && query().tab === 'settings';
+    const [users, teams, settings, security, emailCfg, speedCfg] = await Promise.all([
       api('/users'), api('/teams'),
       isAdmin() ? api('/settings') : Promise.resolve(null),
       isAdmin() ? api('/admin/security') : Promise.resolve(null),
       isAdmin() ? api('/admin/email') : Promise.resolve(null),
+      onSettingsTab ? api('/speed/settings') : Promise.resolve(null),
     ]);
     const emailOn = state.me.email_enabled;
     const flash = state.flash; state.flash = null;
@@ -1493,7 +1587,33 @@
           <h2 style="margin-top:1.4rem">Backup & export</h2>
           <div class="row"><a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a><a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals (CSV)</a></div>
         </form>
-      </div>` : ''}
+      </div>
+      <form class="card" id="waForm">
+        <h2>WhatsApp message for dispatch</h2>
+        <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
+          ${['id', 'name', 'phone', 'alt_phone', 'address', 'dob', 'email', 'services', 'notes', 'rep', 'team', 'company', 'status'].map((k) => `<code>{${k}}</code>`).join(' ')}</p>
+        <div class="grid-2" style="gap:1rem">
+          <div><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
+            <div class="field"><label for="waNum">Dispatch WhatsApp number <span class="muted small">(optional — Open WhatsApp goes straight to this chat)</span></label><input id="waNum" inputmode="tel" value="${esc(settings.whatsapp_number)}" placeholder="1 512 555 0142"></div></div>
+          <div><label class="small">Preview</label><pre class="wa-preview" id="waPreview"></pre></div>
+        </div>
+        <div class="row" style="margin-top:.8rem"><button class="btn primary">Save</button><button type="button" class="btn" id="waReset">Reset to default</button></div>
+      </form>
+      <form class="card" id="speedForm">
+        <h2>Speed to lead</h2>
+        <p class="small muted" style="margin-top:0">A lead counts as answered the first time dispatch, a manager or an admin changes its status, comments on it, or takes it. Only working hours count, so a lead that comes in at night starts its clock in the morning.</p>
+        <label class="check"><input type="checkbox" name="enabled" ${speedCfg.enabled ? 'checked' : ''}> Alert when new leads wait too long</label>
+        <div class="speed-grid">
+          <div class="field"><label for="sp_min">Alert dispatch after (minutes)</label><input id="sp_min" name="minutes" type="number" min="1" max="1440" value="${speedCfg.minutes}"></div>
+          <div class="field"><label for="sp_esc">Alert admins after (minutes)</label><input id="sp_esc" name="escalate" type="number" min="2" max="2880" value="${speedCfg.escalate}"></div>
+          <div class="field"><label for="sp_from">Working hours</label>
+            <div class="row" style="flex-wrap:nowrap;gap:.4rem"><select id="sp_from">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${+speedCfg.hours.split('-')[0] === h ? 'selected' : ''}>${new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select>
+            <span class="muted">to</span><select id="sp_to">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${+speedCfg.hours.split('-')[1] === h ? 'selected' : ''}>${h === 24 ? 'midnight' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select></div></div>
+          <div class="field"><label for="sp_tz">Time zone</label><select id="sp_tz">${[['America/New_York', 'Eastern'], ['America/Chicago', 'Central'], ['America/Denver', 'Mountain'], ['America/Phoenix', 'Arizona'], ['America/Los_Angeles', 'Pacific'], ['America/Anchorage', 'Alaska'], ['Pacific/Honolulu', 'Hawaii'], ['America/Puerto_Rico', 'Atlantic (Puerto Rico)']].map(([z, l]) => `<option value="${z}" ${speedCfg.tz === z ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        </div>
+        <label class="check" style="margin-top:.6rem"><input type="checkbox" name="auto_reassign" ${speedCfg.autoReassign ? 'checked' : ''}> When admins are alerted, hand the lead to the least-busy other dispatcher</label>
+        <div style="margin-top:.9rem"><button class="btn primary">Save</button></div>
+      </form>` : ''}
       ${tab === 'users' ? `
       <div class="card">
         <div class="row between"><h2 style="margin:0">${isAdmin() ? 'All users' : 'Team members'}</h2>
@@ -1596,6 +1716,36 @@
         try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
       };
     });
+    const waForm = document.getElementById('waForm');
+    if (waForm) {
+      const tpl = document.getElementById('waTpl');
+      const sample = { id: 1024, customer_name: 'Maria Lopez', phone: '(512) 867-5309', address: '1010 Ogden Ave, Dallas, TX 75211', dob: '1985-03-14',
+        email: 'maria.lopez@gmail.com', services: 'Internet, Mobile', notes: 'Call after 5pm', created_by_name: state.me.full_name, team_name: 'North Crew', status: 'New' };
+      const preview = () => { document.getElementById('waPreview').textContent = whatsappMessage(sample, tpl.value).text; };
+      tpl.oninput = preview; preview();
+      document.getElementById('waReset').onclick = () => { tpl.value = DEFAULT_WA; preview(); };
+      waForm.onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          state.appSettings = await api('/settings', { method: 'PATCH', body: { whatsapp_template: tpl.value, whatsapp_number: document.getElementById('waNum').value } });
+          toast('WhatsApp message saved');
+        } catch (err) { toast(err.message); }
+      };
+    }
+
+    const speedForm = document.getElementById('speedForm');
+    if (speedForm) speedForm.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api('/speed/settings', { method: 'PATCH', body: {
+          enabled: speedForm.enabled.checked, auto_reassign: speedForm.auto_reassign.checked,
+          minutes: Number(speedForm.minutes.value), escalate: Number(speedForm.escalate.value),
+          hours: `${document.getElementById('sp_from').value}-${document.getElementById('sp_to').value}`, timezone: document.getElementById('sp_tz').value,
+        } });
+        toast('Speed-to-lead settings saved');
+      } catch (err) { toast(err.message); }
+    };
+
     const addTeam = document.getElementById('addTeam');
     if (addTeam) addTeam.onsubmit = async (e) => {
       e.preventDefault();
@@ -1672,6 +1822,8 @@
     stale: { title: 'Needs attention', size: 'half', about: 'Leads still New after 3+ days.' },
     installs: { title: 'Upcoming installs', size: 'half', about: 'Installs in the next two weeks.' },
     activity: { title: 'Recent activity', size: 'half', about: 'Latest status changes and comments.' },
+    speed: { title: 'Speed to lead', size: 'half', about: 'How fast new leads get a first response, in working hours, and who is waiting right now.' },
+    followups: { title: 'My call-backs', size: 'half', about: 'Call-back reminders you\'ve set, soonest first.' },
   };
 
   const localYmd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -1830,6 +1982,32 @@
   }
 
   const WIDGET_RENDER = {
+    speed(el, d) {
+      const x = d.speed;
+      if (!x) { el.innerHTML = ''; return; }
+      const tone = x.within_pct == null ? '' : x.within_pct >= 80 ? 'ok-text' : x.within_pct >= 50 ? 'warn-text' : 'danger-text';
+      el.innerHTML = `<div class="speed-tiles">
+          <div><div class="n">${fmtMins(x.avg)}</div><div class="l">Average first response</div></div>
+          <div><div class="n">${fmtMins(x.median)}</div><div class="l">Typical (median)</div></div>
+          <div><div class="n ${tone}">${x.within_pct == null ? '—' : `${x.within_pct}%`}</div><div class="l">Answered within ${x.target} min</div></div>
+        </div>
+        ${x.waiting.length ? `<p class="small" style="margin:.8rem 0 .3rem"><b>Waiting now</b></p><ul class="mini-list">${x.waiting.map((w) => `
+          <li><a href="#/r/${w.id}"><b>${esc(leadName(w))}</b><span class="muted small">${w.assigned_name ? `🎧 ${esc(w.assigned_name)}` : 'Unassigned'}${w.phone ? ` · ${esc(w.phone)}` : ''}</span></a>
+          <span class="age ${w.minutes >= x.escalate ? 'old' : w.minutes >= x.target ? '' : 'fresh'}">${fmtMins(w.minutes)}</span></li>`).join('')}</ul>`
+          : '<p class="small muted" style="margin:.8rem 0 0">✓ No new lead is waiting for a first response.</p>'}
+        ${x.count ? '' : '<p class="small muted" style="margin:.4rem 0 0">No responses in this period yet.</p>'}`;
+    },
+
+    followups(el, d) {
+      const list = d.followups || [];
+      el.innerHTML = list.length ? `<ul class="mini-list">${list.map((f) => {
+        const due = parseDate(f.follow_up_at);
+        const late = due < new Date();
+        return `<li><a href="#/r/${f.id}"><b>${esc(leadName(f))}</b><span class="muted small">${f.follow_up_note ? esc(f.follow_up_note) : esc(f.phone || '')}</span></a>
+          <span class="when-chip ${late ? 'today' : ''}">${due.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span>${f.phone ? `<a class="btn small" href="tel:${esc(f.phone.replace(/[^\d+]/g, ''))}" aria-label="Call">📞</a>` : ''}</li>`;
+      }).join('')}</ul>` : empty('No call-backs set. Open a lead and tap “Tomorrow 10am” to get a reminder.');
+    },
+
     kpis(el, d) {
       const k = d.kpis;
       const p = d.prev_kpis || {};
@@ -2529,6 +2707,8 @@
       <ul><li>You need the customer's <b>name</b> and at least a <b>phone, email or address</b>. The contact details are how duplicates are checked.</li>
       <li>Something read wrong? Tap <b>Something wrong? Fix the details</b> before sending.</li>
       <li><b>Use template</b> fills the box with labels (Name:, Phone:, Address:…) if your admin set one up.</li>
+      <li><b>Date of birth</b>: type it with a label (<i>DOB: 01/31/1980</i>) or just the date; dispatch needs it.</li>
+      <li><b>Send it to dispatch on WhatsApp:</b> after sending, tap <b>📋 Copy for WhatsApp</b> and paste it in the dispatch chat, or tap <b>🟢 Open WhatsApp</b>. The same buttons are on every lead's page. If something dispatch needs is missing (name, phone, address, date of birth, email), it tells you.</li>
       <li>Anything extra — current provider, best time to call, a second number — is kept in the notes. Your original text is always saved.</li></ul>` });
     S.push({ id: 'quality', title: 'Lead quality score', roles: 'all', body: `
       <p>While you type a lead, a bar under the box shows its <b>quality from 0 to 100%</b>, from <span style="color:${LeadScore.scoreColor(10)}"><b>red</b></span> to <span style="color:${LeadScore.scoreColor(100)}"><b>green</b></span>. It tells you what would raise it.</p>
@@ -2540,6 +2720,21 @@
       <tr><td>Services</td><td>10%</td><td>At least one of Internet, TV, Mobile, Voice picked</td></tr></tbody></table>
       <p><b>Made-up details are refused</b>, with a message saying what's wrong. That covers names like “Test”, “asdf” or “N/A”, and names with numbers. It covers phone numbers like 123-456-7890, 111-111-1111 or a fake area code. It also covers throw-away or placeholder emails like mailinator.com or test@…. Common email typos get a “Did you mean @gmail.com?” with a one-tap fix.</p>
       <p>The score shows as a coloured % on every lead, in the list and on the Board${worksLeads() ? ', so you can work the strongest leads first' : ''}.</p>` });
+    S.push({ id: 'phone', title: 'The app on your phone', roles: 'all', body: `
+      <ul><li><b>Install it:</b> on iPhone, open the site in Safari, tap <b>Share → Add to Home Screen</b>. On Android, tap <b>Install</b> when asked, or <b>⋮ → Install app</b>. It then opens full-screen like any app.</li>
+      <li><b>Notifications:</b> go to ${isAdmin() ? '<a href="#/account">Admin → My account</a>' : '<a href="#/account">Account → Profile</a>'} → <b>Phone notifications</b> and tap <b>Turn on</b>. You'll get alerts for orders 🎉, leads assigned to you, @mentions and call-back reminders, even when the app is closed. On iPhone this works once the app is on your Home Screen.</li>
+      <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
+      <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
+      <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
+    if (r !== 'rep') {
+      S.push({ id: 'speed', title: 'Speed to lead', roles: 'lead', body: `
+        <p>The faster a new lead gets a call, the more of them order. Each new lead shows <b>⏱ Waiting</b> until someone works it, then <b>⚡ Answered in …</b>.</p>
+        <ul><li>A lead is answered the first time dispatch, a manager or an admin changes its status, comments on it, or takes it. The rep's own comments don't count.</li>
+        <li>If nobody has answered it after <b>15 minutes</b>, the assigned dispatcher gets an alert (every dispatcher if it's unassigned). After <b>60 minutes</b> admins are alerted${isAdmin() ? ', and the lead can move to the least-busy other dispatcher automatically' : ''}.</li>
+        <li>Only working hours count, so night-time leads start their clock in the morning.</li>
+        <li>The <b>Speed to lead</b> widget on Home shows average and typical first-response times, how many leads were answered on time, and who is waiting right now.</li></ul>
+        ${isAdmin() ? '<p><b>Admins:</b> change the minutes, working hours, time zone and automatic hand-off under Admin → Settings → Speed to lead.</p>' : ''}` });
+    }
     S.push({ id: 'dupes', title: 'Duplicates', roles: 'all', body: `
       <p>If the phone, email or address matches <b>any</b> referral already in the system, from any team, you'll see <i>“This lead is a duplicate and cannot be entered.”</i> You won't be shown whose lead it is.</p>
       <p>Addresses match even when written differently (“123 N. Main St #4b” = “123 North Main Street Apt 4B”), but a different apartment is a different address. ${seesAll() ? 'The <a href="#/duplicates">Duplicates</a> page shows every blocked attempt and the lead it matched.' : 'If you think it\'s wrong, ask your manager — dispatch and admins can see what it matched.'}</p>` });
@@ -2664,6 +2859,204 @@
   }
 
   // A one-time nudge for people who haven't opened Help yet.
+  // ---------- WhatsApp hand-off to dispatch ----------
+
+  async function appSettings() {
+    if (state.appSettings) return state.appSettings;
+    try {
+      state.appSettings = await api('/settings');
+      lsSet('eo-settings', state.appSettings);
+    } catch { state.appSettings = lsGet('eo-settings', {}) || {}; }
+    return state.appSettings;
+  }
+  const usDate = (ymd) => (ymd ? `${ymd.slice(5, 7)}/${ymd.slice(8, 10)}/${ymd.slice(0, 4)}` : '');
+  const DISPATCH_NEEDS = [['name', 'name'], ['phone', 'phone'], ['address', 'address'], ['dob', 'date of birth'], ['email', 'email']];
+  const DEFAULT_WA = '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}';
+
+  // Fills the admin's template. Lines with only optional, empty fields (notes…) are left out;
+  // missing required ones show "—" so dispatch sees what's missing.
+  function whatsappMessage(r, template) {
+    const addr = [r.address, r.city && !String(r.address || '').toLowerCase().includes(String(r.city).toLowerCase()) ? r.city : '', r.zip && !String(r.address || '').includes(r.zip) ? r.zip : '']
+      .filter(Boolean).join(', ');
+    const v = {
+      id: r.id || '', name: r.customer_name || r.name || '', phone: r.phone || '', alt_phone: r.alt_phone || '', address: addr,
+      dob: usDate(r.dob), email: r.email || '', services: r.services || '', notes: (r.notes || '').trim(), company: r.company || '',
+      rep: r.created_by_name || state.me.full_name, team: r.team_name || '', status: r.status || '',
+    };
+    const optional = new Set(['notes', 'alt_phone', 'company', 'team', 'services']);
+    const lines = String(template || DEFAULT_WA).split('\n').map((line) => {
+      const keys = [...line.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+      if (keys.length && keys.every((k) => !v[k]) && keys.every((k) => optional.has(k))) return null;
+      return line.replace(/\{(\w+)\}/g, (all, k) => (k in v ? (v[k] || '—') : all));
+    }).filter((l) => l !== null);
+    const missing = DISPATCH_NEEDS.filter(([k]) => !v[k]).map(([, label]) => label);
+    return { text: lines.join('\n'), missing };
+  }
+
+  const waButtonsHtml = () => '<button type="button" class="btn small wa-btn" data-wa-copy>📋 Copy for WhatsApp</button><button type="button" class="btn small wa-btn" data-wa-open>🟢 Open WhatsApp</button>';
+  function bindWhatsapp(root, r) {
+    const run = async (open) => {
+      const s = await appSettings();
+      const { text, missing } = whatsappMessage(r, s.whatsapp_template);
+      const warn = missing.length ? ` Missing for dispatch: ${missing.join(', ')}.` : '';
+      if (open) {
+        window.open(`https://wa.me/${(s.whatsapp_number || '').replace(/\D/g, '')}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+        if (warn) toast(warn.trim());
+        return;
+      }
+      toast((await copyText(text)) ? `Copied — paste it in WhatsApp.${warn}` : 'Copy failed — use Open WhatsApp instead');
+    };
+    root.querySelectorAll('[data-wa-copy]').forEach((b) => { b.onclick = () => run(false); });
+    root.querySelectorAll('[data-wa-open]').forEach((b) => { b.onclick = () => run(true); });
+  }
+
+  // ---------- phone app: install, notifications, working without signal ----------
+
+  const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage off */ } };
+  const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isPhone = () => matchMedia('(max-width: 760px)').matches;
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const fmtMins = (m) => (m == null ? '—' : m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60 ? `${m % 60}m` : ''}`.trim());
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  let installEvent = null;
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
+
+  function urlB64ToUint8Array(b64) {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  async function pushState() {
+    if (!pushSupported()) return { supported: false };
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    return { supported: true, reg, sub, permission: Notification.permission };
+  }
+
+  async function enablePush() {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Notifications were not allowed. You can allow them in your browser or phone settings.');
+    const { reg } = await pushState();
+    const { key } = await api('/push/key');
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(key) });
+    await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+  }
+
+  // One gentle prompt on Home / New Referral: install the app on a phone, then turn on alerts.
+  async function phoneNudge() {
+    const box = document.getElementById('phoneNudge');
+    if (!box || lsGet('eo-phone-nudge-off', false)) return;
+    let html = '';
+    if (isPhone() && !isStandalone() && (installEvent || isIOS())) {
+      html = `<span>📲 <b>Install the app</b> — it opens full-screen from your home screen${isIOS() ? '. Tap <b>Share</b> then <b>Add to Home Screen</b>.' : ' and gets alerts.'}</span>
+        ${installEvent ? '<button class="btn small primary" id="installBtn">Install</button>' : ''}`;
+    } else {
+      const st = await pushState().catch(() => ({ supported: false }));
+      if (st.supported && !st.sub && st.permission === 'default') {
+        html = '<span>🔔 <b>Get alerts on this device</b> — orders, new leads and call-back reminders.</span><button class="btn small primary" id="pushOnBtn">Turn on</button>';
+      }
+    }
+    if (!html) return;
+    box.innerHTML = `<div class="help-nudge phone-nudge">${html}<button class="link-btn small" id="phoneNudgeX">Not now</button></div>`;
+    document.getElementById('phoneNudgeX').onclick = () => { lsSet('eo-phone-nudge-off', true); box.innerHTML = ''; };
+    const ib = document.getElementById('installBtn');
+    if (ib) ib.onclick = async () => { installEvent.prompt(); await installEvent.userChoice.catch(() => {}); installEvent = null; box.innerHTML = ''; };
+    const pb = document.getElementById('pushOnBtn');
+    if (pb) pb.onclick = async () => { try { await enablePush(); toast('🔔 Alerts are on for this device'); box.innerHTML = ''; } catch (err) { toast(err.message); } };
+  }
+
+  // Leads typed with no signal wait here and are sent when the connection is back.
+  const OUTBOX = 'eo-outbox';
+  const outbox = () => lsGet(OUTBOX, []).filter((x) => state.me && x.user_id === state.me.id);
+  function queueLead(body) {
+    const all = lsGet(OUTBOX, []);
+    all.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, user_id: state.me.id, body, saved_at: new Date().toISOString() });
+    lsSet(OUTBOX, all);
+  }
+  const dropFromOutbox = (id) => lsSet(OUTBOX, lsGet(OUTBOX, []).filter((x) => x.id !== id));
+  let flushing = false;
+  async function flushOutbox() {
+    if (flushing || !navigator.onLine || !state.me || state.offline) return;
+    const items = outbox();
+    if (!items.length) return;
+    flushing = true;
+    try {
+      for (const item of items) {
+        try {
+          const ref = await api('/referrals', { method: 'POST', body: item.body });
+          dropFromOutbox(item.id);
+          toast(`📶 Sent your saved lead: ${leadName(ref)}`);
+        } catch (err) {
+          if (!err.status) break; // still offline
+          dropFromOutbox(item.id);
+          const failed = lsGet('eo-outbox-failed', []);
+          failed.push({ ...item, error: err.message });
+          lsSet('eo-outbox-failed', failed.slice(-20));
+          toast(`A saved lead wasn't sent: ${err.message}`);
+        }
+      }
+    } finally {
+      flushing = false;
+      drawOutbox();
+    }
+  }
+  function drawOutbox() {
+    const box = document.getElementById('outboxBox');
+    if (!box) return;
+    const waiting = outbox();
+    const failed = lsGet('eo-outbox-failed', []).filter((x) => state.me && x.user_id === state.me.id);
+    const nameOf = (b) => (b.body.name || (b.body.text || '').split('\n')[0] || 'Lead').slice(0, 40);
+    box.innerHTML = (waiting.length ? `<div class="alert warn small">📶 ${waiting.length} lead${waiting.length === 1 ? ' is' : 's are'} saved on this phone and will send when you're back online: ${waiting.map((w) => esc(nameOf(w))).join(', ')}. <button class="link-btn small" id="outboxRetry">Try now</button></div>` : '')
+      + (failed.length ? `<div class="alert err small">These saved leads couldn't be sent: ${failed.map((w) => `<b>${esc(nameOf(w))}</b> (${esc(w.error)})`).join(', ')}. <button class="link-btn small" id="outboxClear">Dismiss</button></div>` : '');
+    const retry = document.getElementById('outboxRetry');
+    if (retry) retry.onclick = () => { state.offline = false; flushOutbox(); };
+    const clear = document.getElementById('outboxClear');
+    if (clear) clear.onclick = () => { lsSet('eo-outbox-failed', lsGet('eo-outbox-failed', []).filter((x) => x.user_id !== state.me.id)); drawOutbox(); };
+  }
+  window.addEventListener('online', () => { state.offline = false; document.body.classList.remove('is-offline'); flushOutbox(); });
+  window.addEventListener('offline', () => document.body.classList.add('is-offline'));
+  setInterval(flushOutbox, 30000);
+
+  // Address suggestions under an input. onPick(suggestion) fills the form.
+  function attachAddressSuggest(input, onPick) {
+    if (!input) return;
+    const box = document.createElement('div');
+    box.className = 'addr-suggest';
+    box.hidden = true;
+    box.setAttribute('role', 'listbox');
+    input.parentNode.classList.add('addr-wrap');
+    input.after(box);
+    input.setAttribute('autocomplete', 'off');
+    let last = input.value.trim();
+    let items = [];
+    let idx = -1;
+    const close = () => { box.hidden = true; idx = -1; };
+    const draw = () => {
+      box.innerHTML = items.map((x, i) => `<button type="button" role="option" data-i="${i}" class="${i === idx ? 'on' : ''}">📍 ${esc(x.label)}</button>`).join('');
+      box.hidden = !items.length;
+    };
+    const pick = (i) => { const x = items[i]; if (!x) return; last = x.label; onPick(x); close(); };
+    const run = debounce(async () => {
+      const q = input.value.trim();
+      if (q === last) return;
+      last = q;
+      if (q.length < 6 || !/\d/.test(q)) { close(); return; }
+      try { items = (await api('/address/suggest?q=' + encodeURIComponent(q))).suggestions || []; idx = -1; draw(); } catch { close(); }
+    }, 300);
+    input.addEventListener('input', run);
+    input.addEventListener('keydown', (e) => {
+      if (box.hidden) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); idx = Math.min(items.length - 1, idx + 1); draw(); } else if (e.key === 'ArrowUp') { e.preventDefault(); idx = Math.max(0, idx - 1); draw(); } else if (e.key === 'Enter' && idx >= 0) { e.preventDefault(); pick(idx); } else if (e.key === 'Escape') close();
+    });
+    input.addEventListener('blur', () => setTimeout(close, 150));
+    box.addEventListener('mousedown', (e) => e.preventDefault());
+    box.addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) pick(Number(b.dataset.i)); });
+  }
+
   function helpNudge() {
     let seen = false;
     try { seen = localStorage.getItem('eo-help-seen') === '1'; } catch { seen = true; }
@@ -2693,6 +3086,7 @@
         <div id="acctErr" style="margin-top:.8rem"></div>
         <div class="row" style="margin-top:1rem"><button class="btn primary">Save</button><button type="button" class="btn" id="pwBtn">Change password</button></div>
       </form>
+      <div class="card narrow" id="pushCard"><h2>Phone notifications</h2><p class="small muted">Checking this device…</p></div>
       <div class="card narrow">
         <h2>Appearance</h2>
         <div class="seg" id="themeSeg">${[['system', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-t="${k}" class="${getTheme() === k ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -2701,6 +3095,7 @@
         <button class="btn" id="logoutAll">Sign out other devices</button>
       </div>`);
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
+    drawPushCard();
     document.querySelectorAll('#themeSeg button').forEach((b) => {
       b.onclick = () => { setTheme(b.dataset.t); document.querySelectorAll('#themeSeg button').forEach((x) => x.classList.toggle('on', x === b)); };
     });
@@ -2718,6 +3113,37 @@
         document.getElementById('acctErr').innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
       }
     };
+  }
+
+  async function drawPushCard() {
+    const card = document.getElementById('pushCard');
+    if (!card) return;
+    const st = await pushState().catch(() => ({ supported: false }));
+    let body;
+    if (!st.supported) {
+      body = isIOS() && !isStandalone()
+        ? '<p>On iPhone, first add the app to your Home Screen: tap <b>Share</b> then <b>Add to Home Screen</b>. Open it from there, come back here, and turn notifications on.</p>'
+        : '<p class="muted">This browser can\'t show notifications. Try Chrome, Edge, Firefox or Safari.</p>';
+    } else if (st.sub) {
+      body = `<p><b class="ok-text">✓ On for this device.</b> You'll get alerts here: orders, leads assigned to you, @mentions and call-back reminders.</p>
+        <div class="row"><button class="btn" id="pushTest">Send me a test</button><button class="btn" id="pushOff">Turn off on this device</button></div>`;
+    } else if (st.permission === 'denied') {
+      body = '<p>Notifications are blocked for this site. Allow them in your browser or phone settings, then reload this page.</p>';
+    } else {
+      body = `<p>Get alerts on this ${isPhone() ? 'phone' : 'device'} even when the app is closed: orders 🎉, leads assigned to you, @mentions and call-back reminders.</p>
+        <button class="btn primary" id="pushOn">Turn on notifications</button>`;
+    }
+    const install = isPhone() && !isStandalone()
+      ? `<p class="small muted" style="margin-top:.8rem">${installEvent ? '<button class="btn small" id="installBtn2">📲 Install the app</button> Opens full-screen from your home screen.' : isIOS() ? '📲 Tip: tap <b>Share → Add to Home Screen</b> to use it like an app.' : '📲 Tip: use your browser menu → <b>Install app</b> / <b>Add to Home screen</b>.'}</p>` : '';
+    card.innerHTML = `<h2>Phone notifications</h2>${body}${install}`;
+    const on = document.getElementById('pushOn');
+    if (on) on.onclick = async () => { try { await enablePush(); toast('🔔 Notifications are on'); drawPushCard(); } catch (err) { toast(err.message); } };
+    const test = document.getElementById('pushTest');
+    if (test) test.onclick = async () => { try { await api('/push/test', { method: 'POST', body: {} }); toast('Sent — check your notifications'); } catch (err) { toast(err.message); } };
+    const off = document.getElementById('pushOff');
+    if (off) off.onclick = async () => { await api('/push/unsubscribe', { method: 'POST', body: { endpoint: st.sub.endpoint } }).catch(() => {}); await st.sub.unsubscribe().catch(() => {}); toast('Notifications off on this device'); drawPushCard(); };
+    const ib = document.getElementById('installBtn2');
+    if (ib) ib.onclick = async () => { installEvent.prompt(); await installEvent.userChoice.catch(() => {}); installEvent = null; drawPushCard(); };
   }
 
   // ---------- notifications ----------
@@ -3371,8 +3797,15 @@
   (async () => {
     try {
       const res = await fetch('/api/me', { credentials: 'same-origin' });
-      if (res.ok) state.me = await res.json();
-    } catch { /* offline */ }
+      if (res.ok) { state.me = await res.json(); lsSet('eo-me', state.me); } else lsSet('eo-me', null);
+    } catch {
+      // No signal: open with the last signed-in user so leads can still be entered.
+      state.me = lsGet('eo-me', null);
+      state.offline = !!state.me;
+      document.body.classList.add('is-offline');
+      if (state.me && !location.hash.startsWith('#/new')) location.hash = '#/new';
+    }
     route_();
+    flushOutbox();
   })();
 })();

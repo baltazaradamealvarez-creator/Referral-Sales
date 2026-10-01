@@ -175,14 +175,42 @@ const LABELS = {
   city: 'city', state: 'state', zip: 'zip', 'zip code': 'zip', zipcode: 'zip', apt: 'unit', unit: 'unit',
   note: 'notes', notes: 'notes', comment: 'notes', comments: 'notes',
   services: 'services', service: 'services', products: 'services', 'interested in': 'services', package: 'services',
+  dob: 'dob', 'd.o.b': 'dob', 'd.o.b.': 'dob', 'date of birth': 'dob', 'birth date': 'dob', birthdate: 'dob', birthday: 'dob',
+  'fecha de nacimiento': 'dob', nacimiento: 'dob', 'fecha nac': 'dob',
 };
 const LABEL_RE = new RegExp(`^\\s*(${Object.keys(LABELS).sort((a, b) => b.length - a.length).join('|')})\\s*[:=\\-]\\s*(.*)$`, 'i');
+
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
+  ene: 1, abr: 4, ago: 8, dic: 12 };
+
+// A date of birth in common US forms -> 'YYYY-MM-DD', or '' if it isn't a real, plausible one.
+// 01/31/1980, 1-31-80, 1980-01-31, Jan 31 1980, 31 Jan 1980.
+function parseDob(value) {
+  const v = String(value || '').trim().toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g, '$1').replace(/,/g, ' ');
+  if (!v) return '';
+  let y;
+  let m;
+  let d;
+  let k;
+  if ((k = v.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/))) [y, m, d] = [+k[1], +k[2], +k[3]];
+  else if ((k = v.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/))) [m, d, y] = [+k[1], +k[2], +k[3]];
+  else if ((k = v.match(/^([a-z]{3,9})\.?\s+(\d{1,2})\s+(\d{4})$/)) && MONTHS[k[1].slice(0, 3)]) [m, d, y] = [MONTHS[k[1].slice(0, 3)], +k[2], +k[3]];
+  else if ((k = v.match(/^(\d{1,2})\s+([a-z]{3,9})\.?\s+(\d{4})$/)) && MONTHS[k[2].slice(0, 3)]) [d, m, y] = [+k[1], MONTHS[k[2].slice(0, 3)], +k[3]];
+  else return '';
+  const now = new Date();
+  if (y < 100) y += y > (now.getFullYear() % 100) ? 1900 : 2000;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+  const age = (now - dt) / (365.25 * 86400000);
+  if (age < 16 || age > 110) return '';
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
 
 // Pulls name / phone / email / address / services out of whatever the rep typed or pasted.
 // Accepts labelled lines ("Name: Jane") or plain text in any order. Nothing is thrown away:
 // anything it can't place ends up in notes.
 function parseLeadText(text) {
-  const result = { name: '', phone: '', email: '', address: '', notes: '', services: [] };
+  const result = { name: '', phone: '', email: '', address: '', notes: '', dob: '', services: [] };
   if (!text) return result;
 
   const labelled = {};
@@ -198,6 +226,16 @@ function parseLeadText(text) {
     }
   }
   let remaining = bodyLines.join('\n');
+  if (labelled.dob) {
+    result.dob = parseDob(labelled.dob);
+    if (!result.dob) extraNotes.push(`DOB: ${labelled.dob}`);
+  } else {
+    // An unlabelled full date with a birth-year-looking year is the date of birth.
+    for (const m of remaining.match(/\b\d{1,2}[/-]\d{1,2}[/-](19|20)\d{2}\b/g) || []) {
+      const dob = parseDob(m);
+      if (dob) { result.dob = dob; remaining = remaining.replace(m, '  '); break; }
+    }
+  }
   for (const k of ['name', 'phone', 'email', 'address', 'notes']) if (labelled[k]) result[k] = labelled[k];
   const addrParts = [labelled.unit && `Apt ${labelled.unit.replace(/^(apt|unit|#)\s*/i, '')}`, labelled.city,
     [labelled.state, labelled.zip].filter(Boolean).join(' ')].filter(Boolean);
@@ -318,6 +356,7 @@ function extractStateFromAddress(address) {
 }
 
 module.exports = {
+  parseDob,
   normalizeEmail,
   normalizePhone,
   formatPhone,
