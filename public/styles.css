@@ -26,6 +26,10 @@
 }
 .coach-draft { padding: 1rem 0; border-top: 1px solid var(--border); min-width: 0; }
 .coach-draft p { overflow-wrap: anywhere; }
+.coach-manual { margin: 1rem 0 1.5rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.coach-manual select { width: 100%; min-width: 0; }
+.coach-manual [hidden] { display: none; }
+.coach-manual .wa-preview { max-height: 20rem; overflow: auto; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f141b;

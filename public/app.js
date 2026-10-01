@@ -1609,6 +1609,14 @@
       if(!card.isConnected)return;
       card.innerHTML=`<div class="row between"><h2 style="margin:0">Seller coach</h2><span class="wa-state ${s.enabled?'ok':''}">${s.enabled?'On':'Off'}</span></div>
         <p class="small muted">Supportive private WhatsApp check-ins for sellers and managers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
+        <section class="coach-manual" aria-labelledby="coachManualHeading">
+          <h3 id="coachManualHeading" style="margin-top:0">Send a manual check-in</h3>
+          <p class="small muted">Choose a seller or manager, review their message, then send it on WhatsApp.</p>
+          <div class="field"><label for="coachSeller">Who would you like to check in with?</label><select id="coachSeller"><option value="">Choose a seller or manager</option>${sellers.map((u)=>`<option value="${u.id}">${esc(u.full_name)}${u.role==='manager'?' (Manager)':''}${u.blocked?' — unavailable':''}</option>`).join('')}</select></div>
+          <div class="row"><button type="button" class="btn primary" id="coachSend" disabled aria-describedby="coachManualState">Send check-in</button><button type="button" class="btn" id="coachStatusRefresh" hidden>Refresh status</button></div>
+          <p id="coachManualState" class="small" role="status" aria-live="polite">${sellers.length?'Choose someone above to see the message and send availability.':'No active sellers or managers yet. Add them under Users & teams.'}</p>
+          <div id="coachManual"></div>
+        </section>
         <form id="coachSettings"><label class="check"><input id="coachEnabled" type="checkbox" ${s.enabled?'checked':''}> Enable seller coaching</label>
           <div class="fix-grid" style="margin-top:.8rem"><div><label for="coachTime">Weekday check-in time</label><input type="time" id="coachTime" value="${esc(s.time)}" required></div>
           <div><label for="coachDays">Minimum days between check-ins</label><input type="number" id="coachDays" min="1" max="30" value="${s.days}" required></div>
@@ -1618,8 +1626,6 @@
             <p class="small muted">The coach quotes only documented offers. Missing prices, exceptions, unclear terms and difficult questions need owner review.</p></div>
           ${!s.ai||!s.connected?'<p class="alert warn small">Coaching needs the assistant enabled with its API key and WhatsApp connected. Settings can be saved now.</p>':''}
           <p id="coachSaveState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save coaching settings</button></form>
-        <h3 style="margin-top:1.5rem">Manual check-in</h3><div class="row"><select id="coachSeller" aria-label="Seller for check-in" style="flex:1;width:auto;min-width:0"><option value="">Choose a seller or manager</option>${sellers.map((u)=>`<option value="${u.id}" ${u.blocked?'disabled':''}>${esc(u.full_name)}${u.role==='manager'?' (Manager)':''}${u.blocked?' — '+esc(u.blocked):''}</option>`).join('')}</select><button type="button" class="btn" id="coachPreview">Preview check-in</button></div>
-        <div id="coachManual"></div><p class="small muted">${sellers.length} active seller or manager${sellers.length===1?'':'s'}. ${sellers.filter((u)=>!u.blocked).length} eligible for a manual check-in. Only accepted sends are recorded; check WhatsApp diagnostics for failures.</p>
         <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">Approval inbox</h3><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div>
         <p class="small muted">Up to 100 recent drafts, with pending reviews first. Only the configured reviewer can approve or reject. “Sent” means accepted by WhatsApp, not confirmed read.</p>
         <div class="stack">${drafts.map((d)=>`<article class="coach-draft" data-coach-draft="${d.id}"><div class="row between"><b>${esc(d.seller_name)}</b><span class="tag">${esc(d.status)}</span></div><p class="small muted">${esc(fullDate(d.created_at))} · Reviewer: ${esc(d.reviewer_name||'Choose a reviewer')} · ${esc(d.reason)}</p>
@@ -1632,13 +1638,42 @@
         try{await api('/coach/settings',{method:'PATCH',body:{enabled:card.querySelector('#coachEnabled').checked,time:card.querySelector('#coachTime').value,days:Number(card.querySelector('#coachDays').value),reviewer_id:Number(card.querySelector('#coachReviewer').value),knowledge:card.querySelector('#coachKnowledge').value}});toast('Coaching settings saved');drawCoachCard();}
         catch(err){result.textContent=err.message;result.classList.add('err-text');}finally{btn.disabled=false;}
       };
-      card.querySelector('#coachPreview').onclick=async()=>{
-        const id=card.querySelector('#coachSeller').value;if(!id){toast('Choose an eligible seller first');return;}
-        try{const p=await api(`/coach/sellers/${id}/preview`);const box=card.querySelector('#coachManual');box.innerHTML=`<pre class="wa-preview" style="margin-top:.8rem">${esc(p.text)}</pre><button type="button" class="btn primary" id="coachSend" ${p.blocked||!s.enabled||!s.ai||!s.connected?'disabled':''}>Send check-in</button>${p.blocked?`<p class="small muted">${esc(p.blocked)}</p>`:''}`;
-          box.querySelector('#coachSend').onclick=async(e)=>{e.target.disabled=true;try{await api(`/coach/sellers/${id}/checkin`,{method:'POST',body:{}});toast('Check-in queued');drawCoachCard();}catch(err){toast(err.message);e.target.disabled=false;}};
-        }catch(err){toast(err.message);}
+      const select=card.querySelector('#coachSeller'),send=card.querySelector('#coachSend'),refresh=card.querySelector('#coachStatusRefresh');
+      const manual=card.querySelector('#coachManual'),status=card.querySelector('#coachManualState');
+      let previewId='',requestId=0;
+      const showManualStatus=(message,kind='')=>{status.textContent=message;status.className=kind?`small alert ${kind}`:'small';};
+      const loadPreview=async()=>{
+        const id=select.value,request=++requestId;
+        previewId='';send.disabled=true;send.textContent='Send check-in';refresh.hidden=!id;refresh.disabled=true;manual.innerHTML='';
+        if(!id){showManualStatus('Choose someone above to see the message and send availability.');return;}
+        showManualStatus('Loading message and checking availability…');
+        try{
+          const p=await api(`/coach/sellers/${id}/preview`);
+          if(!card.isConnected||request!==requestId)return;
+          previewId=id;send.disabled=!!p.blocked;
+          manual.innerHTML=`<details open style="margin-top:1rem"><summary>Message preview for ${esc(p.name)}</summary><pre class="wa-preview">${esc(p.text)}</pre></details>`;
+          if(p.send_status==='failed')showManualStatus(`Last check-in failed: ${p.last_error}${p.blocked?' '+p.blocked:' You can try sending again.'}`,'err');
+          else if(p.send_status==='queued'){send.disabled=true;showManualStatus(`Check-in queued for ${p.name}. Click Refresh status to check whether WhatsApp has accepted it.`,'warn');}
+          else if(p.blocked)showManualStatus(`${p.blocked}${p.last_sent_at?' Last accepted by WhatsApp: '+fullDate(p.last_sent_at)+'.':''}`,'warn');
+          else showManualStatus(`Ready to send to ${p.name}.${p.last_sent_at?' Last accepted by WhatsApp: '+fullDate(p.last_sent_at)+'.':''}`);
+          if(p.send_status==='sent')manual.insertAdjacentHTML('afterbegin',`<p class="small">Last check-in accepted by WhatsApp: ${esc(fullDate(p.last_sent_at))}. Delivery and reading are not confirmed.</p>`);
+        }catch(err){if(card.isConnected&&request===requestId)showManualStatus(`Could not load the message: ${err.message} Click Retry to try again.`,'err');}
+        finally{if(card.isConnected&&request===requestId){refresh.disabled=false;refresh.textContent=previewId?'Refresh status':'Retry';}}
       };
-      card.querySelector('#coachSeller').onchange=()=>{card.querySelector('#coachManual').innerHTML='';};
+      select.onchange=loadPreview;refresh.onclick=loadPreview;
+      send.onclick=async()=>{
+        const id=select.value;if(!id||previewId!==id||send.disabled)return;
+        const name=sellers.find((u)=>String(u.id)===id)?.full_name||'this person';
+        send.disabled=true;select.disabled=true;refresh.disabled=true;send.textContent='Sending…';
+        showManualStatus(`Sending check-in to ${name}…`);
+        try{
+          await api(`/coach/sellers/${id}/checkin`,{method:'POST',body:{}});
+          if(!card.isConnected)return;
+          send.textContent='Check-in queued';
+          showManualStatus(`Check-in queued for ${name}. Click Refresh status to check whether WhatsApp has accepted it.`,'ok');
+        }catch(err){if(card.isConnected){send.textContent='Send check-in';showManualStatus(`Could not queue the check-in: ${err.message} Refresh status before trying again.`,'err');}}
+        finally{if(card.isConnected){select.disabled=false;refresh.disabled=false;refresh.hidden=false;}}
+      };
       card.querySelector('#coachRefresh').onclick=drawCoachCard;
       for(const action of ['approve','reject'])card.querySelectorAll(`[data-coach-${action}]`).forEach((b)=>{b.onclick=async()=>{
         const id=b.getAttribute(`data-coach-${action}`);const article=b.closest('[data-coach-draft]');article.querySelectorAll('button').forEach((x)=>{x.disabled=true;});

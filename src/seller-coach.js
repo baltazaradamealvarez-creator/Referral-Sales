@@ -50,13 +50,24 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
       + 'Reply STOP to stop these check-ins / Responde ALTO para detener estos mensajes.';
   }
 
-  function sendCheckin(u, now, manual = false) {
+  function sendBlock(u, now, manual = false) {
     const reason = eligibility(u, now, manual);
+    if (reason) return reason;
+    if (!cfg().enabled) return 'Enable seller coaching and save the coaching settings below first.';
+    if (!reviewer()) return 'Choose an active admin reviewer and save the coaching settings below first.';
+    if (getSettings().wa_two_way==='0') return 'Turn on two-way replies in WhatsApp alerts so this person can respond.';
+    if (!ai.enabled()) return 'Enable the assistant with its API key in Assistant settings first.';
+    if (!whatsapp || whatsapp.status() !== 'connected') return 'Connect WhatsApp in WhatsApp alerts first.';
+    if (!working(now)) {
+      const { hours, tz } = speedConfig();
+      return `Check-ins can be sent Monday–Friday, ${hours[0]}:00–${hours[1]}:00 (${tz}). Try again during those hours.`;
+    }
+    return '';
+  }
+
+  function sendCheckin(u, now, manual = false) {
+    const reason = sendBlock(u, now, manual);
     if (reason) throw new HttpError(409, reason);
-    if (!working(now)) throw new HttpError(409, 'Check-ins are sent during weekday business hours.');
-    if (!cfg().enabled || !reviewer()) throw new HttpError(409, 'Enable coaching and choose an active admin reviewer first.');
-    if (getSettings().wa_two_way==='0') throw new HttpError(409,'Turn on two-way WhatsApp replies so sellers can respond.');
-    if (!ai.enabled() || !whatsapp || whatsapp.status() !== 'connected') throw new HttpError(409, 'The assistant and WhatsApp must both be connected.');
     ensureContact(u.id);
     // Reserve before enqueueing to prevent scheduler/manual sends racing each other.
     db.prepare("UPDATE coach_contacts SET last_checkin_at=?,last_error='' WHERE user_id=?").run(sqlTime(now),u.id);
@@ -146,7 +157,13 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     return db.prepare("SELECT u.id,u.full_name,u.role,u.active,u.whatsapp,u.whatsapp_alerts,c.opted_out,c.last_sent_at,c.last_error FROM users u LEFT JOIN coach_contacts c ON c.user_id=u.id WHERE u.role IN ('rep','manager') AND u.active=1 ORDER BY u.full_name").all()
       .map((u)=>({id:u.id,full_name:u.full_name,role:u.role,opted_out:!!u.opted_out,last_sent_at:u.last_sent_at,last_error:u.last_error,blocked:eligibility(u,now,true)}));
   }));
-  app.get('/api/coach/sellers/:id/preview',wrap((req) => {requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');return {text:checkin(u),blocked:eligibility(u,Date.now(),true)};}));
+  app.get('/api/coach/sellers/:id/preview',wrap((req) => {
+    requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');
+    const c=contact(u.id);
+    return {text:checkin(u),blocked:sendBlock(u,Date.now(),true),name:u.full_name,
+      last_sent_at:c?.last_sent_at||null,last_error:c?.last_error||'',
+      send_status:c?.last_error?'failed':c?.last_checkin_at&&(!c.last_sent_at||c.last_sent_at<c.last_checkin_at)?'queued':c?.last_sent_at?'sent':null};
+  }));
   app.post('/api/coach/sellers/:id/checkin',wrap((req) => {
     requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');const out=sendCheckin(u,Date.now(),true);logAudit(req,'coach.checkin','user',u.id,'Manual check-in queued');return out;
   }));

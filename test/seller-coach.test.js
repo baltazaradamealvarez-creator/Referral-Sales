@@ -165,3 +165,24 @@ test('managers have manual coaching, owner approval, opt-out and existing operat
   const before=ai.calls.length;await app.locals.coach.handle(manager.u,'What is my commission?');assert.equal(ai.calls.length,before);
   await app.locals.coach.handle(manager.u,'STOP');assert.equal((await a.get(`/coach/sellers/${manager.id}/preview`)).body.blocked,'Seller stopped coaching');
 });
+
+test('manual preview explains the same send blockers and reports accepted and failed check-ins',async(t)=>{
+  const {db,a,wa,ai,make,settle}=await setup(t);const rep=await make('rep','512-555-0191');
+  let now=zonedToUtc(2026,10,5,11,'America/Chicago');t.mock.method(Date,'now',()=>now);
+  const set=(key,value)=>db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+  const preview=async()=>(await a.get(`/coach/sellers/${rep.id}/preview`)).body;
+  const checkBlocked=async(pattern)=>{
+    const p=await preview();assert.match(p.blocked,pattern);assert.ok(p.text);assert.equal(p.name,rep.u.full_name);
+    const sent=await a.post(`/coach/sellers/${rep.id}/checkin`);assert.equal(sent.status,409);assert.equal(sent.body.error,p.blocked);
+  };
+  set('coach_enabled','0');await checkBlocked(/Enable seller coaching/);set('coach_enabled','1');
+  set('wa_two_way','0');await checkBlocked(/two-way replies/);set('wa_two_way','1');
+  ai.enabled=()=>false;await checkBlocked(/Enable the assistant/);ai.enabled=()=>true;
+  now=zonedToUtc(2026,10,4,11,'America/Chicago');await checkBlocked(/Monday–Friday.*America\/Chicago/);
+  now=zonedToUtc(2026,10,5,11,'America/Chicago');assert.equal((await preview()).blocked,'');
+  await a.post(`/coach/sellers/${rep.id}/checkin`);await settle();
+  assert.equal((await preview()).send_status,'sent');assert.ok((await preview()).last_sent_at);
+  await checkBlocked(/cooldown/);
+  now+=3*86400000;wa.error='Connection lost';await a.post(`/coach/sellers/${rep.id}/checkin`);await settle();
+  const failed=await preview();assert.equal(failed.send_status,'failed');assert.match(failed.last_error,/Connection lost/);assert.equal(failed.blocked,'','failed manual check-in can be retried');
+});
