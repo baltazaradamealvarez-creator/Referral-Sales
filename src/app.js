@@ -12,7 +12,7 @@ const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
 const waFormat = require('../public/waformat');
-const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText, parseDob } = require('./normalize');
+const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
 const OPEN_STATUSES = ['New', 'Passed'];
@@ -326,6 +326,24 @@ function createApp(db, opts = {}) {
     return out;
   }
 
+  // A person's WhatsApp number and alerts switch, from their profile or from whoever manages
+  // them. A new number switches alerts on unless told otherwise; no number switches them off.
+  function setWhatsapp(userId, b) {
+    if (b.whatsapp !== undefined) {
+      const wa = formatWhatsapp(b.whatsapp);
+      if (wa === null) throw new HttpError(400, 'Enter the WhatsApp number with area code, e.g. (512) 555-0142, or with the country code for numbers outside the US.');
+      const before = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(userId).whatsapp;
+      db.prepare('UPDATE users SET whatsapp = ? WHERE id = ?').run(wa, userId);
+      if (!wa) db.prepare('UPDATE users SET whatsapp_alerts = 0 WHERE id = ?').run(userId);
+      else if (b.whatsapp_alerts === undefined && wa !== before) db.prepare('UPDATE users SET whatsapp_alerts = 1 WHERE id = ?').run(userId);
+    }
+    if (b.whatsapp_alerts !== undefined) {
+      const has = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(userId).whatsapp;
+      if (b.whatsapp_alerts && !has) throw new HttpError(400, 'Add the WhatsApp number first.');
+      db.prepare('UPDATE users SET whatsapp_alerts = ? WHERE id = ?').run(b.whatsapp_alerts ? 1 : 0, userId);
+    }
+  }
+
   // The least-busy active dispatcher (fewest open leads), for auto-assignment.
   function pickDispatcher() {
     return db.prepare(`
@@ -475,18 +493,7 @@ function createApp(db, opts = {}) {
       db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(phone, u.id);
     }
     if (b.email_alerts !== undefined) db.prepare('UPDATE users SET email_alerts = ? WHERE id = ?').run(b.email_alerts ? 1 : 0, u.id);
-    if (b.whatsapp !== undefined) {
-      const raw = String(b.whatsapp || '').trim();
-      const d = raw.replace(/\D/g, '');
-      if (raw && (d.length < 10 || d.length > 15)) throw new HttpError(400, 'Enter your WhatsApp number with area code, e.g. (512) 555-0142, or with the country code for numbers outside the US.');
-      db.prepare('UPDATE users SET whatsapp = ? WHERE id = ?').run(raw ? (d.length === 10 ? `+1 ${formatPhone(d)}` : `+${d}`) : '', u.id);
-      if (!raw) db.prepare('UPDATE users SET whatsapp_alerts = 0 WHERE id = ?').run(u.id);
-    }
-    if (b.whatsapp_alerts !== undefined) {
-      const has = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(u.id).whatsapp;
-      if (b.whatsapp_alerts && !has) throw new HttpError(400, 'Add your WhatsApp number first.');
-      db.prepare('UPDATE users SET whatsapp_alerts = ? WHERE id = ?').run(b.whatsapp_alerts ? 1 : 0, u.id);
-    }
+    setWhatsapp(u.id, b);
     if (b.dashboard_layout !== undefined) {
       const layout = b.dashboard_layout === null ? '' : JSON.stringify([...new Set(parseLayout(JSON.stringify(b.dashboard_layout)) || [])]);
       db.prepare('UPDATE users SET dashboard_layout = ? WHERE id = ?').run(layout, u.id);
@@ -1458,7 +1465,7 @@ function createApp(db, opts = {}) {
   app.get('/api/users', wrap((req) => {
     const u = requireRole(req, 'admin', 'manager');
     const rows = db.prepare(`
-      SELECT u.id, u.username, u.full_name, u.email, u.phone, u.role, u.payments_enabled, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
+      SELECT u.id, u.username, u.full_name, u.email, u.phone, u.whatsapp, u.whatsapp_alerts, u.role, u.payments_enabled, u.team_id, t.name AS team_name, u.active, u.must_change_password, u.created_at,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id) AS referral_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.created_by = u.id AND r.status = 'Ordered') AS ordered_count,
         (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned,
@@ -1489,10 +1496,12 @@ function createApp(db, opts = {}) {
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'That username is taken.');
 
     const email = cleanEmail(req.body.email);
+    const wa = formatWhatsapp(req.body.whatsapp);
+    if (wa === null) throw new HttpError(400, 'Enter the WhatsApp number with area code, e.g. (512) 555-0142, or with the country code for numbers outside the US.');
     const password = req.body.password ? String(req.body.password) : auth.tempPassword();
     if (password.length < 8) throw new HttpError(400, 'Password needs at least 8 characters.');
-    const r = db.prepare(`INSERT INTO users (username, full_name, email, password_hash, role, team_id, must_change_password)
-      VALUES (?, ?, ?, ?, ?, ?, 1)`).run(username, fullName, email, auth.hashPassword(password), role, teamId);
+    const r = db.prepare(`INSERT INTO users (username, full_name, email, whatsapp, whatsapp_alerts, password_hash, role, team_id, must_change_password)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(username, fullName, email, wa, wa ? 1 : 0, auth.hashPassword(password), role, teamId);
     const id = Number(r.lastInsertRowid);
     let welcome = { sent: false };
     const settings = getSettings();
@@ -1540,6 +1549,7 @@ function createApp(db, opts = {}) {
     if (keys.length) {
       db.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => updates[k]), target.id);
     }
+    setWhatsapp(target.id, b);
     if (updates.active === 0) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
     return { ok: true };
   }));

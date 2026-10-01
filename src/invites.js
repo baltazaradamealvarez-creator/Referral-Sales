@@ -7,6 +7,7 @@
 const crypto = require('node:crypto');
 const auth = require('./auth');
 const mail = require('./email');
+const { formatWhatsapp } = require('./normalize');
 
 const ROLE_LABEL = { admin: 'admin', manager: 'manager', dispatch: 'dispatcher', rep: 'rep' };
 
@@ -31,7 +32,9 @@ function readSignupForm(body, { cleanEmail, HttpError }) {
   if (phone && phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'That phone number looks too short.');
   if (password.length < 8) throw new HttpError(400, 'Your password needs at least 8 characters.');
   if (password !== String(b.password_confirm ?? password)) throw new HttpError(400, 'The two passwords don’t match.');
-  return { fullName, username, email, phone, password };
+  // "This number has WhatsApp": it becomes their WhatsApp number, with alerts on.
+  const whatsapp = b.phone_whatsapp && phone ? formatWhatsapp(phone) || '' : '';
+  return { fullName, username, email, phone, whatsapp, password };
 }
 
 function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail }) {
@@ -159,7 +162,7 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
 
   app.post('/api/join/:token', awrap(async (req, res) => {
     if (!rateLimit(joinHits, `post:${req.ip}`, 20, 15 * 60 * 1000)) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
-    const { fullName, username, email, phone, password } = readSignupForm(req.body, { cleanEmail, HttpError });
+    const { fullName, username, email, phone, whatsapp, password } = readSignupForm(req.body, { cleanEmail, HttpError });
 
     // Claim a use and create the account together, so a single-use link can't be used twice.
     db.exec('BEGIN IMMEDIATE');
@@ -171,8 +174,8 @@ function mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logA
       if (db.prepare("SELECT 1 FROM users WHERE email <> '' AND email = ?").get(email)) throw new HttpError(409, 'An account with that email already exists. Try signing in, or use Forgot your password.');
       const claimed = db.prepare('UPDATE invites SET uses = uses + 1 WHERE id = ? AND uses < max_uses AND revoked = 0').run(inv.id).changes;
       if (!claimed) throw new HttpError(410, 'This invite link has already been used. Ask your admin for a new one.');
-      const r = db.prepare(`INSERT INTO users (username, full_name, email, phone, password_hash, role, team_id, must_change_password, password_changed_at, invite_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), ?)`).run(username, fullName, email, phone, auth.hashPassword(password), inv.role, inv.team_id, inv.id);
+      const r = db.prepare(`INSERT INTO users (username, full_name, email, phone, whatsapp, whatsapp_alerts, password_hash, role, team_id, must_change_password, password_changed_at, invite_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), ?)`).run(username, fullName, email, phone, whatsapp, whatsapp ? 1 : 0, auth.hashPassword(password), inv.role, inv.team_id, inv.id);
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(r.lastInsertRowid));
       db.exec('COMMIT');
     } catch (e) {
