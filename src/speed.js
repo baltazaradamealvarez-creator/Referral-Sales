@@ -30,8 +30,8 @@ function tzOffset(ms, tz) {
 }
 
 // The UTC instant of a local wall-clock time in a zone.
-function zonedToUtc(y, m, d, h, tz) {
-  const guess = Date.UTC(y, m - 1, d, h);
+function zonedToUtc(y, m, d, h, tz, min = 0) {
+  const guess = Date.UTC(y, m - 1, d, h, min);
   const first = guess - tzOffset(guess, tz);
   return guess - tzOffset(first, tz);
 }
@@ -197,4 +197,4 @@ function mount(app, db, { requireUser, requireRole, wrap, HttpError, getSettings
   return { tick, touch, config, businessMinutes: (a, b) => businessMinutes(a, b, config()) };
 }
 
-module.exports = { mount, businessMinutes, zonedToUtc, parseHours, DEFAULTS };
+module.exports = { mount, businessMinutes, zonedToUtc, tzOffset, localDate, parseHours, validZone, DEFAULTS };

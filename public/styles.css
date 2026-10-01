@@ -998,3 +998,22 @@ body.is-offline .offline-bar { display: block; }
 
 .via-wa { color: #11643a; font-weight: 650; }
 .wa-h3 { font-size: 1rem; margin: 1.2rem 0 .4rem; }
+
+/* Assistant: chat + reminders */
+.assistant { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+.chat-card { display: flex; flex-direction: column; min-height: 60vh; }
+.chat-log { flex: 1; overflow-y: auto; max-height: 62vh; display: flex; flex-direction: column; gap: .5rem; padding: .8rem 0; }
+.bubble { max-width: 88%; padding: .55rem .8rem; border-radius: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.bubble.user { align-self: flex-end; background: var(--brand); color: var(--brand-ink); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.bubble.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
+.bubble.assistant a { font-weight: 600; }
+.bubble.err { align-self: flex-start; background: var(--danger-soft); color: var(--danger); }
+.bubble.typing { color: var(--muted); letter-spacing: .2em; }
+button.chip { border: 1px solid var(--border); cursor: pointer; color: var(--text); text-align: left; }
+button.chip:hover { border-color: var(--brand); }
+.chat-form { display: flex; gap: .5rem; align-items: flex-end; border-top: 1px solid var(--border); padding-top: .7rem; }
+.chat-form textarea { flex: 1; min-width: 0; resize: vertical; min-height: 2.6rem; }
+.rem-form { display: grid; gap: .5rem; margin-bottom: .8rem; }
+.rem-form select { width: auto; }
+.rem { display: flex; justify-content: space-between; gap: .6rem; align-items: flex-start; padding: .6rem 0; border-top: 1px solid var(--border); }
+@media (max-width: 760px) { .assistant { grid-template-columns: 1fr; } .chat-card { min-height: 0; } .chat-log { max-height: 55vh; } }

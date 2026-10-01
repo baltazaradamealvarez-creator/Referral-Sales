@@ -1,14 +1,13 @@
 'use strict';
 
-// Optional AI helper for the WhatsApp dispatch group (Claude Haiku 4.5: fast and cheap,
-// about a fifth of a cent per message). It only:
+// Optional AI (Claude Haiku 4.5: fast and cheap, about a tenth of a cent per call). It:
 //   - reads a reply to a lead and says which status it reports (from a fixed list), whether
 //     to alert the lead's owner, and what to ask when the reply is unclear;
-//   - answers questions asked in the group, from a small read-only summary of the leads.
-// It never takes actions itself; the app decides what to do with its answer. Without
-// ANTHROPIC_API_KEY (or with it switched off in settings) the keyword rules are used.
+//   - runs the assistant (src/agent.js): a tool-use loop where the tools are the app's own
+//     actions, run as the person asking and checked like any request from them.
+// Without ANTHROPIC_API_KEY (or with it switched off in settings) the keyword rules are used.
 
-const MODEL = process.env.AI_MODEL || 'claude-haiku-4-5';
+const MODEL = process.env.AI_MODEL || 'claude-haiku-4-5-20251001';
 const HOURLY_CAP = Number(process.env.AI_HOURLY_CAP) || 200;
 const STATUSES = ['New', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
 
@@ -96,7 +95,40 @@ function createAi({ getSettings }) {
     return textOf(res);
   }
 
-  return { available, enabled, interpretReply, answer, model: MODEL };
+  // The assistant: Claude may call tools (run(name, input) -> result object) until it has
+  // an answer. messages: [{ role: 'user'|'assistant', content: string }], last one the user's.
+  // -> { text, steps: [{ name, input, ok }] }
+  async function runAgent({ system, messages, tools, run, maxSteps = 6 }) {
+    const convo = messages.map((m) => ({ role: m.role, content: String(m.content) }));
+    const steps = [];
+    for (let i = 0; i <= maxSteps; i++) {
+      budget();
+      const last = i === maxSteps; // out of steps: answer with what it has
+      const res = await api().messages.create({
+        model: MODEL,
+        max_tokens: 1024,
+        system,
+        messages: convo,
+        ...(last ? {} : { tools }),
+      });
+      if (res.stop_reason === 'refusal') throw new Error('AI refused');
+      const uses = res.content.filter((b) => b.type === 'tool_use');
+      if (res.stop_reason !== 'tool_use' || !uses.length || last) return { text: textOf(res), steps };
+      convo.push({ role: 'assistant', content: res.content });
+      const results = [];
+      for (const u of uses) {
+        let out;
+        let ok = true;
+        try { out = await run(u.name, u.input || {}); } catch (e) { ok = false; out = { error: e.message }; }
+        steps.push({ name: u.name, input: u.input, ok });
+        results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 12000), ...(ok ? {} : { is_error: true }) });
+      }
+      convo.push({ role: 'user', content: results });
+    }
+    return { text: '', steps };
+  }
+
+  return { available, enabled, interpretReply, answer, runAgent, model: MODEL };
 }
 
 module.exports = { createAi };

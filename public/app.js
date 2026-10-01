@@ -123,6 +123,7 @@
     links.push(['#/referrals', worksLeads() ? 'Customers' : 'My Referrals', 'customers', '👥']);
     links.push(['#/analytics', 'Analytics', 'analytics', '📊']);
     links.push(['#/sales', 'Sales', 'sales', '📈']);
+    links.push(['#/assistant', 'Assistant', 'assistant', '🤖']);
     if (isDispatch()) links.push(['#/duplicates', 'Duplicates', 'dups', '⛔']);
     if (isManager()) links.push(['#/team', 'My Team', 'team', '👥']);
     links.push(isAdmin() ? ['#/team', 'Admin', 'hub', '⚙'] : ['#/account', 'Account', 'hub', '👤']);
@@ -1204,7 +1205,7 @@
             <h2>Comments</h2>
             <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
             <div id="comments">${r.comments.length ? r.comments.map((c) => `
-              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
             </div>
             <form id="commentForm" style="margin-top:1rem">
               <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
@@ -1545,6 +1546,137 @@
     if (['starting', 'qr', 'reconnecting'].includes(s.status)) waPoll = setTimeout(drawWaLink, 2500);
   }
 
+  // ---------- assistant (admin settings card) ----------
+
+  async function drawAiCard() {
+    const card = document.getElementById('aiCard');
+    let s;
+    try { s = await api('/assistant/settings'); } catch (err) { card.innerHTML = `<h2>🤖 Assistant</h2><div class="alert err small">${esc(err.message)}</div>`; return; }
+    card.innerHTML = `
+      <div class="row between"><h2 style="margin:0">🤖 Assistant</h2><span class="wa-state ${s.enabled ? 'ok' : ''}">${s.enabled ? 'On' : s.available ? 'Off' : 'Needs a key'}</span></div>
+      <p class="small muted" style="margin-top:.4rem">An AI teammate (Claude Haiku 4.5) on the <a href="#/assistant">Assistant</a> page and in WhatsApp (“bot …” in the group, or a private message to the alerts number). It finds leads, adds notes, changes statuses and assignments, sets reminders and reports the numbers — always as the person asking, with their permissions. It never sees phone numbers, emails, addresses or birthdays. About a tenth of a cent per question.</p>
+      ${s.available ? '' : '<div class="alert warn small">To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (create one at console.anthropic.com → API keys). Don\'t paste the key anywhere else. Reminders and the daily briefings below work without it.</div>'}
+      <label class="check"><input type="checkbox" id="aiOn" ${s.enabled ? 'checked' : ''} ${s.available ? '' : 'disabled'}> <span>Assistant on (also reads unclear replies in the WhatsApp group)</span></label>
+      <div class="field" style="margin-top:.8rem"><label for="aiBrief">What the assistant should know about the business</label>
+        <textarea id="aiBrief" rows="9" maxlength="6000">${esc(s.brief)}</textarea>
+        <p class="small muted" style="margin:.3rem 0 0">Products, prices and promos, how you qualify customers, goals, who to ask for what, house rules, tone. The more it knows, the better it helps. Commission, working hours, team and lead data come from the app automatically.</p></div>
+      <h3 class="wa-h3">Daily briefing in the WhatsApp group</h3>
+      <div class="grid-2" style="gap:1rem;max-width:520px">
+        <div class="field"><label for="aiMorning">Morning briefing at</label><input id="aiMorning" type="time" value="${esc(s.briefing_time)}"></div>
+        <div class="field"><label for="aiEvening">End-of-day recap at</label><input id="aiEvening" type="time" value="${esc(s.recap_time)}"></div>
+      </div>
+      <p class="small muted" style="margin:.1rem 0 0">Time zone ${esc(s.tz)} (Settings → Speed to lead). Leave empty for off. Yesterday's / today's leads and orders, who's winning, leads not called yet, unassigned and stuck leads, today's call-backs.${s.group ? '' : ' <b>Pick the dispatch group above first.</b>'}</p>
+      <div class="row" style="margin-top:.9rem;flex-wrap:wrap">
+        <button type="button" class="btn primary" id="aiSave">Save</button>
+        <button type="button" class="btn" id="aiReset">Reset the text</button>
+        <button type="button" class="btn" id="aiPreview">👀 Preview the briefing</button>
+        <button type="button" class="btn" id="aiPost" ${s.group && s.connected ? '' : 'disabled'}>📣 Post it to the group now</button>
+      </div>
+      <pre class="wa-preview" id="aiPreviewBox" hidden></pre>`;
+    const on = document.getElementById('aiOn');
+    on.onchange = async () => { try { await api('/assistant/settings', { method: 'PATCH', body: { enabled: on.checked } }); toast(on.checked ? 'Assistant on' : 'Assistant off'); } catch (err) { toast(err.message); } };
+    document.getElementById('aiSave').onclick = async () => {
+      try {
+        await api('/assistant/settings', { method: 'PATCH', body: { brief: document.getElementById('aiBrief').value, briefing_time: document.getElementById('aiMorning').value, recap_time: document.getElementById('aiEvening').value } });
+        toast('Assistant settings saved');
+      } catch (err) { toast(err.message); }
+    };
+    document.getElementById('aiReset').onclick = () => { document.getElementById('aiBrief').value = s.default_brief; toast('Default text restored — press Save to keep it'); };
+    document.getElementById('aiPreview').onclick = async () => {
+      const box = document.getElementById('aiPreviewBox');
+      try { box.textContent = (await api('/assistant/briefing?kind=morning')).text; box.hidden = false; } catch (err) { toast(err.message); }
+    };
+    document.getElementById('aiPost').onclick = async () => {
+      try { await api('/assistant/briefing', { method: 'POST', body: { kind: 'morning' } }); toast('Briefing posted to the group'); } catch (err) { toast(err.message); }
+    };
+  }
+
+  // ---------- assistant page: chat + reminders ----------
+
+  const waText = (t) => esc(t).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(^|\s)_([^_\n]+)_/g, '$1<i>$2</i>')
+    .replace(/(https?:\/\/[^\s<]+)/g, (u) => { const m = u.match(/#\/r\/(\d+)$/); return `<a href="${m ? `#/r/${m[1]}` : u}"${m ? '' : ' target="_blank" rel="noopener"'}>${m ? `open #${m[1]}` : u}</a>`; })
+    .replace(/(^|[\s(])#(\d{1,7})\b/g, '$1<a href="#/r/$2">#$2</a>').replace(/\n/g, '<br>');
+
+  async function renderAssistant() {
+    const info = await api('/assistant');
+    state.chat = state.chat || lsGet(`eo-chat-${state.me.id}`, []);
+    const es = (navigator.language || '').startsWith('es');
+    const ideas = es
+      ? ['¿Qué leads siguen sin llamar?', '¿Cómo nos fue esta semana?', 'Recuérdame mañana a las 9 revisar los pendientes', '¿Quién cerró más ventas este mes?']
+      : ['What\'s waiting for a call?', 'How did we do this week?', 'Remind me tomorrow at 9 to check open leads', 'Who closed the most orders this month?'];
+    const forOpts = `<option value="me">Me</option>${role() !== 'rep' && info.group ? '<option value="group">The WhatsApp group</option>' : ''}`;
+    shell(`
+      <div class="grid-2 assistant">
+        <div class="card chat-card">
+          <div class="row between"><h1 style="margin:0">🤖 Assistant</h1>${state.chat.length ? '<button class="btn small" id="chatClear">New chat</button>' : ''}</div>
+          ${info.ai ? '' : `<div class="alert warn small" style="margin-top:.6rem">The AI assistant is off.${isAdmin() ? ' Switch it on in <a href="#/team?tab=settings">Admin → Settings</a> (it needs <code>ANTHROPIC_API_KEY</code> in Render).' : ' Ask an admin to switch it on.'} Reminders work without it.</div>`}
+          <div class="chat-log" id="chatLog">${state.chat.length ? state.chat.map((m) => `<div class="bubble ${m.role}">${m.role === 'assistant' ? waText(m.content) : esc(m.content)}</div>`).join('') : `<p class="muted small">Ask about leads, numbers or reminders — in English or Spanish. It acts as you, with your permissions. Also on WhatsApp: start a message in the dispatch group with <b>bot</b>, or message the alerts number privately.</p>
+            <div class="chips">${ideas.map((t) => `<button type="button" class="chip" data-idea="${esc(t)}">${esc(t)}</button>`).join('')}</div>`}</div>
+          <form id="chatForm" class="chat-form"><textarea id="chatIn" rows="2" placeholder="${es ? 'Escribe tu pregunta…' : 'Ask anything…'}" ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Send</button></form>
+        </div>
+        <div class="card">
+          <h2 style="margin-top:0">⏰ Reminders</h2>
+          <form id="remForm" class="rem-form">
+            <input id="remText" placeholder="Call back Maria about the TV package" maxlength="300" required>
+            <div class="row" style="flex-wrap:wrap;gap:.5rem">
+              <input id="remAt" type="datetime-local" required style="flex:1;min-width:190px">
+              <select id="remFor">${forOpts}</select>
+              <select id="remRepeat"><option value="">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select>
+              <button class="btn primary">Add</button>
+            </div>
+          </form>
+          <div id="remList">${info.reminders.length ? info.reminders.map((r) => `
+            <div class="rem"><div><b>${esc(r.due)}</b>${r.repeat !== 'once' ? ` <span class="muted small">· ${esc(r.repeat)}</span>` : ''}<br>${esc(r.text)}${r.lead ? ` · <a href="#/r/${r.referral_id}">${esc(r.lead)}</a>` : ''}
+              <div class="small muted">For ${esc(r.for)}${r.by !== 'you' ? ` · from ${esc(r.by)}` : ''}</div></div>
+              ${r.can_cancel ? `<button class="btn small" data-cancel="${r.id}" title="Cancel">✕</button>` : ''}</div>`).join('') : '<p class="muted small">No reminders yet. They arrive as notifications (and on your phone or WhatsApp if you have those on).</p>'}</div>
+        </div>
+      </div>`);
+    const log = document.getElementById('chatLog');
+    log.scrollTop = log.scrollHeight;
+    const input = document.getElementById('chatIn');
+    const send = async (text) => {
+      text = text.trim();
+      if (!text || state.chatBusy) return;
+      state.chatBusy = true;
+      state.chat.push({ role: 'user', content: text });
+      if (!log.querySelector('.bubble')) log.innerHTML = '';
+      log.insertAdjacentHTML('beforeend', `<div class="bubble user">${esc(text)}</div><div class="bubble assistant typing">…</div>`);
+      log.scrollTop = log.scrollHeight;
+      input.value = '';
+      try {
+        const r = await api('/assistant/chat', { method: 'POST', body: { messages: state.chat.slice(-12) } });
+        state.chat.push({ role: 'assistant', content: r.reply });
+        log.querySelector('.typing').outerHTML = `<div class="bubble assistant">${waText(r.reply)}</div>`;
+        if (r.actions && r.actions.some((a) => /reminder/.test(a))) setTimeout(() => { if (location.hash.startsWith('#/assistant')) renderAssistant(); }, 600);
+      } catch (err) {
+        state.chat.pop();
+        log.querySelector('.typing').outerHTML = `<div class="bubble err">${esc(err.message)}</div>`;
+      } finally {
+        state.chatBusy = false;
+        state.chat = state.chat.slice(-30);
+        lsSet(`eo-chat-${state.me.id}`, state.chat);
+        log.scrollTop = log.scrollHeight;
+      }
+    };
+    document.getElementById('chatForm').onsubmit = (e) => { e.preventDefault(); send(input.value); };
+    input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.value); } };
+    document.querySelectorAll('[data-idea]').forEach((b) => { b.onclick = () => send(b.dataset.idea); });
+    const clear = document.getElementById('chatClear');
+    if (clear) clear.onclick = () => { state.chat = []; lsSet(`eo-chat-${state.me.id}`, []); renderAssistant(); };
+    document.getElementById('remForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const at = document.getElementById('remAt').value;
+      try {
+        await api('/reminders', { method: 'POST', body: { text: document.getElementById('remText').value, at: at ? new Date(at).toISOString() : '', for: document.getElementById('remFor').value, repeat: document.getElementById('remRepeat').value } });
+        toast('Reminder set');
+        renderAssistant();
+      } catch (err) { toast(err.message); }
+    };
+    document.querySelectorAll('[data-cancel]').forEach((b) => {
+      b.onclick = async () => { try { await api(`/reminders/${b.dataset.cancel}`, { method: 'DELETE', body: {} }); toast('Reminder cancelled'); renderAssistant(); } catch (err) { toast(err.message); } };
+    });
+  }
+
   async function renderTeam() {
     if (!managesUsers()) { location.hash = defaultRoute(); return; }
     const onSettingsTab = isAdmin() && query().tab === 'settings';
@@ -1668,6 +1800,7 @@
         </form>
       </div>
       <div class="card" id="waLinkCard"><h2>WhatsApp alerts</h2><p class="small muted">Loading…</p></div>
+      <div class="card" id="aiCard"><h2>🤖 Assistant</h2><p class="small muted">Loading…</p></div>
       <form class="card" id="waForm">
         <h2>WhatsApp message for dispatch</h2>
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
@@ -1797,6 +1930,7 @@
       };
     });
     if (document.getElementById('waLinkCard')) drawWaLink();
+    if (document.getElementById('aiCard')) drawAiCard();
     const waForm = document.getElementById('waForm');
     if (waForm) {
       const tpl = document.getElementById('waTpl');
@@ -2807,6 +2941,7 @@
       <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
       <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
       <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on to get your alerts there too${role() === 'dispatch' ? ', including every new lead the moment it comes in' : ''}.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; every new lead is then posted there automatically.' : ''}</li>
+      <li><b>🤖 Assistant</b> (menu → Assistant): ask in English or Spanish about leads and numbers (<i>what's waiting for a call?</i>, <i>how did we do this week?</i>), or have it add a note, change a status or set a reminder (<i>remind me tomorrow at 9 to call #12</i>). It acts as you, with your permissions. On WhatsApp, start a message in the group with <b>bot</b>, reply to its answer to keep talking, or message the alerts number privately. Reminders can also be added by hand on the same page.</li>
       <li><b>Working leads from the WhatsApp group:</b> <b>reply</b> to a lead's post to add a note (it shows on the lead as <i>via WhatsApp</i>). The first dispatcher to reply takes the lead. Words like <i>approved / aprobado</i>, <i>passed / pasó</i>, <i>DNQ / no califica</i> or <i>cancelled / cancelado</i> change its status. Add <b>@owner</b> (or <b>@dueño</b>) to send the note to the rep who entered it. No post to reply to? Start with the lead number: <i>#123 approved</i>. Type <b>help</b> or <b>ayuda</b> in the group for the full instructions${isAdmin() ? '; admins can also post them from Admin → Settings → WhatsApp alerts' : ''}.</li>
       <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
     if (r !== 'rep') {
@@ -3850,6 +3985,7 @@
       if (h === '#/notifications') return await renderNotifications();
       if (h === '#/account') return await renderAccount();
       if (h === '#/help') return await renderHelp();
+      if (h === '#/assistant') return await renderAssistant();
       if (h === '#/home') return await renderHome();
       if (h === '#/new') return await renderNew();
       location.replace(defaultRoute());

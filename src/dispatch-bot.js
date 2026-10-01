@@ -6,7 +6,8 @@
 //   - the first dispatcher to reply takes the lead (it's assigned to them);
 //   - "approved", "DNQ", "cancelado"… in the reply changes the lead's status;
 //   - "@owner" / "@dueño" sends the note to the rep who entered the lead;
-//   - "bot …" asks the assistant a question (AI if switched on, otherwise help);
+//   - "bot …" talks to the assistant (src/agent.js: leads, notes, statuses, reminders, numbers);
+//     replying to its answer, or messaging the alerts number privately, continues the chat;
 //   - "help" / "ayuda" posts the instructions, in English and Spanish.
 // Only people whose WhatsApp number is saved in the app can do anything, and only what
 // they could do in the app (reps add notes; dispatch, managers and admins change status).
@@ -59,7 +60,7 @@ function instructions(approvedStatus) {
     `• Write *approved* (→ ${ap}), *passed*, *DNQ* or *cancelled* in your reply to change its status.`,
     '• Add *@owner* to send your note to the rep who entered the lead.',
     '• Can\'t find the post? Start with the lead number: *#123 approved*.',
-    '• Questions? Start with *bot*: _bot how many leads came in today?_',
+    '• Ask the assistant — start with *bot*: _bot what\'s waiting?_ · _bot remind me at 5pm to call #12_ · _bot how did we do this week?_ Reply to its answer to keep talking, or message this number privately.',
     '• Type *help* to see this again.',
     '• Your WhatsApp number must be saved in the app (Account → WhatsApp alerts) so I know who you are.',
     '',
@@ -70,7 +71,7 @@ function instructions(approvedStatus) {
     `• Escribe *aprobado* (→ ${ap}), *pasó*, *no califica* o *cancelado* en tu respuesta para cambiar el estado.`,
     '• Agrega *@dueño* para enviar tu nota al vendedor que ingresó el lead.',
     '• ¿No encuentras el mensaje? Empieza con el número del lead: *#123 aprobado*.',
-    '• ¿Preguntas? Empieza con *bot*: _bot ¿cuántos leads entraron hoy?_',
+    '• Pregúntale al asistente — empieza con *bot*: _bot ¿qué está pendiente?_ · _bot recuérdame a las 5pm llamar al #12_ · _bot ¿cómo nos fue esta semana?_ Responde a su mensaje para seguir, o escríbele a este número en privado.',
     '• Escribe *ayuda* para ver esto otra vez.',
     '• Tu número de WhatsApp debe estar guardado en la app (Cuenta → Alertas de WhatsApp) para saber quién eres.',
   ].join('\n');
@@ -96,6 +97,10 @@ const T = {
     en: 'I can only handle replies to lead posts right now. Type *help* to see what I can do.',
     es: 'Por ahora solo manejo respuestas a los leads. Escribe *ayuda* para ver lo que puedo hacer.',
   },
+  slow: {
+    en: 'Give me a few minutes — that\'s a lot of questions at once.',
+    es: 'Dame unos minutos — son muchas preguntas seguidas.',
+  },
   aiDown: {
     en: 'I can\'t answer that right now. Please check the app.',
     es: 'No puedo responder eso ahora. Revisa la app, por favor.',
@@ -105,7 +110,7 @@ const T = {
 // ---------- the bot ----------
 
 function mount(app, db, deps) {
-  const { whatsapp, ai, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
+  const { whatsapp, ai, agent, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
 
   const cfg = () => {
     const s = getSettings();
@@ -148,39 +153,29 @@ function mount(app, db, deps) {
     db.prepare('INSERT OR IGNORE INTO wa_messages (id, chat, referral_id, kind) VALUES (?, ?, ?, ?)').run(id, chat, referralId, kind);
   };
 
-  function say(m, text, referralId) {
+  // kind 'agent': the assistant's answers, so a reply to one continues the conversation.
+  function say(m, text, referralId, kind = 'bot') {
     if (!allow(`chat:${m.chat}`, 20, 60000)) return;
-    whatsapp.reply(m.chat, text, { quotedId: m.id, onSent: referralId ? rememberPost(referralId, 'bot') : undefined });
+    const remember = referralId || kind === 'agent' ? rememberPost(referralId || null, kind) : undefined;
+    whatsapp.reply(m.chat, text, { quotedId: m.id, onSent: remember });
   }
 
-  function leadFor(m) {
-    if (m.quotedId) {
-      const row = db.prepare('SELECT referral_id FROM wa_messages WHERE id = ?').get(m.quotedId);
-      if (row && row.referral_id) return { id: row.referral_id, via: 'reply' };
-    }
+  // The lead a message is about: the post it replies to, or "#123" / "lead 123" in it.
+  function leadFor(m, quoted) {
+    if (quoted && quoted.referral_id && quoted.kind !== 'agent') return { id: quoted.referral_id, via: 'reply' };
     const k = String(m.text).match(/(?:^|\s)(?:#|lead\s*#?\s*)(\d{1,7})\b/i);
     return k ? { id: Number(k[1]), via: 'number' } : null;
   }
 
-  // A small, read-only summary for the assistant (no phone numbers, addresses or birthdays).
-  function assistantContext(lead) {
-    const q = (sql, ...p) => db.prepare(sql).all(...p);
-    const today = q(`SELECT status, COUNT(*) AS n FROM referrals WHERE date(created_at) = date('now') GROUP BY status`);
-    const open = q(`SELECT r.id, r.customer_name, r.status, r.created_at, u.full_name AS rep, a.full_name AS assigned
-      FROM referrals r JOIN users u ON u.id = r.created_by LEFT JOIN users a ON a.id = r.assigned_to
-      WHERE r.status IN ('New', 'Passed') ORDER BY r.id DESC LIMIT 25`);
-    const lines = [
-      `Now (UTC): ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
-      `Leads entered today: ${today.reduce((s, r) => s + r.n, 0)} (${today.map((r) => `${r.status} ${r.n}`).join(', ') || 'none'})`,
-      'Open leads (newest first):',
-      ...open.map((r) => `#${r.id} ${r.customer_name || 'no name'} — ${r.status}, rep ${r.rep}, ${r.assigned ? `assigned to ${r.assigned}` : 'unassigned'}, entered ${r.created_at} UTC`),
-    ];
-    if (lead) {
-      const notes = q(`SELECT c.body, c.created_at, u.full_name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id DESC LIMIT 8`, lead.id);
-      lines.push('', `Lead #${lead.id} ${lead.customer_name || ''}: status ${lead.status}, rep ${lead.created_by_name}, ${lead.assigned_name ? `assigned to ${lead.assigned_name}` : 'unassigned'}, services ${lead.services || '—'}, entered ${lead.created_at} UTC.`);
-      lines.push('Latest notes:', ...notes.map((n) => `- ${n.full_name} (${n.created_at}): ${n.body.slice(0, 200)}`));
-    }
-    return lines.join('\n');
+  // Short memory per person and chat, so follow-ups ("and yesterday?", "yes, do it") work.
+  const convos = new Map();
+  function convo(key) {
+    const c = convos.get(key);
+    if (c && Date.now() - c.at < 30 * 60000) return c.msgs;
+    const msgs = [];
+    convos.set(key, { msgs, at: Date.now() });
+    if (convos.size > 300) convos.delete(convos.keys().next().value);
+    return msgs;
   }
 
   async function handle(m) {
@@ -198,8 +193,10 @@ function mount(app, db, deps) {
     const mentionsBot = (m.mentions || []).some((j) => { const d = String(j).split(/[:@]/)[0]; return d && (d === me.number || d === me.lid); });
     const botAsk = /^\s*(bot|asistente|assistant)\b[\s,:]*/i.test(text) || mentionsBot;
     const isHelp = /^\s*(help|ayuda|instructions|instrucciones|\?)\s*[.!]*\s*$/i.test(text) || /^\s*(bot|asistente)\s+(help|ayuda)\s*$/i.test(text);
-    const ref0 = leadFor(m);
-    if (!ref0 && !botAsk && !isHelp && inGroup) return; // ordinary chat
+    const quoted = m.quotedId ? db.prepare('SELECT referral_id, kind FROM wa_messages WHERE id = ?').get(m.quotedId) : null;
+    const toAgent = !!(quoted && quoted.kind === 'agent');
+    const ref0 = toAgent ? null : leadFor(m, quoted);
+    if (!ref0 && !botAsk && !isHelp && !toAgent && inGroup) return; // ordinary chat
 
     if (isHelp) {
       if (allow(`help:${m.chat}`, 1, 5 * 60000)) whatsapp.reply(m.chat, instructions(c.approvedStatus), { quotedId: m.id });
@@ -219,16 +216,24 @@ function mount(app, db, deps) {
       if (!canViewReferral(user, ref)) { say(m, T.noAccess[lang](ref0.id)); return; }
     }
 
-    // ---- a question for the assistant ----
-    if (botAsk || (!m.isGroup && !ref)) {
-      const question = text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i, '').trim();
-      if (!ai.enabled()) { say(m, T.noAi[lang]); return; }
+    // ---- the assistant ----
+    if (botAsk || toAgent || (!m.isGroup && !ref)) {
+      let question = text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i, '').replace(/@\d{6,}/g, '').trim();
+      if (!ai.enabled() || !agent) { say(m, T.noAi[lang]); return; }
+      if (!question) question = lang === 'es' ? 'Hola' : 'Hi';
+      if (!allow(`agent:${user.id}`, 20, 10 * 60000)) { say(m, T.slow[lang]); return; }
+      if (ref) question = `(About lead #${ref.id}) ${question}`;
+      const msgs = convo(`${m.chat}|${user.id}`);
+      msgs.push({ role: 'user', content: question });
       try {
-        const answer = await ai.answer({ question, context: assistantContext(ref), senderName: user.full_name });
-        say(m, answer || T.aiDown[lang], ref && ref.id);
+        const out = await agent.chat(user, msgs, { channel: m.isGroup ? 'group' : 'dm' });
+        msgs.push({ role: 'assistant', content: out.text });
+        if (msgs.length > 12) msgs.splice(0, msgs.length - 12);
+        say(m, out.text, ref && ref.id, 'agent');
       } catch (e) {
+        msgs.pop();
         console.error('Assistant failed:', e.message);
-        say(m, T.aiDown[lang]);
+        say(m, e.status && e.status < 500 ? e.message : T.aiDown[lang]);
       }
       return;
     }

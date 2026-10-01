@@ -421,6 +421,21 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // v14: reminders (set in the app, or by the assistant on WhatsApp)
+  `
+  CREATE TABLE reminders (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, -- who gets it; NULL = the WhatsApp dispatch group
+    referral_id INTEGER REFERENCES referrals(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    repeat TEXT NOT NULL DEFAULT '' CHECK (repeat IN ('', 'daily', 'weekdays', 'weekly')),
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    sent_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_reminders_due ON reminders(sent_at, due_at);
+  `,
 ];
 
 
