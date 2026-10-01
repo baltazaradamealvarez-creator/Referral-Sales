@@ -17,7 +17,9 @@
   },
   "homepage": "https://github.com/baltazaradamealvarez-creator/Referral-Sales#readme",
   "dependencies": {
+    "@whiskeysockets/baileys": "6.7.24",
     "express": "^4.22.3",
+    "qrcode": "1.5.4",
     "web-push": "^3.6.7"
   },
   "private": true,

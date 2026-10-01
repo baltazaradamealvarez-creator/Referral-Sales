@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
+const waFormat = require('../public/waformat');
 const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -22,8 +23,10 @@ const DEFAULT_SETTINGS = {
   email_reply_to: '',
   entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nDate of birth: \nServices: \nNotes: ',
   // The message reps paste into WhatsApp for dispatch. {placeholders} are filled from the lead.
-  whatsapp_template: '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}',
+  whatsapp_template: require('../public/waformat').DEFAULT_TEMPLATE,
   whatsapp_number: '',
+  // Alert every active dispatcher the moment a new lead comes in.
+  new_lead_alert: '1',
   affiliate_enabled: '0',
   affiliate_levels: '15,5',
   affiliate_commission: '0',
@@ -37,11 +40,13 @@ class HttpError extends Error {
   }
 }
 
-function createApp(db) {
+// opts.whatsappTransport: replaces the real WhatsApp connection (tests use a fake).
+function createApp(db, opts = {}) {
   const app = express();
   let affiliates = null; // set once the affiliate routes are mounted, below
   let speed = null; // speed-to-lead watcher, mounted below
   let push = null; // phone push notifications, mounted below
+  let whatsapp = null; // WhatsApp alerts through a linked phone, mounted below
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
@@ -266,7 +271,7 @@ function createApp(db) {
     const ids = noteQueue;
     noteQueue = [];
     const rows = db.prepare(`
-      SELECT n.id, n.user_id, n.referral_id, n.message, u.full_name, u.email, u.email_alerts
+      SELECT n.id, n.user_id, n.referral_id, n.message, u.full_name, u.email, u.email_alerts, u.whatsapp, u.whatsapp_alerts
       FROM notifications n JOIN users u ON u.id = n.user_id
       WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1`).all(...ids);
     const settings = getSettings();
@@ -275,6 +280,11 @@ function createApp(db) {
       if (push) {
         push.sendPush(row.user_id, { body: row.message, url: row.referral_id ? `/#/r/${row.referral_id}` : '/#/notifications', tag: `n${row.id}` })
           .catch((e) => console.error(`Push failed: ${e.message}`));
+      }
+      if (whatsapp) {
+        const { appUrl } = mail.emailConfig(settings);
+        const link = appUrl ? `\n${appUrl}/#/${row.referral_id ? `r/${row.referral_id}` : 'notifications'}` : '';
+        whatsapp.sendToUser(row, `🔔 ${row.message}${link}`);
       }
       if (!emailOn || !row.email_alerts || !row.email) continue;
       const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id }, settings);
@@ -441,6 +451,7 @@ function createApp(db) {
       dashboard_layout: parseLayout(u.dashboard_layout),
       payments: u.role === 'admin' || u.role === 'manager' || !!u.payments_enabled,
       affiliate: getSettings().affiliate_enabled === '1',
+      whatsapp: u.whatsapp || '', whatsapp_alerts: !!u.whatsapp_alerts, whatsapp_ready: !!whatsapp && whatsapp.status() === 'connected',
     };
   }));
 
@@ -454,6 +465,18 @@ function createApp(db) {
       db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(phone, u.id);
     }
     if (b.email_alerts !== undefined) db.prepare('UPDATE users SET email_alerts = ? WHERE id = ?').run(b.email_alerts ? 1 : 0, u.id);
+    if (b.whatsapp !== undefined) {
+      const raw = String(b.whatsapp || '').trim();
+      const d = raw.replace(/\D/g, '');
+      if (raw && (d.length < 10 || d.length > 15)) throw new HttpError(400, 'Enter your WhatsApp number with area code, e.g. (512) 555-0142, or with the country code for numbers outside the US.');
+      db.prepare('UPDATE users SET whatsapp = ? WHERE id = ?').run(raw ? (d.length === 10 ? `+1 ${formatPhone(d)}` : `+${d}`) : '', u.id);
+      if (!raw) db.prepare('UPDATE users SET whatsapp_alerts = 0 WHERE id = ?').run(u.id);
+    }
+    if (b.whatsapp_alerts !== undefined) {
+      const has = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(u.id).whatsapp;
+      if (b.whatsapp_alerts && !has) throw new HttpError(400, 'Add your WhatsApp number first.');
+      db.prepare('UPDATE users SET whatsapp_alerts = ? WHERE id = ?').run(b.whatsapp_alerts ? 1 : 0, u.id);
+    }
     if (b.dashboard_layout !== undefined) {
       const layout = b.dashboard_layout === null ? '' : JSON.stringify([...new Set(parseLayout(JSON.stringify(b.dashboard_layout)) || [])]);
       db.prepare('UPDATE users SET dashboard_layout = ? WHERE id = ?').run(layout, u.id);
@@ -564,6 +587,7 @@ function createApp(db) {
     if (b.entry_template !== undefined) set.run('entry_template', String(b.entry_template).slice(0, 2000));
     if (b.email_from_name !== undefined) set.run('email_from_name', String(b.email_from_name).replace(/[\r\n"<>]/g, '').trim().slice(0, 60));
     if (b.email_reply_to !== undefined) set.run('email_reply_to', cleanEmail(b.email_reply_to));
+    if (b.new_lead_alert !== undefined) set.run('new_lead_alert', b.new_lead_alert ? '1' : '0');
     if (b.whatsapp_template !== undefined) {
       const t = String(b.whatsapp_template).slice(0, 2000);
       set.run('whatsapp_template', t.trim() ? t : DEFAULT_SETTINGS.whatsapp_template);
@@ -643,9 +667,28 @@ function createApp(db) {
       logDuplicate(u.id, result.dup, lead);
       throw new HttpError(409, DUPLICATE_MESSAGE);
     }
+    const created = getReferral(result.id);
+    announceNewLead(created, u);
     res.status(201);
-    return publicReferral(getReferral(result.id));
+    return publicReferral(created);
   }));
+
+  // The moment a lead comes in: every dispatcher is alerted (app, phone, WhatsApp) and the
+  // lead is posted to the dispatch WhatsApp group in the Copy-for-WhatsApp format.
+  function announceNewLead(ref, enteredBy) {
+    const settings = getSettings();
+    if (settings.new_lead_alert !== '0') {
+      const msg = `🆕 New lead: ${leadLabel(ref)}${ref.phone ? ` · ${ref.phone}` : ''} — from ${ref.created_by_name}. Tap to take it.`;
+      for (const d of db.prepare("SELECT id FROM users WHERE role = 'dispatch' AND active = 1").all()) {
+        if (d.id !== enteredBy.id && d.id !== ref.assigned_to) notify(d.id, ref.id, msg);
+      }
+    }
+    if (whatsapp) {
+      const { appUrl } = mail.emailConfig(settings);
+      const { text } = waFormat.fill(ref, settings.whatsapp_template, ref.created_by_name);
+      whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}`);
+    }
+  }
 
   // Shared by the list, the board and the CSV export. Scope is always narrowed to what the caller may see.
   function listReferrals(u, query, maxRows) {
@@ -1576,6 +1619,16 @@ function createApp(db) {
   app.locals.speed = speed;
   push = require('./push').mount(app, db, { requireUser, wrap, HttpError });
   require('./address').mount(app, db, { requireUser, wrap, HttpError, rateLimit });
+  {
+    const envDb = process.env.DB_FILE;
+    whatsapp = require('./whatsapp').mount(app, db, {
+      requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, rateLimit,
+      notifyAdmins: (msg) => { for (const a of db.prepare("SELECT id FROM users WHERE role = 'admin' AND active = 1").all()) notify(a.id, null, msg); },
+      createTransport: opts.whatsappTransport || require('./whatsapp-baileys').createTransport,
+      dataDir: envDb && envDb !== ':memory:' ? path.dirname(envDb) : path.join(__dirname, '..', 'data'),
+    });
+    app.locals.whatsapp = whatsapp;
+  }
   affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
