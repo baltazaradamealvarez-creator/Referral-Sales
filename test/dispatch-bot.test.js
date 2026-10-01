@@ -204,29 +204,53 @@ test('people are recognised by their privacy id (LID) once seen with their numbe
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments WHERE referral_id = ?').get(lead.id).n, 2);
 });
 
-test('with the AI helper: replies are read by the AI and questions get answers', async (t) => {
+test('with the AI helper: replies are read by the AI; "bot …" talks to the assistant, and replies to it continue the chat', async (t) => {
   const calls = [];
   const ai = {
+    model: 'fake',
     enabled: () => true,
     available: () => true,
     async interpretReply(x) { calls.push(['interpret', x.text]); return { status: x.text.includes('lista') ? 'Ordered' : 'none', sure: true, question: '', notify_owner: false, language: 'es' }; },
-    async answer(x) { calls.push(['answer', x.question, x.context]); return 'Hoy entraron 1 leads.'; },
+    async answer() { return ''; },
+    // Stands in for Claude: looks at today's numbers and the open leads with the tools, then answers.
+    async runAgent({ system, messages, tools, run }) {
+      const stats = await run('team_stats', { period: 'today' });
+      const open = await run('find_leads', { status: ['open'] });
+      calls.push(['agent', system, messages.map((m) => `${m.role}: ${m.content}`), tools.map((x) => x.name), JSON.stringify([stats, open])]);
+      return { text: `Hoy entraron *${stats.leads_entered}* leads y hay ${open.total} abiertos.`, steps: [] };
+    },
   };
   const { db, wa, makeUser, say } = await setup(t, { ai });
   const rep = await makeUser('rita', 'rep');
   await makeUser('dee', 'dispatch', '(512) 555-0199');
-  const lead = (await rep.c.post('/referrals', { name: 'Maria Lopez', phone: '512-867-5309' })).body;
+  const lead = (await rep.c.post('/referrals', { name: 'Maria Lopez', phone: '512-867-5309', address: '1010 Ogden Ave, Dallas TX 75211' })).body;
+  await rep.c.post('/referrals', { name: 'Omar Diaz', phone: '512-867-5310' });
 
   await say('15125550199', `#${lead.id} la venta quedó lista para el viernes`);
   assert.equal(db.prepare('SELECT status FROM referrals WHERE id = ?').get(lead.id).status, 'Ordered');
   assert.deepEqual(calls[0], ['interpret', 'la venta quedó lista para el viernes']);
 
   await say('15125550199', 'bot ¿cuántos leads entraron hoy?');
-  assert.equal(wa.sent.at(-1).text, 'Hoy entraron 1 leads.');
-  const [, question, context] = calls.at(-1);
-  assert.equal(question, '¿cuántos leads entraron hoy?');
-  assert.match(context, /Leads entered today: 1 \(Ordered 1\)/);
-  assert.ok(!context.includes('867-5309'), 'no phone numbers in what the AI sees');
+  const answer = wa.sent.at(-1);
+  assert.equal(answer.text, 'Hoy entraron *2* leads y hay 1 abiertos.');
+  const [, system, msgs, tools, seen] = calls.at(-1);
+  assert.deepEqual(msgs, ['user: ¿cuántos leads entraron hoy?']);
+  assert.match(system, /Dee Person, dispatch/);
+  assert.match(system, /WhatsApp dispatch group/);
+  assert.ok(tools.includes('update_lead') && tools.includes('set_reminder'));
+  for (const text of [system, seen]) {
+    assert.ok(!text.includes('867-5309') && !text.includes('Ogden'), 'no phone numbers or addresses in what the AI sees');
+  }
+
+  // Replying to the assistant's answer continues the same conversation (no "bot" needed).
+  await say('15125550199', '¿y cuántos sin llamar?', { quotedId: answer.id });
+  assert.deepEqual(calls.at(-1)[2], ['user: ¿cuántos leads entraron hoy?', 'assistant: Hoy entraron *2* leads y hay 1 abiertos.', 'user: ¿y cuántos sin llamar?']);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments').get().n, 1, 'talking to the assistant adds no notes');
+
+  // A private message to the alerts number goes to the assistant too.
+  await say('15125550199', 'hola', { chat: '15125550199@s.whatsapp.net', isGroup: false });
+  assert.equal(wa.sent.at(-1).jid, '15125550199@s.whatsapp.net');
+  assert.match(calls.at(-1)[1], /private WhatsApp chat/);
 });
 
 test('admin settings: what "approved" means, two-way on/off', async (t) => {
@@ -245,7 +269,7 @@ test('admin settings: what "approved" means, two-way on/off', async (t) => {
   assert.equal(db.prepare('SELECT status FROM referrals WHERE id = ?').get(lead.id).status, 'Passed');
 });
 
-test('the AI helper calls Claude Haiku with a strict JSON format (network stubbed)', async (t) => {
+test('the AI calls Claude Haiku 4.5: strict JSON for replies, a tool loop for the assistant (network stubbed)', async (t) => {
   const real = globalThis.fetch;
   const key = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'test-key';
@@ -255,8 +279,11 @@ test('the AI helper calls Claude Haiku with a strict JSON format (network stubbe
       const body = JSON.parse(init.body);
       bodies.push(body);
       const text = body.output_config ? '{"status":"DNQ","sure":true,"question":"","notify_owner":true,"language":"es"}' : 'Hay 3 leads abiertos.';
-      return new Response(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text }],
-        stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      // The assistant: first asks for a tool, then answers once it has the result.
+      const wantsTool = body.tools && !body.messages.some((m) => Array.isArray(m.content));
+      const content = wantsTool ? [{ type: 'tool_use', id: 'toolu_1', name: 'team_stats', input: { period: 'today' } }] : [{ type: 'text', text }];
+      return new Response(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content,
+        stop_reason: wantsTool ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     return real(url, init);
   };
@@ -266,9 +293,19 @@ test('the AI helper calls Claude Haiku with a strict JSON format (network stubbe
   assert.equal(ai.enabled(), true);
   const r = await ai.interpretReply({ lead: { id: 7, customer_name: 'Maria', status: 'New', created_by_name: 'Rita' }, text: 'no califica', senderName: 'Dee', approvedStatus: 'Ordered' });
   assert.deepEqual(r, { status: 'DNQ', sure: true, question: '', notify_owner: true, language: 'es' });
-  assert.equal(bodies[0].model, 'claude-haiku-4-5');
+  assert.equal(bodies[0].model, 'claude-haiku-4-5-20251001');
   assert.equal(bodies[0].output_config.format.type, 'json_schema');
   assert.equal(bodies[0].output_config.format.schema.additionalProperties, false);
   assert.equal(await ai.answer({ question: '¿cuántos?', context: 'x', senderName: 'Dee' }), 'Hay 3 leads abiertos.');
+  const ran = [];
+  const out = await ai.runAgent({
+    system: 'sys', messages: [{ role: 'user', content: '¿cuántos?' }], tools: [{ name: 'team_stats', description: 'x', input_schema: { type: 'object', properties: {} } }],
+    run: (name, input) => { ran.push([name, input]); return { leads_entered: 3 }; },
+  });
+  assert.equal(out.text, 'Hay 3 leads abiertos.');
+  assert.deepEqual(ran, [['team_stats', { period: 'today' }]]);
+  const second = bodies.at(-1);
+  assert.equal(second.model, 'claude-haiku-4-5-20251001');
+  assert.deepEqual(second.messages.at(-1).content[0], { type: 'tool_result', tool_use_id: 'toolu_1', content: '{"leads_entered":3}' });
   assert.equal(createAi({ getSettings: () => ({ ai_enabled: '0' }) }).enabled(), false);
 });

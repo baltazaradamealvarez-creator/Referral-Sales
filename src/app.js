@@ -32,6 +32,11 @@ const DEFAULT_SETTINGS = {
   wa_two_way: '1',
   wa_approved_status: 'Ordered',
   ai_enabled: '1',
+  // The assistant: what it should know about the business (admins edit it), and when it
+  // posts the morning briefing / evening recap to the dispatch group ('' = off).
+  ai_brief: require('./agent').DEFAULT_BRIEF,
+  ai_briefing_time: '09:00',
+  ai_recap_time: '19:00',
   affiliate_enabled: '0',
   affiliate_levels: '15,5',
   affiliate_commission: '0',
@@ -1642,9 +1647,13 @@ function createApp(db, opts = {}) {
       dataDir: envDb && envDb !== ':memory:' ? path.dirname(envDb) : path.join(__dirname, '..', 'data'),
     });
     app.locals.whatsapp = whatsapp;
-    app.locals.ai = require('./ai').createAi({ getSettings });
+    app.locals.ai = opts.ai || require('./ai').createAi({ getSettings });
+    app.locals.agent = require('./agent').mount(app, db, {
+      ai: app.locals.ai, whatsapp, getSettings, getReferral, canViewReferral, seesAll, updateReferral, addComment, notify, logAudit,
+      speedConfig: () => speed.config(), requireUser, requireRole, wrap, awrap, HttpError, rateLimit,
+    });
     app.locals.dispatchBot = require('./dispatch-bot').mount(app, db, {
-      whatsapp, ai: opts.ai || app.locals.ai, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
+      whatsapp, ai: app.locals.ai, agent: app.locals.agent, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
       updateReferral, addComment, logAudit, requireRole, wrap, HttpError,
     });
   }
