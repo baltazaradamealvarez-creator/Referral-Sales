@@ -17,6 +17,9 @@ const BACKOFF = [2000, 5000, 15000, 30000, 60000];
 
 const digitsOf = (v) => {
   const d = String(v || '').replace(/\D/g, '');
+  // Mexico removed its mobile prefix 1, but WhatsApp can still supply older +521 ids.
+  // Match that identity to the same +52 number saved in an account.
+  if (d.length === 13 && d.startsWith('521')) return `52${d.slice(3)}`;
   return d.length === 10 ? `1${d}` : d; // US numbers without the country code
 };
 
@@ -32,6 +35,26 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   const sentTimes = [];
   const jidCache = new Map();
   let pumping = false;
+  // Runtime diagnostics contain no message bodies or sender numbers. They reset on restart.
+  const diagnostics = { received: 0, last_received_at: null, last_result: '', handler_errors: 0,
+    sent: 0, failed: 0, dropped: 0, last_sent_at: null, last_error: '' };
+
+  async function receive(m) {
+    diagnostics.received++;
+    diagnostics.last_received_at = new Date().toISOString();
+    diagnostics.last_result = 'processing';
+    if (!messageHandler) { diagnostics.last_result = 'not_ready'; return; }
+    try {
+      const result = await messageHandler(m);
+      diagnostics.last_result = result || 'handled';
+      return result;
+    } catch (e) {
+      diagnostics.handler_errors++;
+      diagnostics.last_result = 'handler_error';
+      diagnostics.last_error = e.message;
+      throw e;
+    }
+  }
 
   const authDir = path.join(dataDir, 'whatsapp-auth');
   const cfg = () => {
@@ -77,8 +100,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
           pump();
         },
         onMessage: (m) => {
-          if (!messageHandler) return;
-          Promise.resolve().then(() => messageHandler(m)).catch((e) => console.error('WhatsApp message handling failed:', e));
+          receive(m).catch((e) => console.error('WhatsApp message handling failed:', e.message));
         },
         onClose: (why) => {
           st.error = why.message || '';
@@ -116,7 +138,10 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   function enqueue(item) {
     if (!cfg().enabled) return false;
     queue.push({ ...item, tries: 0 });
-    while (queue.length > QUEUE_MAX) queue.shift();
+    while (queue.length > QUEUE_MAX) {
+      const dropped=queue.shift(); diagnostics.dropped++; diagnostics.last_error = 'WhatsApp queue is full; oldest message discarded.';
+      if (dropped.onFailed) { try { dropped.onFailed(diagnostics.last_error); } catch (e) { console.error(e.message); } }
+    }
     pump();
     return true;
   }
@@ -144,11 +169,18 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
           ? await transport.react(jid, item.react.id, item.react.emoji)
           : await transport.sendText(jid, item.text, { quotedId: item.quotedId });
         sentTimes.push(Date.now());
+        if (!item.react) { diagnostics.sent++; diagnostics.last_sent_at = new Date().toISOString(); }
         if (item.onSent && id) { try { item.onSent(id, jid); } catch (e) { console.error(e); } }
+      } else {
+        diagnostics.failed++;
+        diagnostics.last_error = 'Recipient number was not found on WhatsApp.';
+        if (item.onFailed) item.onFailed(diagnostics.last_error);
       }
     } catch (e) {
       if (++item.tries < 3) queue.push(item);
+      else { diagnostics.failed++; if (item.onFailed) { try { item.onFailed(e.message); } catch (err) { console.error(err.message); } } }
       st.error = e.message;
+      diagnostics.last_error = e.message;
     } finally {
       pumping = false;
       if (queue.length) { const t = setTimeout(pump, GAP_MS); if (t.unref) t.unref(); }
@@ -162,10 +194,10 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     stop: () => { clearTimeout(retryTimer); if (transport) transport.stop(); },
     status: () => st.status,
     // A person's alerts, if they added a WhatsApp number and switched it on.
-    sendToUser(user, text) {
+    sendToUser(user, text, { onSent, onFailed } = {}) {
       const d = digitsOf(user.whatsapp);
       if (!user.whatsapp_alerts || d.length < 11) return false;
-      return enqueue({ digits: d, text });
+      return enqueue({ digits: d, text, onSent, onFailed });
     },
     // The new-lead post to the dispatch group. onSent(messageId) lets replies find the lead.
     postToGroup(text, onSent, { force = false } = {}) {
@@ -180,7 +212,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     me: () => st.me,
     onMessage(fn) { messageHandler = fn; },
     // For tests: hand the bot a message as if it came from WhatsApp.
-    receive(m) { return messageHandler ? messageHandler(m) : null; },
+    receive,
     queueLength: () => queue.length,
     // For tests: run the queue now.
     async drain() { for (let i = 0; i < 1000 && queue.length && st.status === 'connected'; i++) await pump(); },
@@ -195,6 +227,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
       two_way: getSettings().wa_two_way !== '0', approved_status: getSettings().wa_approved_status === 'Passed' ? 'Passed' : 'Ordered',
       ai_available: !!process.env.ANTHROPIC_API_KEY, ai_enabled: getSettings().ai_enabled !== '0',
+      diagnostics: { ...diagnostics },
       people: db.prepare("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND whatsapp_alerts = 1 AND whatsapp <> ''").get().n,
     };
   };
@@ -216,7 +249,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     clearTimeout(retryTimer);
     if (transport) await transport.logout().catch(() => {});
     setStatus('off', { qr: null, me: null, error: '' });
-    queue.length = 0;
+    for (const item of queue.splice(0)) if (item.onFailed) { try { item.onFailed('WhatsApp was disconnected before this message was sent.'); } catch (e) { console.error(e.message); } }
     logAudit(req, 'whatsapp.disconnect', 'settings', '', '');
     return statusView();
   }));

@@ -255,7 +255,7 @@ function generateHTMLTable(rows, title, periodLabel) {
 }
 
 // Executes a single scheduled report
-function runScheduledReport(db, scheduleId) {
+async function runScheduledReport(db, scheduleId) {
   const schedule = db.prepare(`
     SELECT s.*, r.name AS report_name, r.config AS report_config, u.email AS creator_email, u.full_name AS creator_name, u.role AS creator_role, u.team_id AS creator_team_id
     FROM report_schedules s
@@ -317,49 +317,50 @@ function runScheduledReport(db, scheduleId) {
   const settings = Object.fromEntries(settingsRow.map((x) => [x.key, x.value]));
 
   let sentCount = 0;
-  let lastError = '';
+  const errors = [];
 
   for (const recipientEmail of recipients) {
     if (!recipientEmail) continue;
 
     const emailSubject = `[Report Delivery] ${schedule.report_name} (${rows.length} records)`;
-    const result = mail.sendEmail({
+    let result;
+    try { result = await mail.sendEmail({
       to: recipientEmail,
       subject: emailSubject,
       html,
       attachments: [
         {
           filename: `${schedule.report_name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`,
-          content: csv,
+          content: Buffer.from(csv, 'utf8').toString('base64'),
           type: 'text/csv',
         },
       ],
-    }, settings);
-
-    if (result && result.then) {
-      result.then((res) => {
-        if (!res.ok) console.error(`Failed to send scheduled report to ${recipientEmail}:`, res.error);
-      });
-    }
-    sentCount++;
+    }, settings); } catch (err) { result = { ok: false, error: err.message }; }
+    if (result && result.ok) sentCount++;
+    else errors.push(result && result.error || 'Email delivery failed.');
   }
+
+  if (!recipients.some(Boolean)) errors.push('No recipient email address is configured.');
+  const status = errors.length ? 'failed' : 'success';
+  const lastError = [...new Set(errors)].join('; ').slice(0, 1000);
 
   db.prepare(`
     INSERT INTO schedule_deliveries (schedule_id, report_id, status, record_count, recipients_count, period_label, error_message)
-    VALUES (?, ?, 'success', ?, ?, ?, ?)
-  `).run(schedule.id, schedule.report_id, rows.length, sentCount, periodLabel, lastError);
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(schedule.id, schedule.report_id, status, rows.length, sentCount, periodLabel, lastError);
 
   const nextRun = computeNextRun(schedule.cadence, schedule.delivery_time, schedule.day_of_week, schedule.day_of_month);
   db.prepare(`
-    UPDATE report_schedules SET last_run_at = datetime('now'), last_status = 'success', next_run_at = ? WHERE id = ?
-  `).run(nextRun, schedule.id);
+    UPDATE report_schedules SET last_run_at = datetime('now'), last_status = ?, next_run_at = ? WHERE id = ?
+  `).run(status, nextRun, schedule.id);
 
-  return { status: 'success', count: rows.length, recipients: sentCount };
+  return { status, count: rows.length, recipients: sentCount, ...(lastError ? { error: lastError } : {}) };
 }
 
 // Background loop checking due scheduled reports
 function startScheduler(db, intervalMs = 60000) {
-  const tick = () => {
+  const running = new Set();
+  const tick = async () => {
     try {
       const dueSchedules = db.prepare(`
         SELECT id FROM report_schedules
@@ -367,7 +368,11 @@ function startScheduler(db, intervalMs = 60000) {
       `).all();
 
       for (const item of dueSchedules) {
-        runScheduledReport(db, item.id);
+        if (running.has(item.id)) continue;
+        running.add(item.id);
+        try { await runScheduledReport(db, item.id); }
+        catch (err) { console.error('Error in report scheduler run:', err.message); }
+        finally { running.delete(item.id); }
       }
     } catch (err) {
       console.error('Error in report scheduler tick:', err);

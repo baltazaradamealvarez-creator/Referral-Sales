@@ -1504,15 +1504,24 @@
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
-    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}`;
+    const dx = s.diagnostics;
+    const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
+    const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
+      <p class="small muted">Since this server started: ${dx.received} incoming text messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
+      <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
+        <dt>Last result</dt><dd>${esc(outcomes[dx.last_result] || dx.last_result || '—')}</dd><dt>Last sent</dt><dd>${dx.last_sent_at ? esc(new Date(dx.last_sent_at).toLocaleString()) : 'None yet'}</dd>
+        <dt>Send queue</dt><dd>${s.queued} waiting</dd>${dx.last_error ? `<dt>Last error</dt><dd class="err-text">${esc(dx.last_error)}</dd>` : ''}</dl>
+      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. In the selected group, send <b>bot hello</b> or <b>help</b>; private text goes to the assistant. Replies require the two-way switch. Counters and queued messages reset when the server restarts.</p><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button></details>` : '';
+    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+    on('waRefreshDiagnostics', drawWaLink);
     on('waConnect', async () => { await api('/whatsapp/connect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink(); });
     on('waCancel', async () => { await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch(() => {}); drawWaLink(); });
     on('waDisconnect', async () => {
       if (!confirm('Disconnect WhatsApp alerts? New leads will only alert in the app until you connect again.')) return;
       await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink();
     });
-    on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test sent to the group'); } catch (err) { toast(err.message); } });
+    on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test queued for the group — check WhatsApp diagnostics'); } catch (err) { toast(err.message); } });
     const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } };
     const tw = document.getElementById('waTwoWay');
     if (tw) tw.onchange = () => patchWa({ two_way: tw.checked }, tw.checked ? 'Group replies are on' : 'Group replies are off');
@@ -1559,7 +1568,7 @@
       <label class="check"><input type="checkbox" id="aiOn" ${s.enabled ? 'checked' : ''} ${s.available ? '' : 'disabled'}> <span>Assistant on (also reads unclear replies in the WhatsApp group)</span></label>
       <div class="field" style="margin-top:.8rem"><label for="aiBrief">What the assistant should know about the business</label>
         <textarea id="aiBrief" rows="9" maxlength="6000">${esc(s.brief)}</textarea>
-        <p class="small muted" style="margin:.3rem 0 0">Products, prices and promos, how you qualify customers, goals, who to ask for what, house rules, tone. The more it knows, the better it helps. Commission, working hours, team and lead data come from the app automatically.</p></div>
+        <p class="small muted" style="margin:.3rem 0 0">Products, prices and promos, how you qualify customers, goals, who to ask for what, house rules, tone. Add current approved product prices to Seller coach below for seller questions. Seller coaching extends the existing assistant; lead tools, reminders and briefings keep working.</p></div>
       <h3 class="wa-h3">Daily briefing in the WhatsApp group</h3>
       <div class="grid-2" style="gap:1rem;max-width:520px">
         <div class="field"><label for="aiMorning">Morning briefing at</label><input id="aiMorning" type="time" value="${esc(s.briefing_time)}"></div>
@@ -1592,6 +1601,52 @@
   }
 
   // ---------- assistant page: chat + reminders ----------
+
+  async function drawCoachCard() {
+    const card=document.getElementById('coachCard'); if(!card)return;
+    try {
+      const [s,sellers,drafts]=await Promise.all([api('/coach/settings'),api('/coach/sellers'),api('/coach/drafts')]);
+      if(!card.isConnected)return;
+      card.innerHTML=`<div class="row between"><h2 style="margin:0">Seller coach</h2><span class="wa-state ${s.enabled?'ok':''}">${s.enabled?'On':'Off'}</span></div>
+        <p class="small muted">Supportive private WhatsApp check-ins for sellers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
+        <form id="coachSettings"><label class="check"><input id="coachEnabled" type="checkbox" ${s.enabled?'checked':''}> Enable seller coaching</label>
+          <div class="fix-grid" style="margin-top:.8rem"><div><label for="coachTime">Weekday check-in time</label><input type="time" id="coachTime" value="${esc(s.time)}" required></div>
+          <div><label for="coachDays">Minimum days between check-ins</label><input type="number" id="coachDays" min="1" max="30" value="${s.days}" required></div>
+          <div class="full"><label for="coachReviewer">Owner who approves difficult answers</label><select id="coachReviewer">${s.reviewers.map((r)=>`<option value="${r.id}" ${r.id===(s.reviewer_id||state.me.id)?'selected':''}>${esc(r.full_name)}</option>`).join('')}</select></div></div>
+          <p class="small muted">${esc(s.tz)} · weekdays during business hours. Automatic check-ins only go to active sellers with WhatsApp alerts on who have not entered a lead in ${s.days} days. No check-ins while an answer awaits review. Sellers can reply STOP / ALTO and START / REANUDAR. Manual check-ins can include active sellers, but keep the same cooldown.</p>
+          <div class="field"><label for="coachKnowledge">Approved seller knowledge: product pricing and FAQ</label><textarea id="coachKnowledge" rows="6" maxlength="6000" placeholder="Add approved products, prices, qualification rules, promo dates, taxes and fees, and how to enter leads. Exclude all compensation information.">${esc(s.knowledge)}</textarea>
+            <p class="small muted">The coach quotes only documented offers. Missing prices, exceptions, unclear terms and difficult questions need owner review.</p></div>
+          ${!s.ai||!s.connected?'<p class="alert warn small">Coaching needs the assistant enabled with its API key and WhatsApp connected. Settings can be saved now.</p>':''}
+          <p id="coachSaveState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save coaching settings</button></form>
+        <h3 style="margin-top:1.5rem">Manual check-in</h3><div class="row"><select id="coachSeller" aria-label="Seller for check-in" style="flex:1;width:auto;min-width:0"><option value="">Choose a seller</option>${sellers.map((u)=>`<option value="${u.id}" ${u.blocked?'disabled':''}>${esc(u.full_name)}${u.blocked?' — '+esc(u.blocked):''}</option>`).join('')}</select><button type="button" class="btn" id="coachPreview">Preview check-in</button></div>
+        <div id="coachManual"></div><p class="small muted">${sellers.length} active seller${sellers.length===1?'':'s'}. ${sellers.filter((u)=>!u.blocked).length} eligible for a manual check-in. Only accepted sends are recorded; check WhatsApp diagnostics for failures.</p>
+        <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">Approval inbox</h3><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div>
+        <p class="small muted">Up to 100 recent drafts, with pending reviews first. Only the configured reviewer can approve or reject. “Sent” means accepted by WhatsApp, not confirmed read.</p>
+        <div class="stack">${drafts.map((d)=>`<article class="coach-draft" data-coach-draft="${d.id}"><div class="row between"><b>${esc(d.seller_name)}</b><span class="tag">${esc(d.status)}</span></div><p class="small muted">${esc(fullDate(d.created_at))} · Reviewer: ${esc(d.reviewer_name||'Choose a reviewer')} · ${esc(d.reason)}</p>
+          <p class="small" style="white-space:pre-wrap"><b>Seller asked:</b> ${esc(d.question)}</p>${d.error?`<p class="alert err small">${esc(d.error)}</p>`:''}
+          <label for="coachReply${d.id}">Draft reply</label><textarea id="coachReply${d.id}" rows="3" maxlength="2000" ${!['pending','failed'].includes(d.status)?'readonly':''}>${esc(d.draft)}</textarea>
+          ${['pending','failed'].includes(d.status)&&state.me.id===s.reviewer_id?`<div class="row" style="margin-top:.6rem"><button type="button" class="btn primary" data-coach-approve="${d.id}">${d.status==='failed'?'Approve retry':'Approve & send'}</button><button type="button" class="btn danger" data-coach-reject="${d.id}">Reject</button></div>`:''}</article>`).join('')||'<p class="muted small">No seller replies waiting for approval.</p>'}</div>`;
+      card.querySelector('#coachSettings').onsubmit=async(e)=>{
+        e.preventDefault();const form=e.target;const btn=form.querySelector('.primary');btn.disabled=true;
+        const result=card.querySelector('#coachSaveState');result.textContent='Saving…';
+        try{await api('/coach/settings',{method:'PATCH',body:{enabled:card.querySelector('#coachEnabled').checked,time:card.querySelector('#coachTime').value,days:Number(card.querySelector('#coachDays').value),reviewer_id:Number(card.querySelector('#coachReviewer').value),knowledge:card.querySelector('#coachKnowledge').value}});toast('Coaching settings saved');drawCoachCard();}
+        catch(err){result.textContent=err.message;result.classList.add('err-text');}finally{btn.disabled=false;}
+      };
+      card.querySelector('#coachPreview').onclick=async()=>{
+        const id=card.querySelector('#coachSeller').value;if(!id){toast('Choose an eligible seller first');return;}
+        try{const p=await api(`/coach/sellers/${id}/preview`);const box=card.querySelector('#coachManual');box.innerHTML=`<pre class="wa-preview" style="margin-top:.8rem">${esc(p.text)}</pre><button type="button" class="btn primary" id="coachSend" ${p.blocked||!s.enabled||!s.ai||!s.connected?'disabled':''}>Send check-in</button>${p.blocked?`<p class="small muted">${esc(p.blocked)}</p>`:''}`;
+          box.querySelector('#coachSend').onclick=async(e)=>{e.target.disabled=true;try{await api(`/coach/sellers/${id}/checkin`,{method:'POST',body:{}});toast('Check-in queued');drawCoachCard();}catch(err){toast(err.message);e.target.disabled=false;}};
+        }catch(err){toast(err.message);}
+      };
+      card.querySelector('#coachSeller').onchange=()=>{card.querySelector('#coachManual').innerHTML='';};
+      card.querySelector('#coachRefresh').onclick=drawCoachCard;
+      for(const action of ['approve','reject'])card.querySelectorAll(`[data-coach-${action}]`).forEach((b)=>{b.onclick=async()=>{
+        const id=b.getAttribute(`data-coach-${action}`);const article=b.closest('[data-coach-draft]');article.querySelectorAll('button').forEach((x)=>{x.disabled=true;});
+        try{await api(`/coach/drafts/${id}/review`,{method:'POST',body:{action,text:article.querySelector('textarea').value}});toast(action==='approve'?'Approved reply queued':'Draft rejected');drawCoachCard();}
+        catch(err){toast(err.message);article.querySelectorAll('button').forEach((x)=>{x.disabled=false;});}
+      };});
+    }catch(err){if(card.isConnected)card.innerHTML=`<h2>Seller coach</h2><p class="alert err small">${esc(err.message)}</p><button type="button" class="btn" id="coachRetryLoad">Retry</button>`;card.querySelector('#coachRetryLoad')?.addEventListener('click',drawCoachCard);}
+  }
 
   const waText = (t) => esc(t).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(^|\s)_([^_\n]+)_/g, '$1<i>$2</i>')
     .replace(/(https?:\/\/[^\s<]+)/g, (u) => { const m = u.match(/#\/r\/(\d+)$/); return `<a href="${m ? `#/r/${m[1]}` : u}"${m ? '' : ' target="_blank" rel="noopener"'}>${m ? `open #${m[1]}` : u}</a>`; })
@@ -1802,6 +1857,7 @@
       </div>
       <div class="card" id="waLinkCard"><h2>WhatsApp alerts</h2><p class="small muted">Loading…</p></div>
       <div class="card" id="aiCard"><h2>🤖 Assistant</h2><p class="small muted">Loading…</p></div>
+      <div class="card" id="coachCard"><h2>Seller coach</h2><p class="small muted">Loading…</p></div>
       <form class="card" id="waForm">
         <h2>WhatsApp message for dispatch</h2>
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
@@ -1940,6 +1996,7 @@
     });
     if (document.getElementById('waLinkCard')) drawWaLink();
     if (document.getElementById('aiCard')) drawAiCard();
+    if (document.getElementById('coachCard')) drawCoachCard();
     const waForm = document.getElementById('waForm');
     if (waForm) {
       const tpl = document.getElementById('waTpl');
@@ -3341,7 +3398,7 @@
       } catch (err) { toast(err.message); }
     };
     const waTest = document.getElementById('waMeTest');
-    if (waTest) waTest.onclick = async () => { try { await api('/whatsapp/test-me', { method: 'POST', body: {} }); toast('Sent — check WhatsApp'); } catch (err) { toast(err.message); } };
+    if (waTest) waTest.onclick = async () => { try { await api('/whatsapp/test-me', { method: 'POST', body: {} }); toast('Test queued — check WhatsApp'); } catch (err) { toast(err.message); } };
     document.querySelectorAll('#themeSeg button').forEach((b) => {
       b.onclick = () => { setTheme(b.dataset.t); document.querySelectorAll('#themeSeg button').forEach((x) => x.classList.toggle('on', x === b)); };
     });
@@ -3855,7 +3912,7 @@
       b.onclick = async () => {
         try {
           const res = await api(`/schedules/${b.dataset.testSched}/test`, { method: 'POST', body: {} });
-          toast(`Scheduled run test finished: ${res.count} records processed.`);
+          toast(res.status === 'failed' ? `Report delivery failed: ${res.error}` : res.status === 'skipped' ? 'Report skipped: no matching records.' : `Report sent to ${res.recipients} recipient${res.recipients === 1 ? '' : 's'} (${res.count} records).`);
           renderAnalytics();
         } catch (err) { toast(err.message); }
       };
@@ -3873,7 +3930,7 @@
                 ${hist.map((h) => `
                   <tr>
                     <td>${esc(fullDate(h.run_at))}</td>
-                    <td><span class="badge-status ${h.status}">${esc(h.status)}</span></td>
+                    <td><span class="badge-status ${h.status}">${esc(h.status)}</span>${h.error_message ? `<div class="small err-text">${esc(h.error_message)}</div>` : ''}</td>
                     <td>${h.record_count}</td>
                     <td>${esc(h.period_label)}</td>
                   </tr>

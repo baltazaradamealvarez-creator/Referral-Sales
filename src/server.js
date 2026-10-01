@@ -14,6 +14,7 @@ const app = createApp(db);
 setInterval(() => {
   try { app.locals.speed.tick(); } catch (e) { console.error('Speed-to-lead check failed:', e); }
   try { app.locals.agent.tick(); } catch (e) { console.error('Reminders/briefing check failed:', e); }
+  try { app.locals.coach.tick(); } catch (e) { console.error('Seller coach check failed:', e.message); }
 }, 60000).unref();
 // WhatsApp alerts reconnect by themselves if an admin linked a phone.
 app.locals.whatsapp.start();
@@ -23,4 +24,3 @@ process.on('SIGINT', stopAll);
 app.listen(port, () => {
   console.log(`E&O Spectrum Referrals running on http://localhost:${port}`);
 });
-

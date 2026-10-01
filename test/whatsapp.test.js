@@ -19,7 +19,7 @@ function fakeWhatsApp() {
       async start() { fake.started++; },
       stop() {},
       async logout() { fake.loggedOut++; },
-      async sendText(jid, text) { fake.sent.push({ jid, text }); },
+      async sendText(jid, text) { if (fake.sendError) throw new Error(fake.sendError); fake.sent.push({ jid, text }); },
       async listGroups() { return [{ id: '1203630@g.us', name: 'Dispatch Team', size: 5 }, { id: '999@g.us', name: 'Family', size: 4 }]; },
       async exists(d) { return fake.onWhatsApp.has(d) ? `${d}@s.whatsapp.net` : null; },
     };
@@ -68,6 +68,35 @@ async function setup(t) {
 test('numbers: US numbers get the country code', () => {
   assert.equal(digitsOf('(512) 555-0142'), '15125550142');
   assert.equal(digitsOf('+52 55 1234 5678'), '525512345678');
+  assert.equal(digitsOf('+52 1 55 1234 5678'), '525512345678');
+  assert.equal(digitsOf('+51 955 123 456'), '51955123456');
+});
+
+test('failed sends and missing recipients are visible in admin diagnostics, and successful sends are counted', async (t) => {
+  const { a, wa, app, settle } = await setup(t);
+  await a.post('/whatsapp/connect');
+  wa.handlers.onOpen({ id: '15125550100@s.whatsapp.net' });
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team' });
+  wa.sendError = 'Socket closed while sending';
+  await a.post('/whatsapp/test', { target: 'group' });
+  await settle();
+  let dx = (await a.get('/whatsapp/status')).body.diagnostics;
+  assert.equal(dx.failed, 1);
+  assert.equal(dx.sent, 0);
+  assert.match(dx.last_error, /Socket closed/);
+  assert.equal(app.locals.whatsapp.queueLength(), 0);
+  wa.sendError = '';
+  await a.post('/whatsapp/test', { target: 'group' });
+  await settle();
+  dx = (await a.get('/whatsapp/status')).body.diagnostics;
+  assert.equal(dx.sent, 1);
+  assert.ok(dx.last_sent_at);
+  await a.patch('/me', { whatsapp: '512-555-0111' });
+  await a.post('/whatsapp/test-me');
+  await settle();
+  dx = (await a.get('/whatsapp/status')).body.diagnostics;
+  assert.equal(dx.failed, 2);
+  assert.match(dx.last_error, /not found on WhatsApp/);
 });
 
 test('the lockfile installs on Render (no SSH-only git dependencies)', () => {

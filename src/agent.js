@@ -14,6 +14,7 @@
 const mail = require('./email');
 const { STATUSES } = require('./db');
 const { zonedToUtc, businessMinutes } = require('./speed');
+const { containsComp, cleanKnowledge, cleanData, handoff } = require('./seller-policy');
 
 const DEFAULT_BRIEF = [
   'E&O Spectrum Referrals is a sales team that sells Spectrum services (Internet, TV, Mobile and Voice) through referrals.',
@@ -632,13 +633,19 @@ function mount(app, db, deps) {
       .map((m) => ({ role: m.role, content: String(m.content).slice(0, 2000) })).slice(-12);
     while (msgs.length && msgs[0].role !== 'user') msgs.shift();
     if (!msgs.length || msgs[msgs.length - 1].role !== 'user') throw new HttpError(400, 'Say something first.');
+    const seller = u.role === 'rep';
+    if (seller && containsComp(msgs[msgs.length - 1].content)) return { text: handoff(false), steps: [] };
     const out = await ai.runAgent({
-      system: systemPrompt(u, channel),
-      messages: msgs,
+      system: seller ? cleanKnowledge(systemPrompt(u, channel)) + '\nNEVER discuss seller compensation, commissions, earnings, salaries, bonuses, payouts or affiliate rewards. Refer those questions directly to the team lead. Keep all existing lead, status, assignment, statistics and reminder tools available.' : systemPrompt(u, channel),
+      messages: seller ? msgs.map((m) => ({ ...m, content: containsComp(m.content) ? '[Restricted topic omitted]' : m.content })) : msgs,
       tools: toolsFor(u),
-      run: (name, input) => runTool(u, name, input, channel),
+      run: (name, input) => {
+        if (seller && containsComp(JSON.stringify(input))) throw new HttpError(400, 'Ask the team lead directly about that question.');
+        const result = runTool(u, name, input, channel);
+        return seller ? cleanData(result) : result;
+      },
     });
-    return { text: out.text || 'Sorry, I couldn\'t work that out. Try asking another way.', steps: out.steps };
+    return { text: seller && containsComp(out.text) ? handoff(false) : out.text || 'Sorry, I couldn\'t work that out. Try asking another way.', steps: out.steps };
   }
 
   // ---------- routes ----------

@@ -39,11 +39,12 @@ function emailConfig(settings = {}) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Returns { ok: true, id } or { ok: false, error }. Never throws.
-async function sendEmail({ to, subject, text, html }, settings = {}) {
+async function sendEmail({ to, subject, text, html, attachments }, settings = {}) {
   const cfg = emailConfig(settings);
   if (!cfg.enabled) return { ok: false, error: 'Email is not set up (RESEND_API_KEY is missing).' };
   try {
     const body = { from: cfg.from, to: [to], subject, text, html };
+    if (attachments && attachments.length) body.attachments = attachments;
     if (cfg.replyTo) body.reply_to = cfg.replyTo;
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',

@@ -110,7 +110,7 @@ const T = {
 // ---------- the bot ----------
 
 function mount(app, db, deps) {
-  const { whatsapp, ai, agent, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
+  const { whatsapp, ai, agent, coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
 
   const cfg = () => {
     const s = getSettings();
@@ -141,10 +141,12 @@ function mount(app, db, deps) {
         if (m.senderJid) db.prepare("INSERT INTO wa_identities (jid, user_id) VALUES (?, ?) ON CONFLICT(jid) DO UPDATE SET user_id = excluded.user_id, updated_at = datetime('now')").run(m.senderJid, u.id);
         return u;
       }
+      // Do not fall back to a stale identity when WhatsApp supplied a different number.
+      return null;
     }
     if (m.senderJid) {
       const link = db.prepare('SELECT user_id FROM wa_identities WHERE jid = ?').get(m.senderJid);
-      if (link) return db.prepare('SELECT id, username, full_name, role, team_id, whatsapp FROM users WHERE id = ? AND active = 1').get(link.user_id) || null;
+      if (link) return db.prepare("SELECT id, username, full_name, role, team_id, whatsapp FROM users WHERE id = ? AND active = 1 AND whatsapp <> ''").get(link.user_id) || null;
     }
     return null;
   }
@@ -169,6 +171,7 @@ function mount(app, db, deps) {
 
   // Short memory per person and chat, so follow-ups ("and yesterday?", "yes, do it") work.
   const convos = new Map();
+  const pending = new Map();
   function convo(key) {
     const c = convos.get(key);
     if (c && Date.now() - c.at < 30 * 60000) return c.msgs;
@@ -181,11 +184,12 @@ function mount(app, db, deps) {
   async function handle(m) {
     const c = cfg();
     const text = String(m.text || '').trim();
-    if (!c.enabled || !text) return;
+    if (!c.enabled) return 'two_way_off';
+    if (!text) return 'empty';
     const inGroup = m.isGroup && m.chat === whatsapp.groupId();
-    if (m.isGroup && !inGroup) return; // other groups the alerts number is in
-    if (m.ts && Date.now() - m.ts > MAX_AGE_MS) return;
-    if (!db.prepare('INSERT OR IGNORE INTO wa_seen (id) VALUES (?)').run(`${m.chat}|${m.id}`).changes) return;
+    if (m.isGroup && !inGroup) return 'other_group';
+    if (m.ts && Date.now() - m.ts > MAX_AGE_MS) return 'old_message';
+    if (!db.prepare('INSERT OR IGNORE INTO wa_seen (id) VALUES (?)').run(`${m.chat}|${m.id}`).changes) return 'duplicate';
     if (++handled % 500 === 0) db.prepare("DELETE FROM wa_seen WHERE created_at < datetime('now', '-7 days')").run();
 
     const lang = detectLang(text);
@@ -193,35 +197,44 @@ function mount(app, db, deps) {
     const mentionsBot = (m.mentions || []).some((j) => { const d = String(j).split(/[:@]/)[0]; return d && (d === me.number || d === me.lid); });
     const botAsk = /^\s*(bot|asistente|assistant)\b[\s,:]*/i.test(text) || mentionsBot;
     const isHelp = /^\s*(help|ayuda|instructions|instrucciones|\?)\s*[.!]*\s*$/i.test(text) || /^\s*(bot|asistente)\s+(help|ayuda)\s*$/i.test(text);
-    const quoted = m.quotedId ? db.prepare('SELECT referral_id, kind FROM wa_messages WHERE id = ?').get(m.quotedId) : null;
+    const quoted = m.quotedId ? db.prepare('SELECT referral_id, kind FROM wa_messages WHERE id = ? AND chat = ?').get(m.quotedId, m.chat) : null;
     const toAgent = !!(quoted && quoted.kind === 'agent');
     const ref0 = toAgent ? null : leadFor(m, quoted);
-    if (!ref0 && !botAsk && !isHelp && !toAgent && inGroup) return; // ordinary chat
+    if (!ref0 && !botAsk && !isHelp && !toAgent && inGroup) return 'ordinary_chat';
 
     if (isHelp) {
       if (allow(`help:${m.chat}`, 1, 5 * 60000)) whatsapp.reply(m.chat, instructions(c.approvedStatus), { quotedId: m.id });
-      return;
+      return 'help';
     }
 
     const user = findUser(m);
     if (!user) {
       if (allow(`unknown:${m.senderJid || m.chat}`, 1, 6 * 3600000)) say(m, `${T.unknown.en}\n\n${T.unknown.es}`);
-      return;
+      return 'unknown_sender';
+    }
+
+    // Add private coaching for pricing/support; keep the existing operations tools
+    // for lead lookup, updates, statistics, reminders and ordinary assistant chat.
+    if (!m.isGroup && user.role === 'rep' && coach && coach.enabled() && (botAsk || !ref0) && coach.shouldHandle(text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i,''))) {
+      if (!allow(`coach:${user.id}`,20,10*60000)) { say(m,T.slow[lang]); return 'rate_limited'; }
+      const answer=await coach.handle(user,text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i,''),{chat:m.chat,messageId:m.id});
+      say(m,answer,null,'agent');
+      return 'seller_coach';
     }
 
     let ref = null;
     if (ref0) {
       try { ref = getReferral(ref0.id); } catch { ref = null; }
-      if (!ref) { say(m, T.notFound[lang](ref0.id)); return; }
-      if (!canViewReferral(user, ref)) { say(m, T.noAccess[lang](ref0.id)); return; }
+      if (!ref) { say(m, T.notFound[lang](ref0.id)); return 'lead_not_found'; }
+      if (!canViewReferral(user, ref)) { say(m, T.noAccess[lang](ref0.id)); return 'no_access'; }
     }
 
     // ---- the assistant ----
     if (botAsk || toAgent || (!m.isGroup && !ref)) {
       let question = text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i, '').replace(/@\d{6,}/g, '').trim();
-      if (!ai.enabled() || !agent) { say(m, T.noAi[lang]); return; }
+      if (!ai.enabled() || !agent) { say(m, T.noAi[lang]); return 'assistant_off'; }
       if (!question) question = lang === 'es' ? 'Hola' : 'Hi';
-      if (!allow(`agent:${user.id}`, 20, 10 * 60000)) { say(m, T.slow[lang]); return; }
+      if (!allow(`agent:${user.id}`, 20, 10 * 60000)) { say(m, T.slow[lang]); return 'rate_limited'; }
       if (ref) question = `(About lead #${ref.id}) ${question}`;
       const msgs = convo(`${m.chat}|${user.id}`);
       msgs.push({ role: 'user', content: question });
@@ -234,8 +247,9 @@ function mount(app, db, deps) {
         msgs.pop();
         console.error('Assistant failed:', e.message);
         say(m, e.status && e.status < 500 ? e.message : T.aiDown[lang]);
+        return 'assistant_failed';
       }
-      return;
+      return 'assistant';
     }
 
     // ---- a reply to a lead: note, first-reply assignment, status ----
@@ -275,16 +289,27 @@ function mount(app, db, deps) {
       }
     } catch (e) {
       say(m, T.failed[lang](e.message), ref.id);
-      return;
+      return 'update_failed';
     }
     logAudit({ user, ip: 'whatsapp' }, 'whatsapp.reply', 'referral', ref.id, `${changes.join(' ') || 'note'}: ${note.slice(0, 200)}`);
 
     if (changes.length) say(m, `✅ #${ref.id} ${ref.customer_name || ''} · ${changes.join(' · ')}`.replace(/\s+·/g, ' ·'), ref.id);
     else whatsapp.react(m.chat, m.id, notifyOwner ? '📨' : '📝');
     if (question) say(m, question, ref.id);
+    return 'lead_updated';
   }
 
-  whatsapp.onMessage(handle);
+  // A resend may arrive while the first AI request is still running. Keep each person's
+  // conversation ordered instead of mutating the same history in parallel.
+  function receive(m) {
+    const key = `${m.chat}|${m.senderJid || m.senderPhone || ''}`;
+    const next = (pending.get(key) || Promise.resolve()).then(() => handle(m));
+    const settled = next.catch(() => {});
+    pending.set(key, settled);
+    settled.then(() => { if (pending.get(key) === settled) pending.delete(key); });
+    return next;
+  }
+  whatsapp.onMessage(receive);
 
   // ---------- admin ----------
 
