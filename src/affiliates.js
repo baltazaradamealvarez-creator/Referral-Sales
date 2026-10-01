@@ -210,8 +210,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       if (db.prepare("SELECT 1 FROM users WHERE email <> '' AND email = ?").get(form.email)) throw new HttpError(409, 'An account with that email already exists. Try signing in, or use Forgot your password.');
       // Recruits join their sponsor's team (or the first team if the sponsor has none).
       const teamId = sponsor.team_id ?? (db.prepare('SELECT id FROM teams ORDER BY id LIMIT 1').get() || {}).id ?? null;
-      const r = db.prepare(`INSERT INTO users (username, full_name, email, phone, password_hash, role, team_id, must_change_password, password_changed_at, sponsor_id, active, approval_pending)
-        VALUES (?, ?, ?, ?, ?, 'rep', ?, 0, datetime('now'), ?, ?, ?)`).run(form.username, form.fullName, form.email, form.phone,
+      const r = db.prepare(`INSERT INTO users (username, full_name, email, phone, whatsapp, whatsapp_alerts, password_hash, role, team_id, must_change_password, password_changed_at, sponsor_id, active, approval_pending)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'rep', ?, 0, datetime('now'), ?, ?, ?)`).run(form.username, form.fullName, form.email, form.phone, form.whatsapp, form.whatsapp ? 1 : 0,
         auth.hashPassword(form.password), teamId, sponsor.id, p.approval ? 0 : 1, p.approval ? 1 : 0);
       user = db.prepare('SELECT u.*, t.name AS team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.id = ?').get(Number(r.lastInsertRowid));
       db.exec('COMMIT');

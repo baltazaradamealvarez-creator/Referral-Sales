@@ -56,7 +56,7 @@ async function setup(t, { ai } = {}) {
     const c = client();
     await c.post('/login', { username, password: `${username}-pass-1` });
     await c.post('/me/password', { current: `${username}-pass-1`, next: `${username}-pass-2` });
-    if (whatsapp) await c.patch('/me', { whatsapp });
+    if (whatsapp) await c.patch('/me', { whatsapp, whatsapp_alerts: false }); // group tests: no private alerts
     return { id: r.body.id, c };
   };
   await a.post('/whatsapp/connect');

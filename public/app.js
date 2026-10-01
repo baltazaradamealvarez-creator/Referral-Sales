@@ -1755,6 +1755,7 @@
           <div class="field"><label for="au_name">Full name</label><input id="au_name" name="full_name" required></div>
           <div class="field"><label for="au_user">Username</label><input id="au_user" name="username" autocapitalize="none" placeholder="e.g. jsmith" required></div>
           <div class="field"><label for="au_email">Email</label><input id="au_email" name="email" type="email" autocapitalize="none" placeholder="for alerts, welcome email and password resets"></div>
+          <div class="field"><label for="au_wa">WhatsApp number <span class="muted small">(optional — their alerts go there too)</span></label><input id="au_wa" name="whatsapp" type="tel" inputmode="tel" placeholder="(512) 555-0142"></div>
           ${isAdmin() ? `
             <div class="field"><label for="au_role">Role</label><select id="au_role" name="role">${roles.map((r) => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select>
               <p class="small muted" style="margin:.3rem 0 0" id="roleHelp"></p></div>
@@ -1839,7 +1840,8 @@
             const pwOld = !u.must_change_password && daysSince(u.password_changed_at) > 90;
             return `<tr class="${u.active ? '' : 'inactive'}">
               <td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
-                <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div></td>
+                <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
+                <div class="small">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div></td>
               <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
                 ${isAdmin() && ['rep', 'dispatch'].includes(u.role) ? `<label class="check small pay-toggle"><input type="checkbox" data-pay="${u.id}" ${u.payments_enabled ? 'checked' : ''}> Payments tab</label>` : ''}</td>
               ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
@@ -1922,6 +1924,13 @@
       };
     }
 
+    document.querySelectorAll('[data-wa]').forEach((b) => {
+      b.onclick = async () => {
+        const whatsapp = await askModal({ title: `WhatsApp for ${b.dataset.name}`, label: 'WhatsApp number', type: 'tel', value: b.dataset.current, hint: 'Their alerts (orders, assignments, @mentions, reminders) will also come on WhatsApp. Leave empty to remove.' });
+        if (whatsapp === null) return;
+        try { await api('/users/' + b.dataset.wa, { method: 'PATCH', body: { whatsapp } }); toast(whatsapp.trim() ? 'WhatsApp saved — alerts on' : 'WhatsApp removed'); renderTeam(); } catch (err) { toast(err.message); }
+      };
+    });
     document.querySelectorAll('[data-email]').forEach((b) => {
       b.onclick = async () => {
         const email = await askModal({ title: 'Email address', label: 'Email', type: 'email', value: b.dataset.current, hint: 'Used for alerts, the welcome email and password-reset codes. Leave empty to remove.' });
@@ -2086,6 +2095,7 @@
           <button class="btn" id="customize">${editing ? '✓ Done' : '⚙ Customize'}</button>
         </div>
       </div>
+      ${waNudge()}
       <div class="dash-filters">
         <div class="seg" id="periodSeg">${PERIODS.map(([k, l]) => `<button data-k="${k}" class="${period === k ? 'on' : ''}">${l}</button>`).join('')}</div>
         ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" value="${esc(range.to || '')}"></span>` : ''}
@@ -2850,7 +2860,8 @@
         <div class="field"><label for="j_name">Full name</label><input id="j_name" autocomplete="name" required maxlength="100"></div>
         <div class="field"><label for="j_email">Email</label><input id="j_email" type="email" autocomplete="email" autocapitalize="none" required>
           <p class="small muted" style="margin:.25rem 0 0">For your welcome email, alerts and password resets.</p></div>
-        <div class="field"><label for="j_phone">Mobile phone <span class="muted small">(optional)</span></label><input id="j_phone" type="tel" autocomplete="tel" inputmode="tel"></div>
+        <div class="field"><label for="j_phone">Mobile phone <span class="muted small">(optional)</span></label><input id="j_phone" type="tel" autocomplete="tel" inputmode="tel">
+          <label class="check" style="margin-top:.4rem"><input type="checkbox" id="j_wa" checked> <span>It has WhatsApp — send my alerts there</span></label></div>
         <div class="field"><label for="j_user">Username</label><input id="j_user" autocomplete="username" autocapitalize="none" required pattern="[A-Za-z0-9._-]{2,40}">
           <p class="small muted" style="margin:.25rem 0 0">What you'll sign in with. Letters, numbers, dots, dashes.</p></div>
         <div class="field"><label for="j_pw">Password <span class="muted small">(8+ characters)</span></label><input id="j_pw" type="password" autocomplete="new-password" minlength="8" required></div>
@@ -2881,7 +2892,7 @@
       try {
         const res = await fetch(joinApi, {
           method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ full_name: nameIn.value, email: document.getElementById('j_email').value, phone: document.getElementById('j_phone').value,
+          body: JSON.stringify({ full_name: nameIn.value, email: document.getElementById('j_email').value, phone: document.getElementById('j_phone').value, phone_whatsapp: document.getElementById('j_wa').checked,
             username: userIn.value, password: pw, password_confirm: document.getElementById('j_pw2').value }),
         });
         const data = await res.json().catch(() => ({}));
@@ -3255,6 +3266,22 @@
     box.addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) pick(Number(b.dataset.i)); });
   }
 
+  // Until someone adds their WhatsApp number: a nudge on Home (dismissible for a week).
+  function waNudge() {
+    const me = state.me;
+    if (me.whatsapp) return '';
+    const until = lsGet(`eo-wa-nudge-${me.id}`, 0);
+    if (until > Date.now()) return '';
+    return `<div class="help-nudge" id="waNudge"><span>💬 <b>Get your alerts on WhatsApp</b> — ${role() === 'dispatch' ? 'every new lead the second it comes in' : 'orders on your leads, @mentions and reminders'}. Add your number in 30 seconds.</span>
+      <a class="btn small primary" href="#/account">Add my WhatsApp</a><button class="link-btn small" id="waNudgeX" aria-label="Dismiss">Later</button></div>`;
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'waNudgeX') {
+      lsSet(`eo-wa-nudge-${state.me.id}`, Date.now() + 7 * 86400000);
+      e.target.closest('#waNudge')?.remove();
+    }
+  });
+
   function helpNudge() {
     let seen = false;
     try { seen = localStorage.getItem('eo-help-seen') === '1'; } catch { seen = true; }
@@ -3274,9 +3301,18 @@
   async function renderAccount() {
     const me = state.me;
     shell(`
+      <div class="narrow narrow-title"><h1 style="margin:0">My account</h1>
+        <p class="muted" style="margin:.2rem 0 0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p></div>
+      <form class="card narrow" id="waMeForm">
+        <h2>💬 WhatsApp alerts</h2>
+        <p class="small muted" style="margin-top:0">Get your alerts as WhatsApp messages too: ${role() === 'dispatch' ? 'every new lead, leads assigned to you' : 'orders on your leads'}, @mentions and call-back reminders.</p>
+        <div class="field"><label for="waMe">Your WhatsApp number</label><input id="waMe" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0142" value="${esc(me.whatsapp || '')}"></div>
+        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waMeOn" ${me.whatsapp_alerts || !me.whatsapp ? 'checked' : ''}> Send my alerts to WhatsApp</label>
+        ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
+        <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
+      </form>
       <form class="card narrow" id="acctForm">
-        <h1>My account</h1>
-        <p class="muted" style="margin-top:0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p>
+        <h2>Email</h2>
         <div class="field"><label for="em">Email</label><input id="em" type="email" autocapitalize="none" placeholder="you@example.com" value="${esc(me.email)}"></div>
         <label class="check" style="margin-top:.9rem"><input type="checkbox" id="ea" ${me.email_alerts ? 'checked' : ''}> Email me my alerts</label>
         <p class="small muted" style="margin:.3rem 0 0">Status changes on your leads, @mentions, comments on your leads, and leads assigned to you or entered for you. Your email also lets you reset a forgotten password yourself.</p>
@@ -3285,14 +3321,6 @@
         <div class="row" style="margin-top:1rem"><button class="btn primary">Save</button><button type="button" class="btn" id="pwBtn">Change password</button></div>
       </form>
       <div class="card narrow" id="pushCard"><h2>Phone notifications</h2><p class="small muted">Checking this device…</p></div>
-      <form class="card narrow" id="waMeForm">
-        <h2>WhatsApp alerts</h2>
-        <p class="small muted" style="margin-top:0">Get your alerts as WhatsApp messages too: ${role() === 'dispatch' ? 'every new lead, leads assigned to you' : 'orders on your leads'}, @mentions and call-back reminders.</p>
-        <div class="field"><label for="waMe">Your WhatsApp number</label><input id="waMe" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0142" value="${esc(me.whatsapp || '')}"></div>
-        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waMeOn" ${me.whatsapp_alerts ? 'checked' : ''}> Send my alerts to WhatsApp</label>
-        ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
-        <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
-      </form>
       <div class="card narrow">
         <h2>Appearance</h2>
         <div class="seg" id="themeSeg">${[['system', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-t="${k}" class="${getTheme() === k ? 'on' : ''}">${l}</button>`).join('')}</div>

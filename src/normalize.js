@@ -60,6 +60,18 @@ function formatPhone(phone) {
   return d ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(phone || '').trim();
 }
 
+// A WhatsApp number as stored on a profile: "+1 (512) 555-0142" for US numbers, "+<digits>"
+// otherwise. '' for empty; null when it can't be a phone number.
+function formatWhatsapp(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const d = s.replace(/\D/g, '');
+  if (d.length < 10 || d.length > 15) return null;
+  if (d.length === 10) return `+1 ${formatPhone(d)}`;
+  if (d.length === 11 && d[0] === '1') return `+1 ${formatPhone(d.slice(1))}`;
+  return `+${d}`;
+}
+
 function tokenize(text) {
   return String(text)
     .toLowerCase()
@@ -356,6 +368,7 @@ function extractStateFromAddress(address) {
 }
 
 module.exports = {
+  formatWhatsapp,
   parseDob,
   normalizeEmail,
   normalizePhone,

@@ -48,7 +48,7 @@ async function setup(t) {
       if (set) cookie = set.split(';')[0];
       return { status: res.status, body: await res.json().catch(() => null) };
     };
-    return { get: (p) => call('GET', p), post: (p, b) => call('POST', p, b), patch: (p, b) => call('PATCH', p, b) };
+    return { base, get: (p) => call('GET', p), post: (p, b) => call('POST', p, b), patch: (p, b) => call('PATCH', p, b) };
   };
   const a = client();
   await a.post('/login', { username: admin.username, password: admin.password });
@@ -207,4 +207,45 @@ test('messages wait while the link is down; a logged-out phone tells admins to r
   assert.equal(off.enabled, false);
   assert.equal(off.status, 'off');
   assert.ok(wa.loggedOut >= 1);
+});
+
+test('WhatsApp numbers for managers and reps: from their profile, from whoever manages them, and at sign-up', async (t) => {
+  const { db, a, makeUser } = await setup(t);
+  const mgr = await makeUser('mona', 'manager');
+  const rep = await makeUser('rep', 'rep');
+  const row = (id) => db.prepare('SELECT whatsapp, whatsapp_alerts FROM users WHERE id = ?').get(id);
+
+  // Their own profile: saving a number switches alerts on unless they untick it.
+  await rep.c.patch('/me', { whatsapp: '512.555.0142' });
+  assert.deepEqual({ ...row(rep.id) }, { whatsapp: '+1 (512) 555-0142', whatsapp_alerts: 1 });
+  await rep.c.patch('/me', { whatsapp: '+1 512 555 0142', whatsapp_alerts: false });
+  assert.equal(row(rep.id).whatsapp_alerts, 0);
+
+  // Their manager (same team) or an admin can set it for them.
+  assert.equal((await mgr.c.patch(`/users/${rep.id}`, { whatsapp: '12' })).status, 400);
+  assert.equal((await mgr.c.patch(`/users/${rep.id}`, { whatsapp: '+52 55 1234 5678' })).status, 200);
+  assert.deepEqual({ ...row(rep.id) }, { whatsapp: '+525512345678', whatsapp_alerts: 1 });
+  const listed = (await mgr.c.get('/users')).body.find((u) => u.id === rep.id);
+  assert.equal(listed.whatsapp, '+525512345678');
+  assert.equal((await rep.c.patch(`/users/${mgr.id}`, { whatsapp: '5125550100' })).status, 403);
+  await a.patch(`/users/${mgr.id}`, { whatsapp: '(512) 555-0100' });
+  assert.deepEqual({ ...row(mgr.id) }, { whatsapp: '+1 (512) 555-0100', whatsapp_alerts: 1 });
+  await a.patch(`/users/${mgr.id}`, { whatsapp: '' });
+  assert.deepEqual({ ...row(mgr.id) }, { whatsapp: '', whatsapp_alerts: 0 });
+
+  // When adding a user.
+  const team = db.prepare('SELECT id FROM teams LIMIT 1').get().id;
+  const added = await a.post('/users', { username: 'nina', full_name: 'Nina Person', role: 'rep', team_id: team, whatsapp: '512 555 0177' });
+  assert.equal(added.status, 201);
+  assert.deepEqual({ ...row(added.body.id) }, { whatsapp: '+1 (512) 555-0177', whatsapp_alerts: 1 });
+
+  // At sign-up with an invite link: "it has WhatsApp" uses the mobile number.
+  const inv = (await a.post('/invites', { role: 'manager', team_id: team, max_uses: 5 })).body;
+  const token = inv.url.split('/join/')[1];
+  const join = (body) => fetch(`${a.base}/join/${token}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const base = { full_name: 'Lia Gomez', email: 'lia@x.com', phone: '(512) 555-0188', username: 'lia', password: 'lia-pass-123', password_confirm: 'lia-pass-123' };
+  assert.equal((await join({ ...base, phone_whatsapp: true })).status, 201);
+  assert.deepEqual({ ...row(db.prepare("SELECT id FROM users WHERE username = 'lia'").get().id) }, { whatsapp: '+1 (512) 555-0188', whatsapp_alerts: 1 });
+  assert.equal((await join({ ...base, email: 'leo@x.com', username: 'leo', phone_whatsapp: false })).status, 201);
+  assert.deepEqual({ ...row(db.prepare("SELECT id FROM users WHERE username = 'leo'").get().id) }, { whatsapp: '', whatsapp_alerts: 0 });
 });
