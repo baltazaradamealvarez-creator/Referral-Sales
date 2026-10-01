@@ -436,6 +436,34 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_reminders_due ON reminders(sent_at, due_at);
   `,
+  // v15: paced seller coaching and owner-reviewed replies. No pay or pricing calculations.
+  `
+  CREATE TABLE coach_contacts (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    opted_out INTEGER NOT NULL DEFAULT 0,
+    last_checkin_at TEXT,
+    last_sent_at TEXT,
+    last_error TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE coach_drafts (
+    id INTEGER PRIMARY KEY,
+    seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reviewer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    question TEXT NOT NULL,
+    draft TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    chat TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','queued','sent','rejected','failed')),
+    approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    reviewed_at TEXT,
+    sent_at TEXT
+  );
+  CREATE INDEX idx_coach_drafts_status ON coach_drafts(status, created_at);
+  CREATE UNIQUE INDEX idx_coach_message ON coach_drafts(chat, message_id) WHERE message_id <> '';
+  `,
 ];
 
 

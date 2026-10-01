@@ -149,6 +149,33 @@ It uses Render's **Starter** plan, because free plans can't keep a disk and woul
 
 ## Project layout
 
+### Diagnosing WhatsApp replies
+
+Under **Admin → Settings → WhatsApp alerts**, open **WhatsApp diagnostics** and refresh
+after sending a test. It shows the last incoming-text time, why the bot handled or ignored
+that message, queue length, outgoing send failures, and the last send/error. Counters and
+the in-memory send queue reset when the server restarts. A successful send means WhatsApp
+accepted it; it does not prove delivery or that someone read it.
+
+Test from your personal phone, with its number saved on your active account, rather than
+from the phone linked as the alerts bot. The linked phone's own messages are deliberately
+ignored to prevent loops. In the configured dispatch group, start a question with **bot**,
+reply to an assistant answer, or use **help**. Reply to a posted lead or include **#123**
+to add a lead note. Private text goes to the assistant. The two-way switch must be on;
+free-form assistant answers also require the AI switch and `ANTHROPIC_API_KEY`.
+
+WhatsApp redelivery of the same message ID is ignored; manually sending the text again
+with a new ID is a new request. Unknown senders get registration instructions at most once
+per six hours, and help is limited to once per chat every five minutes. These limits can
+explain why a repeat receives no additional reply. Other groups and messages older than
+24 hours are ignored. Changing a user's WhatsApp number clears their learned privacy-id
+association, so the new number must be recognized again.
+
+Scheduled-report delivery history reports **failed** when email rejects the request or
+is unconfigured, and counts only recipients whose request succeeded. CSV attachments are
+included in report emails. Only the schedule owner or an admin can run a test or read its
+delivery history.
+
 ```
 src/server.js      starts the app
 src/app.js         API routes and permission rules
@@ -161,3 +188,12 @@ src/auth.js        password hashing (scrypt) and sessions
 public/            the web UI (plain HTML/CSS/JS, no build step)
 test/              API and parsing tests
 ```
+## Seller coaching
+
+In **Admin → Settings → Seller coach**, choose yourself as the reviewer, add approved product pricing and FAQs, and enable coaching. The assistant needs its API key enabled, a connected WhatsApp account, two-way replies, and sellers with WhatsApp alerts enabled.
+
+Defaults are weekdays at 11 a.m. in the configured business time zone, with at least three days between check-ins. Automatic check-ins target sellers who have not entered a lead in three days, during business hours; the scheduler can catch up within two hours of the scheduled time. The manual **Preview check-in → Send check-in** flow can contact recently active sellers, while preserving the cooldown and business-hours limits. Pending reviews pause check-ins. STOP / ALTO opts a seller out; START / REANUDAR resumes coaching.
+
+Seller coaching extends the existing operations assistant. Lead lookup, notes, status updates, assignments, statistics, reminders and daily briefings retain their existing behavior. Private seller pricing/support questions use coaching; operations requests continue to use the existing assistant tools. Compensation is excluded from seller AI conversations, coaching drafts and approved coaching sends; admin operations retain their existing context and capabilities.
+
+Difficult questions, undocumented prices and exceptions create persistent drafts and notify the configured reviewer in the app. Only that reviewer can edit, approve and send, or reject a draft. Unapproved drafts never go to sellers. Failed sends remain visible and retryable; interrupted sends after a restart need a WhatsApp check before retrying to avoid duplicates. “Sent” means WhatsApp accepted the message, not delivery or reading.

@@ -204,6 +204,63 @@ test('people are recognised by their privacy id (LID) once seen with their numbe
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments WHERE referral_id = ?').get(lead.id).n, 2);
 });
 
+test('Mexican accounts match legacy +521 sender ids and can then reply using their privacy id', async (t) => {
+  const { db, makeUser, say } = await setup(t);
+  const rep = await makeUser('rita', 'rep');
+  const dee = await makeUser('dee', 'dispatch', '+52 81 5550 1668');
+  const lead = (await rep.c.post('/referrals', { name: 'Maria Lopez', phone: '512-867-5309' })).body;
+  await say('5218155501668', `#${lead.id} approved`, { senderJid: '4455@lid' });
+  const updated = db.prepare('SELECT assigned_to, status FROM referrals WHERE id = ?').get(lead.id);
+  assert.equal(updated.assigned_to, dee.id);
+  assert.equal(updated.status, 'Ordered');
+  await say(null, `#${lead.id} following up`, { senderJid: '4455@lid', senderPhone: null });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments WHERE referral_id = ?').get(lead.id).n, 2);
+});
+
+test('changing or removing a WhatsApp number invalidates learned privacy identities', async (t) => {
+  const { db, a, wa, makeUser, say } = await setup(t);
+  const rep = await makeUser('rita', 'rep');
+  const dee = await makeUser('dee', 'dispatch', '(512) 555-0199');
+  const lead = (await rep.c.post('/referrals', { name: 'Maria Lopez', phone: '512-867-5309' })).body;
+  await say('15125550199', `#${lead.id} first`, { senderJid: '4455@lid' });
+  assert.ok(db.prepare('SELECT 1 FROM wa_identities WHERE jid = ?').get('4455@lid'));
+  await a.patch(`/users/${dee.id}`, { whatsapp: '(512) 555-0188' });
+  assert.equal(db.prepare('SELECT 1 FROM wa_identities WHERE jid = ?').get('4455@lid'), undefined);
+  await say(null, `#${lead.id} cancelled`, { senderJid: '4455@lid', senderPhone: null });
+  assert.match(wa.sent.at(-1).text, /don't recognise/);
+  assert.equal(db.prepare('SELECT status FROM referrals WHERE id = ?').get(lead.id).status, 'New');
+  await say('15125550188', `#${lead.id} second`, { senderJid: '5566@lid' });
+  await dee.c.patch('/me', { whatsapp: '' });
+  assert.equal(db.prepare('SELECT 1 FROM wa_identities WHERE jid = ?').get('5566@lid'), undefined);
+  await say(null, `#${lead.id} cancelled`, { senderJid: '5566@lid', senderPhone: null });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments WHERE referral_id = ?').get(lead.id).n, 2);
+});
+
+test('resends during an assistant request keep conversation order; diagnostics explain ignored messages', async (t) => {
+  const calls = [];
+  const ai = { enabled: () => true, available: () => true, model: 'fake', async runAgent({ messages }) {
+    calls.push(messages.map((m) => `${m.role}: ${m.content}`));
+    await new Promise((r) => setTimeout(r, 20));
+    return { text: `answer-${calls.length}`, steps: [] };
+  } };
+  const { app, a, makeUser, say } = await setup(t, { ai });
+  await makeUser('dee', 'dispatch', '(512) 555-0199');
+  await Promise.all([say('15125550199', 'bot first'), say('15125550199', 'bot second')]);
+  assert.deepEqual(calls, [['user: first'], ['user: first', 'assistant: answer-1', 'user: second']]);
+  await say('15125550199', 'ordinary conversation');
+  let dx = (await a.get('/whatsapp/status')).body.diagnostics;
+  assert.equal(dx.last_result, 'ordinary_chat');
+  assert.ok(dx.last_received_at && dx.last_sent_at);
+  await a.patch('/whatsapp/settings', { two_way: false });
+  await say('15125550199', 'bot hello');
+  assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result, 'two_way_off');
+  await a.patch('/whatsapp/settings', { two_way: true });
+  await say('15125550199', 'bot hello', { id: 'repeat-id' });
+  await say('15125550199', 'bot hello', { id: 'repeat-id' });
+  assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result, 'duplicate');
+  assert.equal(app.locals.whatsapp.queueLength(), 0);
+});
+
 test('with the AI helper: replies are read by the AI; "bot …" talks to the assistant, and replies to it continue the chat', async (t) => {
   const calls = [];
   const ai = {

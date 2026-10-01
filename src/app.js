@@ -333,6 +333,8 @@ function createApp(db, opts = {}) {
       const wa = formatWhatsapp(b.whatsapp);
       if (wa === null) throw new HttpError(400, 'Enter the WhatsApp number with area code, e.g. (512) 555-0142, or with the country code for numbers outside the US.');
       const before = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(userId).whatsapp;
+      // A learned privacy id belongs to the old number, not to a user's account forever.
+      if (wa !== before) db.prepare('DELETE FROM wa_identities WHERE user_id = ?').run(userId);
       db.prepare('UPDATE users SET whatsapp = ? WHERE id = ?').run(wa, userId);
       if (!wa) db.prepare('UPDATE users SET whatsapp_alerts = 0 WHERE id = ?').run(userId);
       else if (b.whatsapp_alerts === undefined && wa !== before) db.prepare('UPDATE users SET whatsapp_alerts = 1 WHERE id = ?').run(userId);
@@ -1408,10 +1410,13 @@ function createApp(db, opts = {}) {
     return { ok: true };
   }));
 
-  app.post('/api/schedules/:id/test', wrap((req) => {
+  app.post('/api/schedules/:id/test', awrap(async (req) => {
     const u = requireUser(req);
     const id = Number(req.params.id);
-    const res = runScheduledReport(db, id);
+    const schedule = db.prepare('SELECT created_by FROM report_schedules WHERE id = ?').get(id);
+    if (!schedule) throw new HttpError(404, 'Schedule not found.');
+    if (schedule.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
+    const res = await runScheduledReport(db, id);
     if (!res) throw new HttpError(400, 'Could not run schedule test.');
     logAudit(req, 'test_schedule', 'report_schedule', id, `Executed test delivery for schedule #${id}`);
     return res;
@@ -1420,6 +1425,9 @@ function createApp(db, opts = {}) {
   app.get('/api/schedules/:id/history', wrap((req) => {
     const u = requireUser(req);
     const id = Number(req.params.id);
+    const schedule = db.prepare('SELECT created_by FROM report_schedules WHERE id = ?').get(id);
+    if (!schedule) throw new HttpError(404, 'Schedule not found.');
+    if (schedule.created_by !== u.id && u.role !== 'admin') throw new HttpError(403, 'Access denied.');
     return db.prepare('SELECT * FROM schedule_deliveries WHERE schedule_id = ? ORDER BY id DESC LIMIT 50').all(id);
   }));
 
@@ -1662,8 +1670,12 @@ function createApp(db, opts = {}) {
       ai: app.locals.ai, whatsapp, getSettings, getReferral, canViewReferral, seesAll, updateReferral, addComment, notify, logAudit,
       speedConfig: () => speed.config(), requireUser, requireRole, wrap, awrap, HttpError, rateLimit,
     });
+    app.locals.coach = require('./seller-coach').mount(app, db, {
+      ai: app.locals.ai, whatsapp, getSettings, speedConfig: () => speed.config(), notify, logAudit,
+      requireRole, wrap, HttpError, rateLimit,
+    });
     app.locals.dispatchBot = require('./dispatch-bot').mount(app, db, {
-      whatsapp, ai: app.locals.ai, agent: app.locals.agent, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
+      whatsapp, ai: app.locals.ai, agent: app.locals.agent, coach: app.locals.coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
       updateReferral, addComment, logAudit, requireRole, wrap, HttpError,
     });
   }
