@@ -34,12 +34,13 @@ function createAi({ getSettings }) {
 
   const textOf = (res) => res.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
 
-  async function coachReply({ question, knowledge, context }) {
+  async function coachReply({ question, knowledge, context, role = 'rep' }) {
     budget();
     const res = await api().messages.create({
       model: MODEL, max_tokens: 700,
       system: [
         'You are a supportive E&O sales coach messaging a seller privately on WhatsApp. Help them enter real leads and ask what is blocking them, with a friendly tone and no pressure, shame or invented targets.',
+        role === 'manager' ? 'You are talking to a manager. Help them support their sellers, encourage their team to enter real leads, and ask what pricing or lead-entry help their team needs. Do not invent team activity or reveal other teams’ information.' : 'You are talking to a seller. Help with their own leads and product questions.',
         'NEVER discuss seller compensation, commissions, earnings, salaries, bonuses, payouts, affiliate rewards or how much anyone gets paid. Never include them in a reply or draft. Those questions require direct team-lead help.',
         'Only answer basic lead-entry questions or product/pricing questions that the approved seller knowledge clearly answers. Prices, taxes, eligibility, service availability, promo expiration, contract terms, discounts, billing disputes, exceptions and promises must NEVER be invented.',
         'If a question is difficult, unsupported, ambiguous, requests an exception or needs a human decision, use action=review. Put your suggested response in draft, state what needs verification in reason, and leave reply empty. The seller will only receive a fixed acknowledgement until the owner approves.',

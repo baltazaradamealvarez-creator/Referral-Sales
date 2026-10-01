@@ -48,13 +48,13 @@ async function setup(t) {
 test('coaching cadence: weekdays, inactivity, opt-in, cooldown; manual preview and queued sends',async(t)=>{
   const {db,app,a,wa,make,settle}=await setup(t);
   const inactive=await make('rep','512-555-0191');const recent=await make('rep','512-555-0192');const noAlerts=await make('rep','512-555-0193');
-  await noAlerts.c.patch('/me',{whatsapp_alerts:false});await make('manager','512-555-0194');
+  await noAlerts.c.patch('/me',{whatsapp_alerts:false});const manager=await make('manager','512-555-0194');await make('dispatch','512-555-0195');
   const now=zonedToUtc(2026,10,5,11,'America/Chicago');
   const lead=(await recent.c.post('/referrals',{name:'Jane Smith',phone:'512-867-5309'})).body;
   db.prepare('UPDATE referrals SET created_at=? WHERE id=?').run(new Date(now-3600000).toISOString().slice(0,19).replace('T',' '),lead.id);
   assert.deepEqual(app.locals.coach.tick(zonedToUtc(2026,10,4,11,'America/Chicago')),[],'no Sunday check-ins');
   assert.deepEqual(app.locals.coach.tick(zonedToUtc(2026,10,5,10,'America/Chicago')),[],'not before scheduled time');
-  assert.deepEqual(app.locals.coach.tick(now),[inactive.id]);
+  assert.deepEqual(app.locals.coach.tick(now),[inactive.id,manager.id]);
   assert.deepEqual(app.locals.coach.tick(now+60000),[],'no duplicate tick sends');
   await settle();
   assert.ok(wa.sent.some((m)=>m.jid==='15125550191@s.whatsapp.net'&&m.text.includes('Have any customer leads ready?')));
@@ -140,4 +140,28 @@ test('seller coaching extends existing WhatsApp operations without intercepting 
   await settle();
   assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'seller_coach');
   assert.equal(typeof ai.calls.at(-1),'object','approved pricing uses coaching');
+});
+
+test('managers have manual coaching, owner approval, opt-out and existing operations',async(t)=>{
+  const {db,app,a,wa,ai,make,settle}=await setup(t);
+  const manager=await make('manager','512-555-0194');
+  t.mock.method(Date,'now',()=>zonedToUtc(2026,10,5,11,'America/Chicago'));
+  const listed=(await a.get('/coach/sellers')).body.find((u)=>u.id===manager.id);
+  assert.equal(listed.role,'manager');assert.equal(listed.blocked,'');
+  const preview=(await a.get(`/coach/sellers/${manager.id}/preview`)).body;
+  assert.match(preview.text,/you and your team/);assert.ok(!containsComp(preview.text));
+  assert.equal((await a.post(`/coach/sellers/${manager.id}/checkin`)).body.queued,true);
+  await settle();assert.ok(wa.sent.some((m)=>m.jid==='15125550194@s.whatsapp.net'&&m.text.includes('help your sellers')));
+  ai.output={action:'review',reply:'',draft:'We will check that offer with the team lead.',reason:'Exception needs review'};
+  await app.locals.whatsapp.receive({id:'manager-price',chat:'15125550194@s.whatsapp.net',isGroup:false,senderPhone:'15125550194',senderJid:'15125550194@s.whatsapp.net',text:'Can my team offer a discount?',ts:Date.now()});
+  await settle();assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'seller_coach');
+  assert.equal(ai.calls.at(-1).role,'manager');
+  const draft=(await a.get('/coach/drafts')).body[0];assert.equal(draft.seller_id,manager.id);
+  assert.equal((await manager.c.post(`/coach/drafts/${draft.id}/review`,{action:'approve'})).status,403);
+  assert.equal((await a.post(`/coach/drafts/${draft.id}/review`,{action:'approve'})).body.status,'queued');
+  await settle();assert.equal(db.prepare('SELECT status FROM coach_drafts WHERE id=?').get(draft.id).status,'sent');
+  await app.locals.whatsapp.receive({id:'manager-tools',chat:'15125550194@s.whatsapp.net',isGroup:false,senderPhone:'15125550194',senderJid:'15125550194@s.whatsapp.net',text:'bot show my team leads',ts:Date.now()});
+  await settle();assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'assistant');
+  const before=ai.calls.length;await app.locals.coach.handle(manager.u,'What is my commission?');assert.equal(ai.calls.length,before);
+  await app.locals.coach.handle(manager.u,'STOP');assert.equal((await a.get(`/coach/sellers/${manager.id}/preview`)).body.blocked,'Seller stopped coaching');
 });

@@ -18,7 +18,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
       reviewer_id: Number(s.coach_reviewer_id) || null, knowledge: s.coach_knowledge || '' };
   };
   const reviewer = () => db.prepare("SELECT id,username FROM users WHERE id = ? AND role='admin' AND active=1").get(cfg().reviewer_id);
-  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active FROM users WHERE id=? AND role='rep'").get(id);
+  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active FROM users WHERE id=? AND role IN ('rep','manager')").get(id);
   const pending = (id) => db.prepare("SELECT id FROM coach_drafts WHERE seller_id=? AND status IN ('pending','queued','failed') LIMIT 1").get(id);
   const local = (now) => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: speedConfig().tz, hourCycle:'h23', weekday:'short',hour:'numeric',minute:'numeric' }).formatToParts(new Date(now)).map((x) => [x.type,x.value]));
   const working = (now) => { const p = local(now); const h = +p.hour + +p.minute/60; const hours = speedConfig().hours; return !['Sat','Sun'].includes(p.weekday) && h >= hours[0] && h < hours[1]; };
@@ -28,7 +28,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   db.prepare("UPDATE coach_drafts SET status='failed', error='Server restarted before delivery could be confirmed. Check WhatsApp before retrying.' WHERE status='queued'").run();
 
   function eligibility(u, now, manual = false) {
-    if (!u || !u.active || u.role !== 'rep') return 'Not an active seller';
+    if (!u || !u.active || !['rep','manager'].includes(u.role)) return 'Not an active seller or manager';
     if (!u.whatsapp_alerts || !u.whatsapp || digitsOf(u.whatsapp).length < 11) return 'WhatsApp alerts are off or no number is saved';
     if (whatsapp.me() && digitsOf(whatsapp.me().number) === digitsOf(u.whatsapp)) return 'Seller uses the bot’s own linked number';
     const c = contact(u.id);
@@ -40,6 +40,10 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   }
 
   function checkin(u) {
+    if (u.role === 'manager') return 'Hi / Hola! 👋 I’m the E&O sales AI assistant / Soy el asistente de ventas de E&O.\n\n'
+      + 'Do you or your team have customer leads ready? Please help your sellers enter them in the app so dispatch can follow up. Does anyone need help with product pricing, choosing a package, or entering a lead? We’re here to support you and your team.\n\n'
+      + '¿Tú o tu equipo tienen leads listos? Ayuda a tus vendedores a ingresarlos en la app para que dispatch les dé seguimiento. ¿Alguien necesita ayuda con precios, paquetes o ingresar un lead? Estamos para apoyarte a ti y a tu equipo.\n\n'
+      + 'Reply STOP to stop these check-ins / Responde ALTO para detener estos mensajes.';
     return 'Hi / Hola! 👋 I’m the E&O sales AI assistant / Soy el asistente de ventas de E&O.\n\n'
       + 'Have any customer leads ready? Enter them in the app so dispatch can help. Need help with product pricing, choosing a package, or entering a lead? We’re here to help.\n\n'
       + '¿Tienes leads listos? Ingrésalos en la app para que dispatch te ayude. ¿Necesitas ayuda con precios, paquetes o ingresar un lead? Estamos para ayudarte.\n\n'
@@ -70,7 +74,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const p = local(now); const [h,m] = c.time.split(':').map(Number); const late = +p.hour*60 + +p.minute - (h*60+m);
     if (late < 0 || late > 120) return [];
     const queued = [];
-    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts FROM users WHERE active=1 AND role='rep' AND whatsapp_alerts=1").all()) {
+    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts FROM users WHERE active=1 AND role IN ('rep','manager') AND whatsapp_alerts=1").all()) {
       if (queued.length >= 20) break;
       if (eligibility(u,now)) continue;
       sendCheckin(u,now);
@@ -104,7 +108,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const context = conversations.get(u.id) || [];
     let out;
     try {
-      out = await ai.coachReply({ question:text,knowledge:cleanKnowledge(cfg().knowledge),context });
+      out = await ai.coachReply({ question:text,knowledge:cleanKnowledge(cfg().knowledge),context,role:u.role });
       if (!out || typeof out !== 'object') throw new Error('Invalid coaching response');
     }
     catch { return review(u,text,fallbackDraft(isSpanish(text)),'AI could not produce a reliable answer',chat,messageId); }
@@ -139,8 +143,8 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   }));
   app.get('/api/coach/sellers',wrap((req) => {
     requireRole(req,'admin');const now=Date.now();
-    return db.prepare("SELECT u.id,u.full_name,u.role,u.active,u.whatsapp,u.whatsapp_alerts,c.opted_out,c.last_sent_at,c.last_error FROM users u LEFT JOIN coach_contacts c ON c.user_id=u.id WHERE u.role='rep' AND u.active=1 ORDER BY u.full_name").all()
-      .map((u)=>({id:u.id,full_name:u.full_name,opted_out:!!u.opted_out,last_sent_at:u.last_sent_at,last_error:u.last_error,blocked:eligibility(u,now,true)}));
+    return db.prepare("SELECT u.id,u.full_name,u.role,u.active,u.whatsapp,u.whatsapp_alerts,c.opted_out,c.last_sent_at,c.last_error FROM users u LEFT JOIN coach_contacts c ON c.user_id=u.id WHERE u.role IN ('rep','manager') AND u.active=1 ORDER BY u.full_name").all()
+      .map((u)=>({id:u.id,full_name:u.full_name,role:u.role,opted_out:!!u.opted_out,last_sent_at:u.last_sent_at,last_error:u.last_error,blocked:eligibility(u,now,true)}));
   }));
   app.get('/api/coach/sellers/:id/preview',wrap((req) => {requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');return {text:checkin(u),blocked:eligibility(u,Date.now(),true)};}));
   app.post('/api/coach/sellers/:id/checkin',wrap((req) => {

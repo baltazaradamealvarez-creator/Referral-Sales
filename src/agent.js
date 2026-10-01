@@ -633,7 +633,7 @@ function mount(app, db, deps) {
       .map((m) => ({ role: m.role, content: String(m.content).slice(0, 2000) })).slice(-12);
     while (msgs.length && msgs[0].role !== 'user') msgs.shift();
     if (!msgs.length || msgs[msgs.length - 1].role !== 'user') throw new HttpError(400, 'Say something first.');
-    const seller = u.role === 'rep';
+    const seller = ['rep','manager'].includes(u.role);
     if (seller && containsComp(msgs[msgs.length - 1].content)) return { text: handoff(false), steps: [] };
     const out = await ai.runAgent({
       system: seller ? cleanKnowledge(systemPrompt(u, channel)) + '\nNEVER discuss seller compensation, commissions, earnings, salaries, bonuses, payouts or affiliate rewards. Refer those questions directly to the team lead. Keep all existing lead, status, assignment, statistics and reminder tools available.' : systemPrompt(u, channel),

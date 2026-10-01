@@ -215,7 +215,7 @@ function mount(app, db, deps) {
 
     // Add private coaching for pricing/support; keep the existing operations tools
     // for lead lookup, updates, statistics, reminders and ordinary assistant chat.
-    if (!m.isGroup && user.role === 'rep' && coach && coach.enabled() && (botAsk || !ref0) && coach.shouldHandle(text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i,''))) {
+    if (!m.isGroup && ['rep','manager'].includes(user.role) && coach && coach.enabled() && (botAsk || !ref0) && coach.shouldHandle(text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i,''))) {
       if (!allow(`coach:${user.id}`,20,10*60000)) { say(m,T.slow[lang]); return 'rate_limited'; }
       const answer=await coach.handle(user,text.replace(/^\s*(bot|asistente|assistant)\b[\s,:]*/i,''),{chat:m.chat,messageId:m.id});
       say(m,answer,null,'agent');
