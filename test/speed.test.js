@@ -209,3 +209,27 @@ test('address suggestions: providers are parsed, cached, and failures never bloc
   assert.equal(down.status, 200);
   assert.equal(down.body.unavailable, true);
 });
+
+test('date of birth on leads, WhatsApp settings, and settings never expose the push keys', async (t) => {
+  const { a, makeUser } = await setup(t);
+  const rep = await makeUser('rep', 'rep');
+  const lead = await rep.c.post('/referrals', { text: 'Maria Lopez 512-867-5309\nDOB: 03/14/1985\n123 Main St, Austin TX 78701' });
+  assert.equal(lead.status, 201);
+  assert.equal(lead.body.dob, '1985-03-14');
+  assert.equal((await rep.c.post('/referrals', { name: 'Omar Diaz', phone: '512-867-5310', dob: '02/30/1980' })).status, 400);
+  const edited = await rep.c.patch(`/referrals/${lead.body.id}`, { dob: '1985-03-15' });
+  assert.equal(edited.body.dob, '1985-03-15');
+
+  await rep.c.get('/push/key'); // makes sure the push keys exist
+  const s = (await rep.c.get('/settings')).body;
+  assert.match(s.whatsapp_template, /\{dob\}/);
+  assert.equal(s.vapid_private, undefined);
+  assert.equal(s.vapid_public, undefined);
+  assert.equal((await rep.c.patch('/settings', { whatsapp_number: '5125550142' })).status, 403);
+  const saved = (await a.patch('/settings', { whatsapp_number: '(512) 555-0142', whatsapp_template: 'Lead {name} {dob}' })).body;
+  assert.equal(saved.whatsapp_number, '15125550142');
+  assert.equal(saved.whatsapp_template, 'Lead {name} {dob}');
+  assert.equal(saved.vapid_private, undefined);
+  assert.equal((await a.patch('/settings', { whatsapp_number: '123' })).status, 400);
+  assert.match((await a.patch('/settings', { whatsapp_template: '  ' })).body.whatsapp_template, /New referral/, 'empty resets to the default');
+});

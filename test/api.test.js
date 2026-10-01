@@ -604,7 +604,7 @@ test('leads need a name, obvious fakes are refused, and every lead gets a qualit
     assert.match((await post({ name: 'Test', phone: '512-867-1111' })).body.error, /isn’t a real name/);
     assert.match((await post({ name: 'Real Person', phone: '123-456-7890' })).body.error, /isn’t real/);
     assert.match((await post({ name: 'Real Person', email: 'rp@mailinator.com' })).body.error, /throw-away/);
-    const good = await post({ name: 'Real Person', phone: '512-867-1111', email: 'real.person@gmail.com', address: '9 Elm St, Austin TX 78701', services: ['Internet'] });
+    const good = await post({ name: 'Real Person', phone: '512-867-1111', email: 'real.person@gmail.com', address: '9 Elm St, Austin TX 78701', dob: '01/31/1980', services: ['Internet'] });
     assert.equal(good.status, 201);
     assert.equal(good.body.lead_score, 100);
     assert.deepEqual(good.body.lead_tips, []);

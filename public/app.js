@@ -517,6 +517,7 @@
               <div><label for="f_phone">Phone</label><input id="f_phone" inputmode="tel"></div>
               <div><label for="f_email">Email</label><input id="f_email" inputmode="email" autocapitalize="none"></div>
               <div><label for="f_address">Address</label><input id="f_address"></div>
+              <div><label for="f_dob">Date of birth</label><input id="f_dob" inputmode="numeric" placeholder="MM/DD/YYYY"></div>
               <div class="full"><label for="f_notes">Notes</label><textarea id="f_notes" rows="3"></textarea></div>
             </div>
           </div>
@@ -534,7 +535,7 @@
     const chips = document.getElementById('chips');
     const fixWrap = document.getElementById('fixWrap');
     const msg = document.getElementById('quickMsg');
-    const fields = ['name', 'phone', 'email', 'address', 'notes'];
+    const fields = ['name', 'phone', 'email', 'address', 'dob', 'notes'];
     const f = Object.fromEntries(fields.map((k) => [k, document.getElementById('f_' + k)]));
     const touched = new Set();
     const svc = new Set();
@@ -582,7 +583,8 @@
 
     const drawChips = () => {
       const vals = currentVals();
-      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', notes: 'Notes' };
+      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', dob: 'Date of birth', notes: 'Notes' };
+      if (vals.dob && /^\d{4}-\d{2}-\d{2}$/.test(vals.dob)) vals.dob = usDate(vals.dob);
       chips.innerHTML = fields
         .filter((k) => k !== 'notes' || vals.notes)
         .map((k) => `<span class="chip ${vals[k] ? 'on' : ''}">${vals[k] ? '✓' : '○'} ${label[k]}${vals[k] ? `: <b>${esc(vals[k].split('\n')[0])}</b>` : ''}</span>`)
@@ -598,7 +600,7 @@
       if (!ta.value.trim()) { parsed = {}; drawChips(); return; }
       try {
         parsed = await api('/parse', { method: 'POST', body: { text: ta.value } });
-        for (const k of fields) if (!touched.has(k)) f[k].value = parsed[k] || '';
+        for (const k of fields) if (!touched.has(k)) f[k].value = k === 'dob' ? usDate(parsed.dob) : parsed[k] || '';
         if (!svcTouched) { svc.clear(); (parsed.services || []).forEach((s) => svc.add(s)); drawServices(); }
         drawChips();
       } catch { /* ignore */ }
@@ -633,7 +635,9 @@
         const credit = document.getElementById('creditTo');
         if (credit && credit.value) body.credit_to = Number(credit.value);
         const ref = await api('/referrals', { method: 'POST', body });
-        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a></div>`;
+        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a>
+          <div class="wa-row">${waButtonsHtml()}</div></div>`;
+        bindWhatsapp(msg, ref);
         ta.value = '';
         for (const k of fields) f[k].value = '';
         touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
@@ -977,10 +981,10 @@
         </div>
 
         ${r.lead_tips && r.lead_tips.length ? `<div class="score-tips"><b>To improve this lead:</b> ${r.lead_tips.map(esc).join(' · ')}</div>` : ''}
-        ${r.can_edit ? `<div class="record-actions">
-          ${!editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
-          ${r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
-        </div>` : ''}
+        <div class="record-actions" id="waActions">${waButtonsHtml()}
+          ${r.can_edit && !editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
+          ${r.can_edit && r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
+        </div>
       </div>
 
       <div class="grid-2">
@@ -1001,6 +1005,7 @@
                   </div>
                   <div class="field full"><label>Address</label><input name="address" value="${esc(r.address)}" placeholder="Street address"></div>
                   <div class="field"><label>City</label><input name="city" value="${esc(r.city || '')}" placeholder="City"></div>
+                  <div class="field"><label>Date of Birth</label><input name="dob" value="${esc(usDate(r.dob))}" placeholder="MM/DD/YYYY" inputmode="numeric"></div>
                   <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" placeholder="ZIP code"></div>
                   <div class="field full"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
                   <div class="field"><label>Lead Priority</label>
@@ -1128,6 +1133,10 @@
                     <span class="field-value">$${Number(r.commission).toFixed(2)}</span>
                   </div>` : ''}
                   <div class="field-row">
+                    <span class="field-label">Date of Birth</span>
+                    ${fv(r.dob ? esc(usDate(r.dob)) : '')}
+                  </div>
+                  <div class="field-row">
                     <span class="field-label">Install Date</span>
                     ${r.install_date ? `<span class="field-value">${esc(dayDate(r.install_date))}</span>` : empty}
                   </div>
@@ -1213,6 +1222,7 @@
 
     const editBtn = document.getElementById('editBtn');
     if (editBtn) editBtn.onclick = () => { state.editing = r.id; renderReferral(id); };
+    bindWhatsapp(document.getElementById('waActions'), r);
     const fuForm = document.getElementById('fuForm');
     if (fuForm) {
       const fuAt = document.getElementById('fuAt');
@@ -1578,6 +1588,17 @@
           <div class="row"><a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a><a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals (CSV)</a></div>
         </form>
       </div>
+      <form class="card" id="waForm">
+        <h2>WhatsApp message for dispatch</h2>
+        <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
+          ${['id', 'name', 'phone', 'alt_phone', 'address', 'dob', 'email', 'services', 'notes', 'rep', 'team', 'company', 'status'].map((k) => `<code>{${k}}</code>`).join(' ')}</p>
+        <div class="grid-2" style="gap:1rem">
+          <div><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
+            <div class="field"><label for="waNum">Dispatch WhatsApp number <span class="muted small">(optional — Open WhatsApp goes straight to this chat)</span></label><input id="waNum" inputmode="tel" value="${esc(settings.whatsapp_number)}" placeholder="1 512 555 0142"></div></div>
+          <div><label class="small">Preview</label><pre class="wa-preview" id="waPreview"></pre></div>
+        </div>
+        <div class="row" style="margin-top:.8rem"><button class="btn primary">Save</button><button type="button" class="btn" id="waReset">Reset to default</button></div>
+      </form>
       <form class="card" id="speedForm">
         <h2>Speed to lead</h2>
         <p class="small muted" style="margin-top:0">A lead counts as answered the first time dispatch, a manager or an admin changes its status, comments on it, or takes it. Only working hours count, so a lead that comes in at night starts its clock in the morning.</p>
@@ -1695,6 +1716,23 @@
         try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
       };
     });
+    const waForm = document.getElementById('waForm');
+    if (waForm) {
+      const tpl = document.getElementById('waTpl');
+      const sample = { id: 1024, customer_name: 'Maria Lopez', phone: '(512) 867-5309', address: '1010 Ogden Ave, Dallas, TX 75211', dob: '1985-03-14',
+        email: 'maria.lopez@gmail.com', services: 'Internet, Mobile', notes: 'Call after 5pm', created_by_name: state.me.full_name, team_name: 'North Crew', status: 'New' };
+      const preview = () => { document.getElementById('waPreview').textContent = whatsappMessage(sample, tpl.value).text; };
+      tpl.oninput = preview; preview();
+      document.getElementById('waReset').onclick = () => { tpl.value = DEFAULT_WA; preview(); };
+      waForm.onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          state.appSettings = await api('/settings', { method: 'PATCH', body: { whatsapp_template: tpl.value, whatsapp_number: document.getElementById('waNum').value } });
+          toast('WhatsApp message saved');
+        } catch (err) { toast(err.message); }
+      };
+    }
+
     const speedForm = document.getElementById('speedForm');
     if (speedForm) speedForm.onsubmit = async (e) => {
       e.preventDefault();
@@ -2669,6 +2707,8 @@
       <ul><li>You need the customer's <b>name</b> and at least a <b>phone, email or address</b>. The contact details are how duplicates are checked.</li>
       <li>Something read wrong? Tap <b>Something wrong? Fix the details</b> before sending.</li>
       <li><b>Use template</b> fills the box with labels (Name:, Phone:, Address:…) if your admin set one up.</li>
+      <li><b>Date of birth</b>: type it with a label (<i>DOB: 01/31/1980</i>) or just the date; dispatch needs it.</li>
+      <li><b>Send it to dispatch on WhatsApp:</b> after sending, tap <b>📋 Copy for WhatsApp</b> and paste it in the dispatch chat, or tap <b>🟢 Open WhatsApp</b>. The same buttons are on every lead's page. If something dispatch needs is missing (name, phone, address, date of birth, email), it tells you.</li>
       <li>Anything extra — current provider, best time to call, a second number — is kept in the notes. Your original text is always saved.</li></ul>` });
     S.push({ id: 'quality', title: 'Lead quality score', roles: 'all', body: `
       <p>While you type a lead, a bar under the box shows its <b>quality from 0 to 100%</b>, from <span style="color:${LeadScore.scoreColor(10)}"><b>red</b></span> to <span style="color:${LeadScore.scoreColor(100)}"><b>green</b></span>. It tells you what would raise it.</p>
@@ -2819,6 +2859,57 @@
   }
 
   // A one-time nudge for people who haven't opened Help yet.
+  // ---------- WhatsApp hand-off to dispatch ----------
+
+  async function appSettings() {
+    if (state.appSettings) return state.appSettings;
+    try {
+      state.appSettings = await api('/settings');
+      lsSet('eo-settings', state.appSettings);
+    } catch { state.appSettings = lsGet('eo-settings', {}) || {}; }
+    return state.appSettings;
+  }
+  const usDate = (ymd) => (ymd ? `${ymd.slice(5, 7)}/${ymd.slice(8, 10)}/${ymd.slice(0, 4)}` : '');
+  const DISPATCH_NEEDS = [['name', 'name'], ['phone', 'phone'], ['address', 'address'], ['dob', 'date of birth'], ['email', 'email']];
+  const DEFAULT_WA = '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}';
+
+  // Fills the admin's template. Lines with only optional, empty fields (notes…) are left out;
+  // missing required ones show "—" so dispatch sees what's missing.
+  function whatsappMessage(r, template) {
+    const addr = [r.address, r.city && !String(r.address || '').toLowerCase().includes(String(r.city).toLowerCase()) ? r.city : '', r.zip && !String(r.address || '').includes(r.zip) ? r.zip : '']
+      .filter(Boolean).join(', ');
+    const v = {
+      id: r.id || '', name: r.customer_name || r.name || '', phone: r.phone || '', alt_phone: r.alt_phone || '', address: addr,
+      dob: usDate(r.dob), email: r.email || '', services: r.services || '', notes: (r.notes || '').trim(), company: r.company || '',
+      rep: r.created_by_name || state.me.full_name, team: r.team_name || '', status: r.status || '',
+    };
+    const optional = new Set(['notes', 'alt_phone', 'company', 'team', 'services']);
+    const lines = String(template || DEFAULT_WA).split('\n').map((line) => {
+      const keys = [...line.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+      if (keys.length && keys.every((k) => !v[k]) && keys.every((k) => optional.has(k))) return null;
+      return line.replace(/\{(\w+)\}/g, (all, k) => (k in v ? (v[k] || '—') : all));
+    }).filter((l) => l !== null);
+    const missing = DISPATCH_NEEDS.filter(([k]) => !v[k]).map(([, label]) => label);
+    return { text: lines.join('\n'), missing };
+  }
+
+  const waButtonsHtml = () => '<button type="button" class="btn small wa-btn" data-wa-copy>📋 Copy for WhatsApp</button><button type="button" class="btn small wa-btn" data-wa-open>🟢 Open WhatsApp</button>';
+  function bindWhatsapp(root, r) {
+    const run = async (open) => {
+      const s = await appSettings();
+      const { text, missing } = whatsappMessage(r, s.whatsapp_template);
+      const warn = missing.length ? ` Missing for dispatch: ${missing.join(', ')}.` : '';
+      if (open) {
+        window.open(`https://wa.me/${(s.whatsapp_number || '').replace(/\D/g, '')}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+        if (warn) toast(warn.trim());
+        return;
+      }
+      toast((await copyText(text)) ? `Copied — paste it in WhatsApp.${warn}` : 'Copy failed — use Open WhatsApp instead');
+    };
+    root.querySelectorAll('[data-wa-copy]').forEach((b) => { b.onclick = () => run(false); });
+    root.querySelectorAll('[data-wa-open]').forEach((b) => { b.onclick = () => run(true); });
+  }
+
   // ---------- phone app: install, notifications, working without signal ----------
 
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };

@@ -361,7 +361,7 @@ const MIGRATIONS = [
   CREATE INDEX idx_aff_earner ON affiliate_earnings(earner_id, payout_id);
   CREATE INDEX idx_aff_referral ON affiliate_earnings(referral_id);
   `,
-  // v11: speed to lead, call-back reminders, phone push notifications
+  // v11: speed to lead, call-back reminders, phone push notifications, date of birth
   `
   ALTER TABLE referrals ADD COLUMN first_touch_at TEXT;
   ALTER TABLE referrals ADD COLUMN first_touch_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
@@ -371,6 +371,7 @@ const MIGRATIONS = [
   ALTER TABLE referrals ADD COLUMN follow_up_note TEXT NOT NULL DEFAULT '';
   ALTER TABLE referrals ADD COLUMN follow_up_user INTEGER REFERENCES users(id) ON DELETE SET NULL;
   ALTER TABLE referrals ADD COLUMN follow_up_sent INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE referrals ADD COLUMN dob TEXT NOT NULL DEFAULT '';
   CREATE INDEX idx_referrals_untouched ON referrals(status, first_touch_at);
   CREATE INDEX idx_referrals_follow_up ON referrals(follow_up_sent, follow_up_at);
 

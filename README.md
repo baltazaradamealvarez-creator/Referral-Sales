@@ -21,6 +21,12 @@ A simple web app for entering Spectrum sales referrals, dispatching them and tra
 - **Account activity (admins):** who's active today or this week, who has never signed in, passwords over 90 days old, and failed sign-ins. Each user has a last-active time, a password-changed date and a **History** of sign-ins (time, device, IP). **Sign out other devices** is under My account.
 - **Invite links (admins).** On the Admin page, create a sign-up link that sets the new person's **role and team**, how many people can use it (1 to 100) and when it expires (1 to 30 days). Send it by text or email. People open it, enter their name, email, phone, username and password, and are signed straight in. The role and team always come from the link, never from the form. You get a notification, each sign-up is in the audit log, and you can turn a link off at any time.
 - **Help & how-to** in the app (account menu → Help, or the Help tab): a role-aware guide to entering leads, duplicates, statuses, the Board, dispatch and admin tasks, with search. New users see a one-time "New here?" prompt pointing to it.
+- **WhatsApp hand-off to dispatch.** After a lead is sent, and on every lead's page:
+  - **📋 Copy for WhatsApp** puts a ready-to-paste message on the clipboard: name, phone, address, date of birth, email, services, notes and rep.
+  - **🟢 Open WhatsApp** opens WhatsApp with the message filled in, straight to the dispatch number if one is set.
+  - Either button warns when something dispatch needs is missing.
+  - The message format and dispatch number are set under Admin → Settings.
+- **Date of birth** is read from the entry box ("DOB: 01/31/1980", "Fecha de nacimiento: …", or an unlabelled birth-year date), can be edited, and is checked to be a real date. A missing one shows as a tip.
 - **Speed to lead.** Each new lead shows ⏱ *Waiting* until dispatch, a manager or an admin first works it (status change, comment, or taking it), then ⚡ *Answered in …*.
   - After 15 minutes the assigned dispatcher is alerted, or every dispatcher if the lead is unassigned.
   - After 60 minutes admins are alerted. Optionally, the lead moves to the least-busy other dispatcher.

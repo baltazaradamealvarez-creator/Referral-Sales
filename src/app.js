@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
 const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
-const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText } = require('./normalize');
+const { normalizeEmail, normalizePhone, formatPhone, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
 const OPEN_STATUSES = ['New', 'Passed'];
@@ -20,7 +20,10 @@ const DEFAULT_SETTINGS = {
   auto_assign: '0',
   email_from_name: '',
   email_reply_to: '',
-  entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nServices: \nNotes: ',
+  entry_template: 'Name: \nPhone: \nEmail: \nAddress: \nDate of birth: \nServices: \nNotes: ',
+  // The message reps paste into WhatsApp for dispatch. {placeholders} are filled from the lead.
+  whatsapp_template: '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}',
+  whatsapp_number: '',
   affiliate_enabled: '0',
   affiliate_levels: '15,5',
   affiliate_commission: '0',
@@ -192,7 +195,13 @@ function createApp(db) {
       package_details: pick('package_details').slice(0, 500),
       lead_priority: ['Low', 'Standard', 'High', 'Urgent'].includes(input.lead_priority) ? input.lead_priority : 'Standard',
       est_monthly_value: Math.max(0, Number(input.est_monthly_value) || 0),
+      dob: '',
     };
+    const dobRaw = input.dob != null && input.dob !== '' ? String(input.dob).trim() : '';
+    if (dobRaw) {
+      lead.dob = parseDob(dobRaw);
+      if (!lead.dob) throw new HttpError(400, 'Date of birth should be a real date, like 01/31/1980 (the customer must be at least 16).');
+    } else lead.dob = parsed.dob || '';
     if (opts.requireName !== false && !lead.name) throw new HttpError(400, 'Add the customer\'s name.');
     if (!lead.phone && !lead.email && !lead.address) {
       throw new HttpError(400, 'Add a phone number, email or address so we can check it isn\'t a duplicate.');
@@ -540,9 +549,11 @@ function createApp(db) {
 
   // ---------- settings ----------
 
+  // Only the app settings people need; never internal values like the push keys.
   app.get('/api/settings', wrap((req) => {
     requireUser(req);
-    return getSettings();
+    const all = getSettings();
+    return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
   }));
 
   app.patch('/api/settings', wrap((req) => {
@@ -553,7 +564,17 @@ function createApp(db) {
     if (b.entry_template !== undefined) set.run('entry_template', String(b.entry_template).slice(0, 2000));
     if (b.email_from_name !== undefined) set.run('email_from_name', String(b.email_from_name).replace(/[\r\n"<>]/g, '').trim().slice(0, 60));
     if (b.email_reply_to !== undefined) set.run('email_reply_to', cleanEmail(b.email_reply_to));
-    return getSettings();
+    if (b.whatsapp_template !== undefined) {
+      const t = String(b.whatsapp_template).slice(0, 2000);
+      set.run('whatsapp_template', t.trim() ? t : DEFAULT_SETTINGS.whatsapp_template);
+    }
+    if (b.whatsapp_number !== undefined) {
+      const n = String(b.whatsapp_number).replace(/\D/g, '');
+      if (n && (n.length < 10 || n.length > 15)) throw new HttpError(400, 'Enter the WhatsApp number with country code, e.g. 1 512 555 0142.');
+      set.run('whatsapp_number', n.length === 10 ? `1${n}` : n);
+    }
+    const all = getSettings();
+    return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
   }));
 
   // ---------- people (for pickers) ----------
@@ -604,13 +625,13 @@ function createApp(db) {
         (customer_name, company, phone, alt_phone, email, address, city, zip, notes, services,
          contact_pref, package_details, lead_priority, est_monthly_value,
          raw_text, phone_key, email_key, address_key, address_zip,
-         created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?)`).run(
+         created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags, dob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?, ?)`).run(
         lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
         lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
         String(req.body.text || '').slice(0, 4000),
         lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip,
-        owner.id, u.id, owner.team_id ?? null, assignee, assignee, lead.score, lead.flags,
+        owner.id, u.id, owner.team_id ?? null, assignee, assignee, lead.score, lead.flags, lead.dob,
       );
       const id = Number(r.lastInsertRowid);
       db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, NULL, ?)').run(id, u.id, 'New');
@@ -811,7 +832,7 @@ function createApp(db) {
           if (to === u.id) speed.touch(ref, u.id);
         }
       }
-      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value'];
+      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
       if (detailFields.some((f) => body[f] !== undefined)) {
         if (!manage && !(ref.created_by === u.id && ref.status === 'New')) {
           throw new HttpError(403, 'You can only edit details while the referral is New.');
@@ -831,6 +852,7 @@ function createApp(db) {
           package_details: body.package_details ?? ref.package_details,
           lead_priority: body.lead_priority ?? ref.lead_priority,
           est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
+          dob: body.dob ?? ref.dob,
         }, {
           requireName: body.name !== undefined || !!ref.customer_name,
           changed: new Set(['name', 'phone', 'email', 'address'].filter((f) => body[f] !== undefined)),
@@ -839,10 +861,10 @@ function createApp(db) {
         if (d) return { d, lead };
         db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, zip = ?,
           notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
-          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, ${touch} WHERE id = ?`).run(
+          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, dob = ?, ${touch} WHERE id = ?`).run(
           lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
           lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
-          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, ref.id,
+          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, lead.dob, ref.id,
         );
       }
       return null;
