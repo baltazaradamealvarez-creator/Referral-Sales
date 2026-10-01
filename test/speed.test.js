@@ -83,7 +83,7 @@ test('speed to lead: alert at 15 min, escalate + reassign at 60, touched leads s
   const r1 = app.locals.speed.tick(now + 6 * 60000);
   assert.deepEqual(r1.alerted.sort(), [lead.id, other.id].sort());
   assert.ok(notes(d1.id).some((m) => /Maria Lopez has been waiting 16 min/.test(m)));
-  assert.ok(!notes(d2.id).some((m) => /Maria Lopez/.test(m)), 'only the assignee for an assigned lead');
+  assert.ok(!notes(d2.id).some((m) => /Maria Lopez has been waiting/.test(m)), 'only the assignee gets the waiting alert for an assigned lead');
   assert.ok(notes(d2.id).some((m) => /Omar Diaz has been waiting/.test(m)));
   assert.deepEqual(app.locals.speed.tick(now + 7 * 60000).alerted, [], 'alerts once');
 

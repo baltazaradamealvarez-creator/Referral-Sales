@@ -1468,6 +1468,65 @@
     return os ? `${b} on ${os}` : b;
   }
 
+  // Admin → Settings: link a phone's WhatsApp by QR code, pick the dispatch group.
+  let waPoll = null;
+  async function drawWaLink() {
+    clearTimeout(waPoll);
+    const card = document.getElementById('waLinkCard');
+    if (!card) return;
+    let s;
+    try { s = await api('/whatsapp/status'); } catch (err) { card.innerHTML = `<h2>WhatsApp alerts</h2><div class="alert err small">${esc(err.message)}</div>`; return; }
+    if (!document.getElementById('waLinkCard')) return;
+    const chip = { off: ['Off', ''], starting: ['Connecting…', 'wait'], qr: ['Scan the QR code', 'wait'], connected: ['Connected', 'ok'], reconnecting: ['Reconnecting…', 'wait'], logged_out: ['Disconnected — scan again', 'bad'], replaced: ['Linked somewhere else', 'bad'] }[s.status] || [s.status, ''];
+    const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) so the app can post every new lead to your dispatch group and send people their alerts. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
+    let body = '';
+    if (s.status === 'off' || s.status === 'logged_out' || s.status === 'replaced') {
+      body = `${s.status !== 'off' ? `<div class="alert warn small">${s.status === 'replaced' ? 'This WhatsApp was linked to another computer, so it disconnected here. Connect again to take it back.' : 'The phone disconnected this link. Connect and scan again.'}</div>` : ''}
+        <button class="btn primary" id="waConnect">Connect WhatsApp</button>`;
+    } else if (s.status === 'qr' && s.qr) {
+      body = `<div class="wa-qr"><img src="${s.qr}" alt="WhatsApp QR code" width="240" height="240">
+        <ol class="small"><li>On the alerts phone, open <b>WhatsApp</b>.</li><li>Tap <b>Settings</b> (iPhone) or <b>⋮</b> (Android) → <b>Linked devices</b> → <b>Link a device</b>.</li><li>Point the phone at this code. It refreshes by itself.</li></ol></div>
+        <button class="btn" id="waCancel">Cancel</button>`;
+    } else if (s.status === 'connected') {
+      body = `<p style="margin:.2rem 0 .8rem">Linked to <b>${esc(s.me && s.me.name ? s.me.name : 'WhatsApp')}</b>${s.me && s.me.number ? ` · +${esc(s.me.number)}` : ''}. ${s.people} ${s.people === 1 ? 'person gets' : 'people get'} their alerts on WhatsApp.${s.queued ? ` ${s.queued} message${s.queued === 1 ? '' : 's'} waiting to send.` : ''}</p>
+        <div class="field"><label for="waGroup">Post new leads to this group</label>
+          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
+          <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
+        <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the group (in the format below)</label>
+        <div style="margin-top:.9rem"><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>`;
+    } else {
+      body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
+    }
+    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}`;
+    const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+    on('waConnect', async () => { await api('/whatsapp/connect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink(); });
+    on('waCancel', async () => { await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch(() => {}); drawWaLink(); });
+    on('waDisconnect', async () => {
+      if (!confirm('Disconnect WhatsApp alerts? New leads will only alert in the app until you connect again.')) return;
+      await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink();
+    });
+    on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test sent to the group'); } catch (err) { toast(err.message); } });
+    const nl = document.getElementById('waNewLead');
+    if (nl) nl.onchange = async () => { try { await api('/whatsapp/settings', { method: 'PATCH', body: { new_lead_group: nl.checked } }); toast(nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted'); } catch (err) { toast(err.message); } };
+    const sel = document.getElementById('waGroup');
+    if (sel) {
+      try {
+        const groups = await api('/whatsapp/groups');
+        sel.innerHTML = `<option value="">— pick a group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+      } catch (err) { sel.innerHTML = `<option value="">${esc(err.message)}</option>`; }
+      sel.onchange = async () => {
+        const opt = sel.selectedOptions[0];
+        try {
+          await api('/whatsapp/settings', { method: 'PATCH', body: { group_id: sel.value, group_name: sel.value ? opt.textContent.replace(/ \(\d+\)$/, '') : '' } });
+          toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
+          document.getElementById('waTestGroup').disabled = !sel.value;
+        } catch (err) { toast(err.message); }
+      };
+    }
+    // Keep the QR code and status fresh while something is happening.
+    if (['starting', 'qr', 'reconnecting'].includes(s.status)) waPoll = setTimeout(drawWaLink, 2500);
+  }
+
   async function renderTeam() {
     if (!managesUsers()) { location.hash = defaultRoute(); return; }
     const onSettingsTab = isAdmin() && query().tab === 'settings';
@@ -1569,6 +1628,8 @@
           <h2>Settings</h2>
           <label class="check"><input type="checkbox" name="auto_assign" ${settings.auto_assign === '1' ? 'checked' : ''}> Automatically assign new leads to dispatch</label>
           <p class="small muted" style="margin:.2rem 0 1rem">Each new lead goes to the active dispatcher with the fewest open leads. Off: leads wait in <b>Unassigned</b> until someone takes them.</p>
+          <label class="check"><input type="checkbox" name="new_lead_alert" ${settings.new_lead_alert !== '0' ? 'checked' : ''}> Alert every dispatcher the moment a new lead comes in</label>
+          <p class="small muted" style="margin:.2rem 0 1rem">In the app, on their phone, and on WhatsApp for anyone who turned WhatsApp alerts on.</p>
           <label for="tpl">Entry template</label>
           <textarea id="tpl" name="entry_template" rows="7" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem">${esc(settings.entry_template)}</textarea>
           <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
@@ -1588,10 +1649,11 @@
           <div class="row"><a class="btn small" href="/api/admin/backup" download>⬇ Download backup</a><a class="btn small" href="/api/referrals.csv?scope=all">⬇ Export all referrals (CSV)</a></div>
         </form>
       </div>
+      <div class="card" id="waLinkCard"><h2>WhatsApp alerts</h2><p class="small muted">Loading…</p></div>
       <form class="card" id="waForm">
         <h2>WhatsApp message for dispatch</h2>
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
-          ${['id', 'name', 'phone', 'alt_phone', 'address', 'dob', 'email', 'services', 'notes', 'rep', 'team', 'company', 'status'].map((k) => `<code>{${k}}</code>`).join(' ')}</p>
+          ${WaFormat.FIELDS.map((k) => `<code>{${k}}</code>`).join(' ')}</p>
         <div class="grid-2" style="gap:1rem">
           <div><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
             <div class="field"><label for="waNum">Dispatch WhatsApp number <span class="muted small">(optional — Open WhatsApp goes straight to this chat)</span></label><input id="waNum" inputmode="tel" value="${esc(settings.whatsapp_number)}" placeholder="1 512 555 0142"></div></div>
@@ -1682,7 +1744,7 @@
     if (settingsForm) settingsForm.onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await api('/settings', { method: 'PATCH', body: { auto_assign: settingsForm.auto_assign.checked, entry_template: settingsForm.entry_template.value } });
+        await api('/settings', { method: 'PATCH', body: { auto_assign: settingsForm.auto_assign.checked, new_lead_alert: settingsForm.new_lead_alert.checked, entry_template: settingsForm.entry_template.value } });
         toast('Settings saved');
       } catch (err) { toast(err.message); }
     };
@@ -1716,6 +1778,7 @@
         try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
       };
     });
+    if (document.getElementById('waLinkCard')) drawWaLink();
     const waForm = document.getElementById('waForm');
     if (waForm) {
       const tpl = document.getElementById('waTpl');
@@ -2725,6 +2788,7 @@
       <li><b>Notifications:</b> go to ${isAdmin() ? '<a href="#/account">Admin → My account</a>' : '<a href="#/account">Account → Profile</a>'} → <b>Phone notifications</b> and tap <b>Turn on</b>. You'll get alerts for orders 🎉, leads assigned to you, @mentions and call-back reminders, even when the app is closed. On iPhone this works once the app is on your Home Screen.</li>
       <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
       <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
+      <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on to get your alerts there too${role() === 'dispatch' ? ', including every new lead the moment it comes in' : ''}.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; every new lead is then posted there automatically.' : ''}</li>
       <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
     if (r !== 'rep') {
       S.push({ id: 'speed', title: 'Speed to lead', roles: 'lead', body: `
@@ -2869,29 +2933,9 @@
     } catch { state.appSettings = lsGet('eo-settings', {}) || {}; }
     return state.appSettings;
   }
-  const usDate = (ymd) => (ymd ? `${ymd.slice(5, 7)}/${ymd.slice(8, 10)}/${ymd.slice(0, 4)}` : '');
-  const DISPATCH_NEEDS = [['name', 'name'], ['phone', 'phone'], ['address', 'address'], ['dob', 'date of birth'], ['email', 'email']];
-  const DEFAULT_WA = '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}';
-
-  // Fills the admin's template. Lines with only optional, empty fields (notes…) are left out;
-  // missing required ones show "—" so dispatch sees what's missing.
-  function whatsappMessage(r, template) {
-    const addr = [r.address, r.city && !String(r.address || '').toLowerCase().includes(String(r.city).toLowerCase()) ? r.city : '', r.zip && !String(r.address || '').includes(r.zip) ? r.zip : '']
-      .filter(Boolean).join(', ');
-    const v = {
-      id: r.id || '', name: r.customer_name || r.name || '', phone: r.phone || '', alt_phone: r.alt_phone || '', address: addr,
-      dob: usDate(r.dob), email: r.email || '', services: r.services || '', notes: (r.notes || '').trim(), company: r.company || '',
-      rep: r.created_by_name || state.me.full_name, team: r.team_name || '', status: r.status || '',
-    };
-    const optional = new Set(['notes', 'alt_phone', 'company', 'team', 'services']);
-    const lines = String(template || DEFAULT_WA).split('\n').map((line) => {
-      const keys = [...line.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
-      if (keys.length && keys.every((k) => !v[k]) && keys.every((k) => optional.has(k))) return null;
-      return line.replace(/\{(\w+)\}/g, (all, k) => (k in v ? (v[k] || '—') : all));
-    }).filter((l) => l !== null);
-    const missing = DISPATCH_NEEDS.filter(([k]) => !v[k]).map(([, label]) => label);
-    return { text: lines.join('\n'), missing };
-  }
+  const usDate = (ymd) => WaFormat.usDate(ymd);
+  const DEFAULT_WA = WaFormat.DEFAULT_TEMPLATE;
+  const whatsappMessage = (r, template) => WaFormat.fill(r, template, state.me && state.me.full_name);
 
   const waButtonsHtml = () => '<button type="button" class="btn small wa-btn" data-wa-copy>📋 Copy for WhatsApp</button><button type="button" class="btn small wa-btn" data-wa-open>🟢 Open WhatsApp</button>';
   function bindWhatsapp(root, r) {
@@ -3087,6 +3131,14 @@
         <div class="row" style="margin-top:1rem"><button class="btn primary">Save</button><button type="button" class="btn" id="pwBtn">Change password</button></div>
       </form>
       <div class="card narrow" id="pushCard"><h2>Phone notifications</h2><p class="small muted">Checking this device…</p></div>
+      <form class="card narrow" id="waMeForm">
+        <h2>WhatsApp alerts</h2>
+        <p class="small muted" style="margin-top:0">Get your alerts as WhatsApp messages too: ${role() === 'dispatch' ? 'every new lead, leads assigned to you' : 'orders on your leads'}, @mentions and call-back reminders.</p>
+        <div class="field"><label for="waMe">Your WhatsApp number</label><input id="waMe" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0142" value="${esc(me.whatsapp || '')}"></div>
+        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waMeOn" ${me.whatsapp_alerts ? 'checked' : ''}> Send my alerts to WhatsApp</label>
+        ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
+        <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
+      </form>
       <div class="card narrow">
         <h2>Appearance</h2>
         <div class="seg" id="themeSeg">${[['system', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-t="${k}" class="${getTheme() === k ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -3096,6 +3148,18 @@
       </div>`);
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
     drawPushCard();
+    document.getElementById('waMeForm').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const num = document.getElementById('waMe').value;
+        await api('/me', { method: 'PATCH', body: { whatsapp: num, whatsapp_alerts: !!num.trim() && document.getElementById('waMeOn').checked } });
+        await refreshMe();
+        toast(state.me.whatsapp_alerts ? 'Saved — your alerts will also come on WhatsApp' : 'Saved');
+        renderAccount();
+      } catch (err) { toast(err.message); }
+    };
+    const waTest = document.getElementById('waMeTest');
+    if (waTest) waTest.onclick = async () => { try { await api('/whatsapp/test-me', { method: 'POST', body: {} }); toast('Sent — check WhatsApp'); } catch (err) { toast(err.message); } };
     document.querySelectorAll('#themeSeg button').forEach((b) => {
       b.onclick = () => { setTheme(b.dataset.t); document.querySelectorAll('#themeSeg button').forEach((x) => x.classList.toggle('on', x === b)); };
     });

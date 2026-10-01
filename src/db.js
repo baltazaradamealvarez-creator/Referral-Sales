@@ -392,6 +392,11 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_push_user ON push_subscriptions(user_id);
   `,
+  // v12: WhatsApp alerts per person
+  `
+  ALTER TABLE users ADD COLUMN whatsapp TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN whatsapp_alerts INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 
