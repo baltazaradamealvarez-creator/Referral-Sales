@@ -95,7 +95,7 @@ test('admin links WhatsApp by QR, picks the dispatch group, new leads are posted
   s = (await a.get('/whatsapp/status')).body;
   assert.equal(s.status, 'connected');
   assert.equal(s.qr, null);
-  assert.deepEqual(s.me, { number: '15125550100', name: 'E&O Alerts' });
+  assert.deepEqual(s.me, { number: '15125550100', lid: '', name: 'E&O Alerts' });
 
   const groups = (await a.get('/whatsapp/groups')).body;
   assert.deepEqual(groups.map((g) => g.name), ['Dispatch Team', 'Family']);

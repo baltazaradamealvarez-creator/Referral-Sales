@@ -995,3 +995,6 @@ body.is-offline .offline-bar { display: block; }
 .wa-qr img { background: #fff; padding: 8px; border-radius: 12px; border: 1px solid var(--border); }
 .wa-qr ol { margin: 0; padding-left: 1.1rem; max-width: 320px; }
 .wa-qr li { margin: .25rem 0; }
+
+.via-wa { color: #11643a; font-weight: 650; }
+.wa-h3 { font-size: 1rem; margin: 1.2rem 0 .4rem; }

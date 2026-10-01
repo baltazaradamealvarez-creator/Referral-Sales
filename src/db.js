@@ -397,6 +397,30 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN whatsapp TEXT NOT NULL DEFAULT '';
   ALTER TABLE users ADD COLUMN whatsapp_alerts INTEGER NOT NULL DEFAULT 0;
   `,
+  // v13: two-way WhatsApp dispatch group (replies become notes and status changes)
+  `
+  ALTER TABLE comments ADD COLUMN source TEXT NOT NULL DEFAULT 'app';
+  -- Messages the app posted, so a reply to one finds its lead.
+  CREATE TABLE wa_messages (
+    id TEXT PRIMARY KEY,
+    chat TEXT NOT NULL,
+    referral_id INTEGER REFERENCES referrals(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'lead',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX idx_wa_messages_ref ON wa_messages(referral_id);
+  -- Incoming messages already handled (WhatsApp can deliver one twice after a reconnect).
+  CREATE TABLE wa_seen (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  -- WhatsApp ids (phone or privacy id) learned for people, to recognise them in the group.
+  CREATE TABLE wa_identities (
+    jid TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
 ];
 
 

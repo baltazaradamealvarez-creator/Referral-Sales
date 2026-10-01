@@ -25,6 +25,15 @@ A simple web app for entering Spectrum sales referrals, dispatching them and tra
   - Messages go out one at a time from a paced queue, wait while the link is down, and reconnect by themselves. Admins get an in-app alert if the phone unlinks.
   - **This uses an unofficial link (the Baileys library), so WhatsApp may disconnect or block the number. Use a separate number just for alerts.** The app's own and phone notifications always go out regardless.
   - The link's session is kept on the disk next to the database (`whatsapp-auth/`).
+- **Working leads from the WhatsApp group (two-way).**
+  - A **reply** to a lead's post becomes a note on the lead, shown as *via WhatsApp*. The **first dispatcher to reply takes the lead** (it's assigned to them).
+  - Status words in English or Spanish change the status: *approved/aprobado*, *passed/pasó*, *DNQ/no califica*, *cancelled/cancelado*. Admins choose whether "approved" means **Ordered** or **Passed**. If a reply mentions more than one outcome, the bot asks which one.
+  - **@owner / @dueño**, or a WhatsApp @-mention of the rep, sends the note to the rep who entered the lead. Other WhatsApp notes don't ping reps.
+  - **#123** at the start works when there's no post to reply to.
+  - **help / ayuda** posts the bilingual instructions. Admins can post them from Settings, and they're offered when the group is picked.
+  - People are recognised by the WhatsApp number saved on their profile, including WhatsApp's privacy ids once seen. Only known people can act, and only within their app permissions: reps add notes, while dispatch, managers and admins change status.
+  - Each message is handled once (WhatsApp can deliver one twice after a reconnect). Messages older than a day are ignored. Bot replies are rate-limited.
+- **AI helper (optional, Claude Haiku 4.5).** With `ANTHROPIC_API_KEY` set and the switch on in Admin → Settings → WhatsApp alerts, the AI reads replies to judge the status, including messy or mixed-language ones, and writes the follow-up question when a reply is unclear. It also answers questions that start with **bot**, from a read-only summary of open leads (no phone numbers, addresses or birthdays). It never acts by itself, it's capped per hour (`AI_HOURLY_CAP`, default 200), and without it the keyword rules are used. Cost is about a fifth of a cent per message it reads.
 - **Instant new-lead alerts.** Every active dispatcher is alerted the moment a lead comes in: in the app, as a phone notification, and on WhatsApp if they turned it on. Switch this off in Admin → Settings.
 - **WhatsApp hand-off to dispatch.** After a lead is sent, and on every lead's page:
   - **📋 Copy for WhatsApp** puts a ready-to-paste message on the clipboard: name, phone, address, date of birth, email, services, notes and rep.
@@ -89,6 +98,7 @@ Environment variables:
 | `ADMIN_USERNAME` | `admin` | First admin's username (used only when the database is empty) |
 | `ADMIN_PASSWORD` | random | First admin's password (used only when the database is empty) |
 | `RESEND_API_KEY` | — | Turns on email alerts. Leave it unset to keep email off. |
+| `ANTHROPIC_API_KEY` | — | Optional. Turns on the AI helper in the WhatsApp dispatch group (Claude Haiku 4.5). |
 | `GEOAPIFY_API_KEY` | — | Optional. Uses Geoapify for address suggestions (free tier: 3,000 a day) instead of the free Photon service. |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | generated | Optional. Keys for phone notifications; if unset they're generated once and kept in the database. |
 | `PAYMENT_ENCRYPTION_KEY` | a key file next to the database | Encrypts payout details. Set any long random string and keep it safe: changing or losing it makes saved payout details unreadable, so people would need to re-enter them. Without it, a `payment.key` file is created next to the database on the disk. Keep a copy, because it isn't in the backup download. |
