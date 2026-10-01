@@ -89,7 +89,7 @@
   const roleLabel = (r) => ({ admin: 'Admin', manager: 'Manager', dispatch: 'Dispatch', rep: 'Rep' }[r] || r);
 
   function highlightMentions(text) {
-    return esc(text).replace(/@([A-Za-z0-9._-]+)/g, '<span class="mention">@$1</span>');
+    return esc(text).replace(/@([\p{L}0-9._-]+)/gu, '<span class="mention">@$1</span>');
   }
 
   function debounce(fn, ms) {
@@ -1204,7 +1204,7 @@
             <h2>Comments</h2>
             <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
             <div id="comments">${r.comments.length ? r.comments.map((c) => `
-              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
             </div>
             <form id="commentForm" style="margin-top:1rem">
               <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
@@ -1493,7 +1493,13 @@
           <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
         <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the group (in the format below)</label>
-        <div style="margin-top:.9rem"><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>`;
+        <h3 class="wa-h3">Replies in the group</h3>
+        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status</span></label>
+        <div class="field" style="max-width:420px"><label for="waApproved">When someone writes <b>approved</b> / <b>aprobado</b>, set the lead to</label>
+          <select id="waApproved"><option value="Ordered" ${s.approved_status === 'Ordered' ? 'selected' : ''}>Ordered (the sale went through)</option><option value="Passed" ${s.approved_status === 'Passed' ? 'selected' : ''}>Passed (qualified, still being worked)</option></select></div>
+        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>
+        <p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>
+        <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>`;
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
@@ -1506,6 +1512,14 @@
       await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink();
     });
     on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test sent to the group'); } catch (err) { toast(err.message); } });
+    const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } };
+    const tw = document.getElementById('waTwoWay');
+    if (tw) tw.onchange = () => patchWa({ two_way: tw.checked }, tw.checked ? 'Group replies are on' : 'Group replies are off');
+    const ap = document.getElementById('waApproved');
+    if (ap) ap.onchange = () => patchWa({ approved_status: ap.value }, `"Approved" now sets ${ap.value}`);
+    const aiBox = document.getElementById('waAi');
+    if (aiBox) aiBox.onchange = () => patchWa({ ai_enabled: aiBox.checked }, aiBox.checked ? 'AI helper on' : 'AI helper off');
+    on('waInstr', async () => { try { await api('/whatsapp/instructions', { method: 'POST', body: {} }); toast('Instructions posted to the group'); } catch (err) { toast(err.message); } });
     const nl = document.getElementById('waNewLead');
     if (nl) nl.onchange = async () => { try { await api('/whatsapp/settings', { method: 'PATCH', body: { new_lead_group: nl.checked } }); toast(nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted'); } catch (err) { toast(err.message); } };
     const sel = document.getElementById('waGroup');
@@ -1518,8 +1532,12 @@
         const opt = sel.selectedOptions[0];
         try {
           await api('/whatsapp/settings', { method: 'PATCH', body: { group_id: sel.value, group_name: sel.value ? opt.textContent.replace(/ \(\d+\)$/, '') : '' } });
-          toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
           document.getElementById('waTestGroup').disabled = !sel.value;
+          document.getElementById('waInstr').disabled = !sel.value;
+          if (sel.value && confirm('Dispatch group saved. Post the instructions (English + Español) to the group now?')) {
+            await api('/whatsapp/instructions', { method: 'POST', body: {} });
+            toast('Instructions posted to the group');
+          } else toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
         } catch (err) { toast(err.message); }
       };
     }
@@ -2789,6 +2807,7 @@
       <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
       <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
       <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on to get your alerts there too${role() === 'dispatch' ? ', including every new lead the moment it comes in' : ''}.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; every new lead is then posted there automatically.' : ''}</li>
+      <li><b>Working leads from the WhatsApp group:</b> <b>reply</b> to a lead's post to add a note (it shows on the lead as <i>via WhatsApp</i>). The first dispatcher to reply takes the lead. Words like <i>approved / aprobado</i>, <i>passed / pasó</i>, <i>DNQ / no califica</i> or <i>cancelled / cancelado</i> change its status. Add <b>@owner</b> (or <b>@dueño</b>) to send the note to the rep who entered it. No post to reply to? Start with the lead number: <i>#123 approved</i>. Type <b>help</b> or <b>ayuda</b> in the group for the full instructions${isAdmin() ? '; admins can also post them from Admin → Settings → WhatsApp alerts' : ''}.</li>
       <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
     if (r !== 'rep') {
       S.push({ id: 'speed', title: 'Speed to lead', roles: 'lead', body: `

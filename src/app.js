@@ -27,6 +27,11 @@ const DEFAULT_SETTINGS = {
   whatsapp_number: '',
   // Alert every active dispatcher the moment a new lead comes in.
   new_lead_alert: '1',
+  // WhatsApp dispatch group: replies become notes / status changes; what "approved" means;
+  // and whether the AI helper (Claude Haiku, needs ANTHROPIC_API_KEY) reads replies.
+  wa_two_way: '1',
+  wa_approved_status: 'Ordered',
+  ai_enabled: '1',
   affiliate_enabled: '0',
   affiliate_levels: '15,5',
   affiliate_commission: '0',
@@ -686,7 +691,10 @@ function createApp(db, opts = {}) {
     if (whatsapp) {
       const { appUrl } = mail.emailConfig(settings);
       const { text } = waFormat.fill(ref, settings.whatsapp_template, ref.created_by_name);
-      whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}`);
+      const footer = settings.wa_two_way !== '0' ? '\n\n↩️ _Reply to this message to add a note or update the lead · Responde a este mensaje para agregar una nota o actualizar el lead_' : '';
+      whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}${footer}`, (id, chat) => {
+        db.prepare("INSERT OR IGNORE INTO wa_messages (id, chat, referral_id, kind) VALUES (?, ?, ?, 'lead')").run(id, chat, ref.id);
+      });
     }
   }
 
@@ -798,7 +806,7 @@ function createApp(db, opts = {}) {
     const u = requireUser(req);
     const ref = getReferral(req.params.id);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
-    const comments = db.prepare(`SELECT c.id, c.body, c.created_at, u.full_name, u.username
+    const comments = db.prepare(`SELECT c.id, c.body, c.created_at, c.source, u.full_name, u.username
       FROM comments c JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
     const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name
       FROM status_history h JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
@@ -816,12 +824,13 @@ function createApp(db, opts = {}) {
     };
   }));
 
-  app.patch('/api/referrals/:id', wrap((req) => {
-    const u = requireUser(req);
-    const ref = getReferral(req.params.id);
+  app.patch('/api/referrals/:id', wrap((req) => updateReferral(requireUser(req), req.params.id, req.body || {})));
+
+  // Every change to a lead goes through here: the edit form, the Board, and WhatsApp replies.
+  function updateReferral(u, refId, body) {
+    const ref = getReferral(refId);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
     const manage = canManageReferral(u, ref);
-    const body = req.body || {};
     const touch = "updated_at = datetime('now')";
 
     const dup = tx(db, () => {
@@ -917,7 +926,7 @@ function createApp(db, opts = {}) {
       throw new HttpError(409, DUPLICATE_MESSAGE);
     }
     return publicReferral(getReferral(ref.id));
-  }));
+  }
 
   app.delete('/api/referrals/:id', wrap((req) => {
     requireRole(req, 'admin');
@@ -933,11 +942,18 @@ function createApp(db, opts = {}) {
     const u = requireUser(req);
     const ref = getReferral(req.params.id);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
-    const body = String(req.body.body || '').trim().slice(0, 2000);
-    if (!body) throw new HttpError(400, 'Comment is empty.');
+    addComment(u, ref, req.body.body);
+    res.status(201);
+    return { ok: true };
+  }));
 
+  // A note on a lead. opts.source: 'app' | 'whatsapp'. WhatsApp notes only alert the lead's
+  // owner when asked to (@owner), so dispatch chatter in the group doesn't flood the reps.
+  function addComment(u, ref, text, { source = 'app', notifyOwner = true } = {}) {
+    const body = String(text || '').trim().slice(0, 2000);
+    if (!body) throw new HttpError(400, 'Comment is empty.');
     tx(db, () => {
-      db.prepare('INSERT INTO comments (referral_id, user_id, body) VALUES (?, ?, ?)').run(ref.id, u.id, body);
+      db.prepare('INSERT INTO comments (referral_id, user_id, body, source) VALUES (?, ?, ?, ?)').run(ref.id, u.id, body, source);
       speed.touch(ref, u.id);
       const audience = referralAudience(ref);
       const mentioned = new Set([...body.matchAll(/@([A-Za-z0-9._-]+)/g)].map((m) => m[1].toLowerCase()));
@@ -950,16 +966,14 @@ function createApp(db, opts = {}) {
           notified.add(person.id);
         }
       }
-      for (const id of [ref.created_by, ref.assigned_to]) {
+      for (const id of [notifyOwner ? ref.created_by : null, ref.assigned_to]) {
         if (id && !notified.has(id)) {
-          notify(id, ref.id, `${u.full_name} commented on ${leadLabel(ref)}: "${snippet}"`);
+          notify(id, ref.id, `${u.full_name}${source === 'whatsapp' ? ' (WhatsApp)' : ''} commented on ${leadLabel(ref)}: "${snippet}"`);
           notified.add(id);
         }
       }
     });
-    res.status(201);
-    return { ok: true };
-  }));
+  }
 
   // ---------- duplicate attempts (admin & dispatch) ----------
 
@@ -1628,6 +1642,11 @@ function createApp(db, opts = {}) {
       dataDir: envDb && envDb !== ':memory:' ? path.dirname(envDb) : path.join(__dirname, '..', 'data'),
     });
     app.locals.whatsapp = whatsapp;
+    app.locals.ai = require('./ai').createAi({ getSettings });
+    app.locals.dispatchBot = require('./dispatch-bot').mount(app, db, {
+      whatsapp, ai: opts.ai || app.locals.ai, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
+      updateReferral, addComment, logAudit, requireRole, wrap, HttpError,
+    });
   }
   affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
 

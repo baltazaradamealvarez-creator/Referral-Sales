@@ -28,6 +28,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   let retries = 0;
   let retryTimer = null;
   const queue = [];
+  let messageHandler = null; // set by the dispatch-group bot
   const sentTimes = [];
   const jidCache = new Map();
   let pumping = false;
@@ -72,8 +73,12 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
         onOpen: (me) => {
           retries = 0;
           st.alerted = false;
-          setStatus('connected', { qr: null, error: '', me: { number: String(me.id || '').split(/[:@]/)[0], name: me.name || '' } });
+          setStatus('connected', { qr: null, error: '', me: { number: String(me.id || '').split(/[:@]/)[0], lid: String(me.lid || '').split(/[:@]/)[0], name: me.name || '' } });
           pump();
+        },
+        onMessage: (m) => {
+          if (!messageHandler) return;
+          Promise.resolve().then(() => messageHandler(m)).catch((e) => console.error('WhatsApp message handling failed:', e));
         },
         onClose: (why) => {
           st.error = why.message || '';
@@ -135,8 +140,11 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     try {
       const jid = await resolveJid(item);
       if (jid) {
-        await transport.sendText(jid, item.text);
+        const id = item.react
+          ? await transport.react(jid, item.react.id, item.react.emoji)
+          : await transport.sendText(jid, item.text, { quotedId: item.quotedId });
         sentTimes.push(Date.now());
+        if (item.onSent && id) { try { item.onSent(id, jid); } catch (e) { console.error(e); } }
       }
     } catch (e) {
       if (++item.tries < 3) queue.push(item);
@@ -159,12 +167,20 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       if (!user.whatsapp_alerts || d.length < 11) return false;
       return enqueue({ digits: d, text });
     },
-    // The new-lead post to the dispatch group.
-    postToGroup(text) {
+    // The new-lead post to the dispatch group. onSent(messageId) lets replies find the lead.
+    postToGroup(text, onSent, { force = false } = {}) {
       const c = cfg();
-      if (!c.groupId || !c.newLeadGroup) return false;
-      return enqueue({ jid: c.groupId, text });
+      if (!c.groupId || (!c.newLeadGroup && !force)) return false;
+      return enqueue({ jid: c.groupId, text, onSent });
     },
+    // A reply in a chat, optionally quoting the message it answers.
+    reply(chat, text, { quotedId, onSent } = {}) { return enqueue({ jid: chat, text, quotedId, onSent }); },
+    react(chat, messageId, emoji) { return enqueue({ jid: chat, react: { id: messageId, emoji } }); },
+    groupId: () => cfg().groupId,
+    me: () => st.me,
+    onMessage(fn) { messageHandler = fn; },
+    // For tests: hand the bot a message as if it came from WhatsApp.
+    receive(m) { return messageHandler ? messageHandler(m) : null; },
     queueLength: () => queue.length,
     // For tests: run the queue now.
     async drain() { for (let i = 0; i < 1000 && queue.length && st.status === 'connected'; i++) await pump(); },
@@ -177,6 +193,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     return {
       enabled: c.enabled, status: st.status, qr: st.status === 'qr' ? st.qr : null, me: st.me, error: st.error,
       group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
+      two_way: getSettings().wa_two_way !== '0', approved_status: getSettings().wa_approved_status === 'Passed' ? 'Passed' : 'Ordered',
+      ai_available: !!process.env.ANTHROPIC_API_KEY, ai_enabled: getSettings().ai_enabled !== '0',
       people: db.prepare("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND whatsapp_alerts = 1 AND whatsapp <> ''").get().n,
     };
   };
@@ -220,6 +238,12 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       set.run('wa_group_name', id ? String(b.group_name || '').slice(0, 100) : '');
     }
     if (b.new_lead_group !== undefined) set.run('wa_new_lead_group', b.new_lead_group ? '1' : '0');
+    if (b.two_way !== undefined) set.run('wa_two_way', b.two_way ? '1' : '0');
+    if (b.ai_enabled !== undefined) set.run('ai_enabled', b.ai_enabled ? '1' : '0');
+    if (b.approved_status !== undefined) {
+      if (!['Ordered', 'Passed'].includes(b.approved_status)) throw new HttpError(400, '"Approved" can mean Ordered or Passed.');
+      set.run('wa_approved_status', b.approved_status);
+    }
     logAudit(req, 'whatsapp.settings', 'settings', '', JSON.stringify(b).slice(0, 300));
     return statusView();
   }));
