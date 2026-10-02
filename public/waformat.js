@@ -9,6 +9,9 @@
 
   const DEFAULT_TEMPLATE = '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}';
   const QUIET_TEMPLATE = '👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}';
+  const QUIET_TEST_LEAD = Object.freeze({ customer_name: '[TEST] Sample Customer', phone: '2025550105',
+    address: '123 Sample St, Dallas TX 75211', dob: '2000-01-01', email: 'test@example.com',
+    services: 'Internet, TV', notes: 'Sample internet and TV package\nWait for call' });
   const FIELDS = ['id', 'name', 'phone', 'alt_phone', 'address', 'city', 'state', 'zip', 'dob', 'email', 'services', 'notes', 'rep', 'team', 'company', 'status'];
   const OPTIONAL = new Set(['notes', 'alt_phone', 'company', 'team', 'services', 'city', 'state', 'zip']);
   const DISPATCH_NEEDS = [['name', 'name'], ['phone', 'phone'], ['address', 'address'], ['dob', 'date of birth'], ['email', 'email']];
@@ -48,5 +51,5 @@
     return fill({ ...r, phone, services: r.services || '—' }, QUIET_TEMPLATE + (includeNotes ? '\n📝 *Notes:* {notes}' : '')).text;
   }
 
-  return { fill, quietLead, usDate, DEFAULT_TEMPLATE, QUIET_TEMPLATE, FIELDS };
+  return { fill, quietLead, usDate, DEFAULT_TEMPLATE, QUIET_TEMPLATE, QUIET_TEST_LEAD, FIELDS };
 }));

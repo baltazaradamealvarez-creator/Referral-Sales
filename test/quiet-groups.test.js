@@ -8,18 +8,18 @@ const path = require('node:path');
 const { openDb } = require('../src/db');
 const { createApp, ensureAdmin } = require('../src/app');
 const { quietLead } = require('../public/waformat');
-const DISPATCH = '1203630@g.us', QUIET = '1203631@g.us';
+const DISPATCH = '1203630@g.us', QUIET = '1203631@g.us', SANDBOX = '1203632@g.us';
 
 async function setup(t, { connected = true, ai } = {}) {
   const db = openDb(':memory:');
   const admin = ensureAdmin(db, () => {});
-  const wa = { sent:[], reacts:[], handlers:null };
+  const wa = { sent:[], reacts:[], handlers:null,groups:[{id:DISPATCH,name:'Dispatch',size:4},{id:QUIET,name:'Spectrum',size:4},{id:SANDBOX,name:'Sandbox',size:2}] };
   const app = createApp(db, { ai, whatsappTransport: handlers => {
     wa.handlers = handlers;
     return { async start() {}, stop() {}, async logout() {}, async exists(d) { return `${d}@s.whatsapp.net`; },
-      async sendText(jid,text) { const id = `out-${wa.sent.length + 1}`;wa.sent.push({id,jid,text});return id; },
+      async sendText(jid,text) { if(wa.block)await wa.block;if(wa.fail)throw new Error('Fixture send failed');const id = `out-${wa.sent.length + 1}`;wa.sent.push({id,jid,text});return id; },
       async react(jid,id,emoji) { wa.reacts.push({jid,id,emoji}); },
-      async listGroups() { return [{id:DISPATCH,name:'Dispatch',size:4},{id:QUIET,name:'Spectrum',size:4}]; } };
+      async listGroups() { return wa.groups; } };
   } });
   const server = app.listen(0);
   await new Promise(resolve => server.once('listening',resolve));
@@ -221,7 +221,7 @@ test('v21 preserves existing comments, indexes and group mappings while allowing
     PRAGMA user_version=20;`);
   const before=db.prepare('SELECT * FROM comments').get();db.close();db=openDb(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version,21);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,22);
     const after=db.prepare('SELECT * FROM comments WHERE id=7').get();
     for(const field of Object.keys(before))assert.equal(after[field],before[field],field);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='custom_comment_index'").get());
@@ -232,4 +232,150 @@ test('v21 preserves existing comments, indexes and group mappings while allowing
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
     assert.throws(()=>db.prepare("INSERT INTO comments(referral_id,user_id,body) VALUES(999,NULL,'invalid')").run(),/FOREIGN KEY/);
   } finally {db.close();}
+});
+
+test('quiet-mode live tests capture external threads and CRM status updates outside customer records',async t=>{
+  let aiCalls=0;
+  const ai={enabled:()=>true,available:()=>true,model:'fixture',async interpretReply(){aiCalls++;throw new Error('No AI in quiet tests');}};
+  const {db,app,a,wa,makeUser,settle,say}=await setup(t,{ai});
+  const dispatcher=await makeUser('dispatch','dispatch','15125550199');
+  await a.patch('/whatsapp/settings',{test_group_id:SANDBOX,test_group_name:'Sandbox',new_lead_group:false,two_way:false});
+  const beforeSettings=(await a.get('/whatsapp/status')).body;
+  const beforeNotices=db.prepare('SELECT COUNT(*) AS n FROM notifications').get().n;
+  const response=await a.post('/whatsapp/quiet-test');assert.equal(response.status,200,JSON.stringify(response.body));
+  await settle();
+  assert.equal(wa.sent.length,1);const post=wa.sent[0];assert.equal(post.jid,SANDBOX);
+  assert.equal(post.text,quietLead(require('../public/waformat').QUIET_TEST_LEAD));
+  assert.match(post.text,/Name:\* \[TEST\] Sample Customer/);
+  const extras={chat:SANDBOX,quotedId:post.id};
+  assert.equal(await say('approved @owner',{...extras,id:'external-test-reply'}),'quiet_test_reply');
+  assert.equal(await say('Call after 5',{...extras,quotedId:'external-test-reply'}),'quiet_test_reply');
+  assert.equal(await say('approved @owner',{...extras,id:'external-test-reply'}),'duplicate');
+  let view=(await a.get('/whatsapp/quiet-test')).body;
+  assert.equal(view.last_test.status,'New');assert.equal(view.last_test.replies.length,2);
+  assert.equal(view.last_test.replies[0].actor,'external');assert.equal(view.last_test.replies[0].author,'Spectrum Partner');
+  await say('Working',{...extras,senderPhone:'15125550199',senderJid:'15125550199@s.whatsapp.net'});
+  await say('approved',{...extras,senderPhone:'15125550199',senderJid:'15125550199@s.whatsapp.net'});
+  view=(await a.get('/whatsapp/quiet-test')).body;
+  assert.equal(view.last_test.status,'Ordered');assert.equal(view.last_test.assigned_to,dispatcher.id);
+  await say('approved then cancelled?',{...extras,senderPhone:'15125550199',senderJid:'15125550199@s.whatsapp.net'});
+  assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Ordered');
+  for(const text of ['bot help','help','hello','#1 cancelled'])await say(text,{chat:SANDBOX});
+  assert.equal(wa.sent.length,1);assert.equal(wa.reacts.length,0);assert.equal(aiCalls,0);
+  for(const table of ['referrals','comments','status_history','wa_messages'])assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,0,table);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM notifications').get().n,beforeNotices);
+  const after=(await a.get('/whatsapp/status')).body;
+  assert.deepEqual(after.group,beforeSettings.group);assert.equal(after.new_lead_group,false);assert.equal(after.two_way,false);
+  assert.equal(after.quiet_group.enabled,false);assert.equal(after.group_flow.last_lead_post,null);
+  assert.equal(app.locals.whatsapp.reply(SANDBOX,'No acknowledgment'),false);
+  assert.equal(app.locals.whatsapp.react(SANDBOX,post.id,'✅'),false);
+  assert.equal(app.locals.whatsapp.postToGroup('A briefing',null,{force:true,groupId:SANDBOX}),false);
+});
+
+test('reply simulations use the quiet policy without sending or writing results',async t=>{
+  const {db,a,wa}=await setup(t);
+  let result=await a.post('/whatsapp/quiet-test/simulate',{actor:'external',text:'approved'});
+  assert.equal(result.status,200);assert.equal(result.body.to_status,'New');assert.equal(result.body.can_change_status,false);
+  result=await a.post('/whatsapp/quiet-test/simulate',{actor:'crm',text:'approved'});
+  assert.equal(result.body.to_status,'Ordered');assert.equal(result.body.simulation,true);
+  result=await a.post('/whatsapp/quiet-test/simulate',{actor:'crm',text:'Working'});
+  assert.equal(result.body.to_status,'Working');
+  result=await a.post('/whatsapp/quiet-test/simulate',{actor:'crm',text:'approved then cancelled?'});
+  assert.equal(result.body.to_status,'New');assert.equal(result.body.ambiguous,true);
+  await a.patch('/whatsapp/settings',{approved_status:'Passed'});
+  result=await a.post('/whatsapp/quiet-test/simulate',{actor:'crm',text:'aprobado'});
+  assert.equal(result.body.to_status,'Passed');assert.equal(result.body.bot_messages,0);assert.equal(result.body.bot_reactions,0);
+  assert.equal((await a.post('/whatsapp/quiet-test/simulate',{actor:'admin',text:'approved'})).status,400);
+  assert.equal((await a.post('/whatsapp/quiet-test/simulate',{actor:'external',text:''})).status,400);
+  assert.equal((await a.post('/whatsapp/quiet-test/simulate',{actor:'external',text:'x'.repeat(2001)})).status,400);
+  assert.equal(wa.sent.length,0);
+  for(const table of ['wa_quiet_tests','wa_quiet_test_replies','referrals','comments','notifications'])assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,0);
+});
+
+test('quiet tests validate membership and settings before posting and are admin-only',async t=>{
+  const {db,a,wa,makeUser}=await setup(t),seller=await makeUser('seller','rep','15125550142');
+  for(const [method,path,body] of [['get','/whatsapp/quiet-test'],['post','/whatsapp/quiet-test'],['post','/whatsapp/quiet-test/simulate',{actor:'crm',text:'approved'}]]){
+    assert.equal((await seller.c[method](path,body)).status,403);
+  }
+  assert.equal((await a.post('/whatsapp/quiet-test')).status,400);
+  assert.equal((await a.patch('/whatsapp/settings',{test_group_id:DISPATCH,quiet_include_notes:false})).status,400);
+  assert.equal((await a.get('/whatsapp/status')).body.quiet_include_notes,true,'invalid settings must not partially change Notes');
+  assert.equal((await a.patch('/whatsapp/settings',{test_group_id:'wrong-jid'})).status,400);
+  await a.patch('/whatsapp/settings',{test_group_id:'unavailable@g.us'});
+  assert.equal((await a.post('/whatsapp/quiet-test')).status,400);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM wa_quiet_tests').get().n,0);
+  assert.equal(wa.sent.length,0);
+});
+
+test('test selection never enables production posts; shared quiet-group tests still work with capture paused',async t=>{
+  const {db,a,wa,settle,say}=await setup(t);
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:false,quiet_capture:false,test_group_id:QUIET,test_group_name:'Spectrum',quiet_include_notes:false});
+  await a.post('/whatsapp/quiet-test');await settle();
+  assert.equal(wa.sent.length,1);assert.ok(!wa.sent[0].text.includes('Notes:'));
+  assert.equal(await say('approved',{quotedId:wa.sent[0].id}),'quiet_test_reply');
+  assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'New');
+  await a.post('/referrals',{name:'Maria Lopez',phone:'5128675309'});await settle();
+  assert.equal(wa.sent.filter(m=>m.jid===QUIET).length,1,'real leads are not enabled by sending a test');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM comments').get().n,0);
+  assert.equal((await a.get('/whatsapp/status')).body.quiet_group.enabled,false);
+});
+
+test('changing the selected test group cancels queued samples instead of sending to the old group',async t=>{
+  const {db,app,a,wa,settle}=await setup(t);
+  let release;wa.block=new Promise(resolve=>{release=resolve;});
+  app.locals.whatsapp.reply(DISPATCH,'Existing dispatch message');
+  await new Promise(resolve=>setTimeout(resolve,10));
+  await a.patch('/whatsapp/settings',{test_group_id:SANDBOX,test_group_name:'Sandbox'});
+  const response=await a.post('/whatsapp/quiet-test');assert.equal(response.body.last_test.post_status,'queued');
+  assert.equal((await a.post('/whatsapp/quiet-test')).status,409);
+  await a.patch('/whatsapp/settings',{test_group_id:QUIET,test_group_name:'Spectrum'});
+  wa.block=null;release();await settle();
+  assert.ok(wa.sent.every(m=>m.jid!==SANDBOX));
+  assert.equal(db.prepare('SELECT post_status FROM wa_quiet_tests WHERE id=?').get(response.body.last_test.id).post_status,'skipped');
+});
+
+test('failed and interrupted samples expose send errors without automatic reposting or customer records',async t=>{
+  const {db,a,wa,settle}=await setup(t);
+  await a.patch('/whatsapp/settings',{test_group_id:SANDBOX,test_group_name:'Sandbox'});wa.fail=true;
+  await a.post('/whatsapp/quiet-test');await settle();
+  const view=(await a.get('/whatsapp/quiet-test')).body;
+  assert.equal(view.last_test.post_status,'failed');assert.equal(view.last_test.post_error,'Fixture send failed');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM referrals').get().n,0);assert.equal(wa.sent.length,0);
+  wa.fail=false;await a.post('/whatsapp/quiet-test');await settle();
+  assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.post_status,'sent');assert.equal(wa.sent.length,1);
+  const creator=db.prepare("SELECT * FROM users WHERE role='admin' LIMIT 1").get();
+  require('../src/quiet-group-test').createStore(db).create({id:SANDBOX,name:'Sandbox'},creator,true);
+  const interrupted=(await a.get('/whatsapp/quiet-test')).body.last_test;
+  assert.equal(interrupted.post_status,'interrupted');assert.match(interrupted.post_error,/restarted/);
+  assert.equal(wa.sent.length,1,'a queued record from a previous runtime is not automatically replayed');
+});
+
+test('v22 upgrades a populated v21 database and persists isolated test replies across reopen',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'quiet-test-upgrade-')),file=path.join(dir,'previous.db');
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  let db=openDb(file);
+  db.exec(`INSERT INTO users(id,username,full_name,password_hash,role) VALUES(1,'owner','Owner','unused','admin');
+    INSERT INTO referrals(id,customer_name,created_by,status) VALUES(7,'Existing Customer',1,'Ordered');
+    INSERT INTO comments(referral_id,user_id,body) VALUES(7,1,'Keep this CRM comment');
+    INSERT OR REPLACE INTO settings(key,value) VALUES('wa_group_id','${DISPATCH}'),('wa_new_lead_group','0');
+    DROP TABLE wa_quiet_test_replies;DROP TABLE wa_quiet_tests;PRAGMA user_version=21;`);
+  const before=db.prepare('SELECT * FROM referrals WHERE id=7').get();db.close();db=openDb(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,22);
+  let store=require('../src/quiet-group-test').createStore(db);
+  const sample=store.create({id:SANDBOX,name:'Sandbox'},{id:1},false);store.mark(sample.id,'sent','','sample-message');
+  db.prepare(`INSERT INTO wa_quiet_test_replies(test_id,chat,message_id,external_author,body,from_status,to_status)
+    VALUES(?,?,?,'Spectrum Partner','Call after 5','New','New')`).run(sample.id,SANDBOX,'sample-reply');
+  db.close();db=openDb(file);
+  try {
+    store=require('../src/quiet-group-test').createStore(db);
+    assert.equal(store.forReply(SANDBOX,'sample-message').id,sample.id);
+    assert.equal(store.forReply(SANDBOX,'sample-reply').id,sample.id);
+    assert.equal(store.forReply(QUIET,'sample-message'),null);
+    const saved=store.view(store.latest(SANDBOX));assert.equal(saved.post_status,'sent');assert.equal(saved.replies[0].author,'Spectrum Partner');
+    assert.ok(!saved.sample_text.includes('Notes:'));
+    assert.deepEqual(db.prepare('SELECT * FROM referrals WHERE id=7').get(),before);
+    assert.equal(db.prepare('SELECT body FROM comments WHERE referral_id=7').get().body,'Keep this CRM comment');
+    assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value,'0');
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+  }finally{db.close();}
 });

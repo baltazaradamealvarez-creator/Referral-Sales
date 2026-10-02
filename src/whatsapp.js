@@ -11,6 +11,7 @@ const path = require('node:path');
 const QRCode = require('qrcode');
 const waFormat = require('../public/waformat');
 const { normalizeState } = require('./normalize');
+const { createStore } = require('./quiet-group-test');
 
 const GAP_MS = 1500; // between messages
 const HOURLY_CAP = 200;
@@ -27,6 +28,7 @@ const digitsOf = (v) => {
 
 function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notifyAdmins, rateLimit, createTransport, dataDir }) {
   const set = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+  const quietTests = createStore(db);
   const st = { status: 'off', qr: null, me: null, error: '', since: null, alerted: false };
   let transport = null;
   let starting = false;
@@ -71,12 +73,13 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       quietGroupId: s.wa_quiet_group_id || '', quietGroupName: s.wa_quiet_group_name || '',
       quietEnabled: s.wa_quiet_enabled === '1', quietCapture: s.wa_quiet_capture !== '0',
       includeNotes: s.wa_quiet_include_notes !== '0',
+      testGroupId: s.wa_test_group_id || '', testGroupName: s.wa_test_group_name || '',
     };
   };
   const setStatus = (status, extra = {}) => { Object.assign(st, { status, since: Date.now() }, extra); };
   const isQuietGroup = chat => {
     const c = cfg();
-    return !!chat && ((chat === c.groupId && c.groupMode === 'quiet') || chat === c.quietGroupId);
+    return !!chat && ((chat === c.groupId && c.groupMode === 'quiet') || chat === c.quietGroupId || chat === c.testGroupId);
   };
   const quietCaptureEnabled = chat => {
     const c = cfg();
@@ -87,7 +90,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
 
   // Persist the last lead-post outcome across deploys without saving its text
   // or customer details. A connected socket alone doesn't prove a post was sent.
-  function recordLeadPost(item, status, error = '') {
+  function recordLeadPost(item, status, error = '', messageId = '') {
+    if (item.quietTestId) { quietTests.mark(item.quietTestId,status,error,messageId);return; }
     if (!item.referralId) return;
     set.run(item.outcomeKey || outcomeKey(item.jid), JSON.stringify({
       referral_id: item.referralId, group_id: item.jid || '', status,
@@ -174,7 +178,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
 
   function enqueue(item) {
     if (!cfg().enabled) return false;
-    if (isQuietGroup(item.jid) && !item.referralId) { diagnostics.suppressed++;return false; }
+    if (isQuietGroup(item.jid) && !item.referralId && !item.quietTestId) { diagnostics.suppressed++;return false; }
     queue.push({ ...item, tries: 0 });
     while (queue.length > QUEUE_MAX) {
       const dropped=queue.shift(); diagnostics.dropped++; diagnostics.last_error = 'WhatsApp queue is full; oldest message discarded.';
@@ -206,10 +210,13 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       const jid = await resolveJid(item);
       if (jid) {
         const c = cfg();
-        if (jid.endsWith('@g.us') && jid !== c.groupId && jid !== c.quietGroupId) {
+        if (jid.endsWith('@g.us') && jid !== c.groupId && jid !== c.quietGroupId && jid !== c.testGroupId) {
           recordLeadPost(item,'skipped','This group is no longer selected.');
           if (item.onFailed) item.onFailed('This WhatsApp group is no longer selected.');
           return;
+        }
+        if (item.quietTestId && jid !== c.testGroupId) {
+          recordLeadPost(item,'skipped','The test group changed before this post was sent.');return;
         }
         if (item.referralId && !item.force && (jid === c.groupId ? !c.newLeadGroup : !c.quietEnabled)) {
           recordLeadPost(item,'skipped','Lead posts were paused before this message was sent.');
@@ -218,13 +225,17 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
         // Check again at send time: an admin may have enabled quiet mode while
         // acknowledgments or briefings were already waiting in the queue.
         const quiet = item.quiet || isQuietGroup(jid);
-        if (quiet && !item.referralId) {
+        if (quiet && !item.referralId && !item.quietTestId) {
           diagnostics.suppressed++;
           if (item.onFailed) item.onFailed('Quiet groups accept lead posts only.');
           return;
         }
         let text = item.text;
-        if (quiet) {
+        if (item.quietTestId) {
+          const test = quietTests.get(item.quietTestId);
+          if (!test || test.group_id !== jid) throw new Error('The test post no longer exists.');
+          text = test.sample_text;
+        } else if (quiet) {
           const ref = db.prepare('SELECT * FROM referrals WHERE id=?').get(item.referralId);
           if (!ref) throw new Error('The lead no longer exists.');
           text = waFormat.quietLead({ ...ref, state_name: normalizeState(ref.state)?.name || '' }, { includeNotes: cfg().includeNotes });
@@ -234,7 +245,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
           : await transport.sendText(jid, text, { quotedId: item.quotedId });
         sentTimes.push(Date.now());
         if (!item.react) { diagnostics.sent++; diagnostics.last_sent_at = new Date().toISOString(); }
-        recordLeadPost(item, id ? 'sent' : 'unconfirmed', id ? '' : 'WhatsApp returned no message reference. Check the group before reposting.');
+        recordLeadPost(item, id ? 'sent' : 'unconfirmed', id ? '' : 'WhatsApp returned no message reference. Check the group before reposting.',id || '');
         if (item.onSent && id) {
           try { item.onSent(id, jid); }
           catch (e) {
@@ -296,6 +307,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     groupId: () => cfg().groupId,
     quietGroupId: () => cfg().quietGroupId,
     quietGroupEnabled: () => cfg().quietEnabled,
+    testGroupId: () => cfg().testGroupId,
+    quietTests,
     isQuietGroup, quietCaptureEnabled,
     me: () => st.me,
     onMessage(fn) { messageHandler = fn; },
@@ -308,6 +321,32 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
 
   // ---------- admin routes ----------
 
+  function testView() {
+    const c=cfg(),test=quietTests.latest(c.testGroupId),last=quietTests.view(test);
+    if (last?.post_status === 'queued' && ![activeItem,...queue].some(item=>item?.quietTestId===last.id)) {
+      last.post_status='interrupted';last.post_error='The server restarted before confirming this test. Check the group before sending again.';
+    }
+    return { group:c.testGroupId ? {id:c.testGroupId,name:c.testGroupName} : null,
+      connected:st.status==='connected',sample_text:waFormat.quietLead(waFormat.QUIET_TEST_LEAD,{includeNotes:c.includeNotes}),last_test:last };
+  }
+
+  app.get('/api/whatsapp/quiet-test',wrap(req=>{requireRole(req,'admin');return testView();}));
+  app.post('/api/whatsapp/quiet-test',awrap(async req=>{
+    const u=requireRole(req,'admin'),c=cfg();
+    if (!c.enabled || st.status!=='connected') throw new HttpError(409,'Connect WhatsApp first.');
+    if (!c.testGroupId) throw new HttpError(400,'Choose a test group first.');
+    if (testView().last_test?.post_status==='queued') throw new HttpError(409,'A test post is already waiting to send.');
+    const groups=await transport.listGroups();
+    if (!groups.some(g=>g.id===c.testGroupId)) throw new HttpError(400,'The test group was not found. Add the alerts phone to it, then choose it here.');
+    if (cfg().testGroupId!==c.testGroupId) throw new HttpError(409,'The test group changed. Send the test again to the selected group.');
+    // Recheck after the membership lookup so concurrent clicks cannot queue duplicates.
+    if (testView().last_test?.post_status==='queued') throw new HttpError(409,'A test post is already waiting to send.');
+    const test=quietTests.create({id:c.testGroupId,name:c.testGroupName},u,c.includeNotes);
+    if (!enqueue({jid:test.group_id,quietTestId:test.id,quiet:true})) quietTests.mark(test.id,'skipped','WhatsApp is off.');
+    logAudit(req,'whatsapp.quiet_test','settings',test.id,`Sample lead to ${c.testGroupName || c.testGroupId}`);
+    return testView();
+  }));
+
   const statusView = () => {
     const c = cfg();
     const postingBlocker = !c.enabled ? 'WhatsApp is off.' : !c.groupId ? 'Pick the dispatch group.'
@@ -318,6 +357,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       enabled: c.enabled, status: st.status, qr: st.status === 'qr' ? st.qr : null, me: st.me, error: st.error,
       group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
       group_mode: c.groupMode, quiet_include_notes: c.includeNotes,
+      quiet_test: testView(),
       quiet_group: { enabled: c.quietEnabled, group: c.quietGroupId ? { id: c.quietGroupId, name: c.quietGroupName } : null,
         capture_replies: c.quietCapture, posting_ready: !!(c.enabled && c.quietEnabled && c.quietGroupId && st.status === 'connected'),
         last_lead_post: lastLeadPost('wa_last_quiet_lead_post') },
@@ -371,7 +411,9 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     const current = cfg();
     const mainId = String(b.group_id ?? current.groupId);
     const quietId = String(b.quiet_group_id ?? current.quietGroupId);
-    if ([mainId, quietId].some(id => id && !/^[\w.-]+@g\.us$/.test(id))) throw new HttpError(400, 'Pick a group from the list.');
+    const testId = String(b.test_group_id ?? current.testGroupId);
+    if ([mainId, quietId, testId].some(id => id && !/^[\w.-]+@g\.us$/.test(id))) throw new HttpError(400, 'Pick a group from the list.');
+    if (testId && testId===mainId && (b.group_mode ?? current.groupMode)!=='quiet') throw new HttpError(400,'Choose a separate test group. Clear the test group before using it as an interactive dispatch group.');
     if (mainId && mainId === quietId) throw new HttpError(400, 'Choose different dispatch and additional quiet groups, or set the dispatch group mode to Quiet.');
     if (b.group_mode !== undefined && !['interactive','quiet'].includes(b.group_mode)) throw new HttpError(400, 'Choose Interactive or Quiet mode.');
     if (b.quiet_enabled === true && !quietId) throw new HttpError(400, 'Pick the additional quiet group first.');
@@ -392,6 +434,10 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     if (b.quiet_enabled !== undefined) set.run('wa_quiet_enabled', b.quiet_enabled ? '1' : '0');
     if (b.quiet_capture !== undefined) set.run('wa_quiet_capture', b.quiet_capture ? '1' : '0');
     if (b.quiet_include_notes !== undefined) set.run('wa_quiet_include_notes', b.quiet_include_notes ? '1' : '0');
+    if (b.test_group_id !== undefined) {
+      set.run('wa_test_group_id',testId);
+      set.run('wa_test_group_name',testId ? String(b.test_group_name || '').slice(0,100) : '');
+    }
     if (b.two_way !== undefined) set.run('wa_two_way', b.two_way ? '1' : '0');
     if (b.ai_enabled !== undefined) set.run('ai_enabled', b.ai_enabled ? '1' : '0');
     if (b.approved_status !== undefined) {

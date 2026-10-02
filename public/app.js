@@ -1519,8 +1519,30 @@
 
   // Admin → Settings: link a phone's WhatsApp by QR code, pick the dispatch group.
   let waPoll = null;
+  let waTestPoll = null;
+  function drawWaTestResults(t) {
+    const box=document.getElementById('waTestResults');if(!box)return;
+    const run=t.last_test;
+    const labels={queued:'Sending test…',sent:'Test posted. Reply to it in WhatsApp to check capture.',failed:'Test could not be sent.',skipped:'Test was not posted.',interrupted:'Test interrupted by a restart.',unconfirmed:'Post not confirmed. Check the group before sending again.'};
+    box.innerHTML=run ? `<p style="margin:.4rem 0"><b>${esc(labels[run.post_status] || run.post_status)}</b>${run.post_error ? ` ${esc(run.post_error)}` : ''}</p>
+      <p class="small">Test lead status: <b>${esc(run.status)}</b> · ${run.replies.length} captured ${run.replies.length===1 ? 'reply' : 'replies'}. Bot messages and reactions: <b>none</b>.</p>
+      ${run.replies.length ? `<div class="small">${run.replies.map(r=>`<div class="comment"><div class="meta"><b>${esc(r.author)}</b> · ${r.actor==='external' ? 'external participant' : 'CRM user'}${r.from_status!==r.to_status ? ` · ${esc(r.from_status)} → ${esc(r.to_status)}` : ' · comment only'}</div><p>${esc(r.body)}</p></div>`).join('')}</div>` : '<p class="small muted">From a different phone, reply directly to the sample lead. External replies add comments; recognized CRM users keep their normal status permissions. The bot stays silent.</p>'}`
+      : '<p class="small muted">No test sent yet. Only the selected group receives the sample.</p>';
+    const send=document.getElementById('waSendTestLead');
+    if(send){send.disabled=!t.group || !t.connected || run?.post_status==='queued' || !!document.getElementById('waTestGroupWarning')?.textContent;send.textContent=run?.post_status==='queued' ? 'Sending test…' : 'Send test lead';}
+  }
+  async function refreshWaTestResults() {
+    clearTimeout(waTestPoll);
+    const box=document.getElementById('waTestResults');if(!box)return;
+    try {
+      const t=await api('/whatsapp/quiet-test');if(document.getElementById('waTestResults')!==box)return;
+      drawWaTestResults(t);
+      if(t.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
+    } catch(err){if(document.getElementById('waTestResults')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}
+  }
   async function drawWaLink() {
     clearTimeout(waPoll);
+    clearTimeout(waTestPoll);
     const card = document.getElementById('waLinkCard');
     if (!card) return;
     let s;
@@ -1530,6 +1552,7 @@
     const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) to post leads to your dispatch group and update the CRM by replying there. Personal WhatsApp alerts are limited to orders and owner mentions. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
     const quietMain = s.group_mode === 'quiet';
     const qg = s.quiet_group || {};
+    const qt = s.quiet_test || {};
     const postLabels = { queued: 'Waiting to send', sent: 'Accepted by WhatsApp; CRM replies linked', failed: 'Failed to send', skipped: 'Not posted', interrupted: 'Post interrupted by a restart', unconfirmed: 'Post not confirmed', unlinked: 'Accepted; CRM reply link failed' };
     let body = '';
     if (s.status === 'off' || s.status === 'logged_out' || s.status === 'replaced') {
@@ -1563,7 +1586,17 @@
         <label class="check"><input type="checkbox" id="waQuietNotes" ${s.quiet_include_notes !== false ? 'checked' : ''}> Include the original lead’s Notes field in quiet posts</label>
         <p class="small muted">Applies to both quiet-group options. CRM comments are never posted back to a quiet group. Quiet posts use the format below, without lead numbers, rep names, portal links or reply instructions.</p>
         <details><summary class="small">Preview the quiet post</summary><pre class="wa-preview" id="waQuietPreview">${esc(WaFormat.quietLead({customer_name:'Maria Lopez',phone:'5128675309',address:'1010 Ogden Ave, Dallas TX 75211',dob:'1985-03-14',email:'maria.lopez@gmail.com',services:'Internet, TV',notes:'Internet and cable package\nWait for call'},{includeNotes:s.quiet_include_notes !== false}))}</pre></details>
-        <p class="small" id="waQuietStatus" role="status">${qg.enabled ? qg.posting_ready ? 'Quiet lead posts ready.' : 'Waiting for the connection or group selection.' : 'Additional quiet-group lead posts are off.'}${qg.last_lead_post ? ` Latest post: #${qg.last_lead_post.referral_id} — ${esc(postLabels[qg.last_lead_post.status] || qg.last_lead_post.status)}${qg.last_lead_post.error ? ` · ${esc(qg.last_lead_post.error)}` : ''}` : ''}</p>`;
+        <p class="small" id="waQuietStatus" role="status">${qg.enabled ? qg.posting_ready ? 'Quiet lead posts ready.' : 'Waiting for the connection or group selection.' : 'Additional quiet-group lead posts are off.'}${qg.last_lead_post ? ` Latest post: #${qg.last_lead_post.referral_id} — ${esc(postLabels[qg.last_lead_post.status] || qg.last_lead_post.status)}${qg.last_lead_post.error ? ` · ${esc(qg.last_lead_post.error)}` : ''}` : ''}</p>
+        <h3 class="wa-h3" id="waTestHeading">Test quiet mode before launch</h3>
+        <p class="small muted">Choose a group that includes the alerts phone. Send a clearly marked sample, then reply to it from WhatsApp. Test replies and statuses stay here; customer records, notifications and sales totals are unaffected. Selecting a test group does not turn on regular lead posts.</p>
+        <div class="field"><label for="waQuietTestGroup">Test group</label><select id="waQuietTestGroup">${qt.group ? `<option value="${esc(qt.group.id)}">${esc(qt.group.name)}</option>` : '<option value="">— pick a test group —</option>'}</select><p id="waTestGroupWarning" class="small err-text" role="status"></p></div>
+        <p class="small muted">This is exactly what the test posts. The Notes switch above applies.</p>
+        <pre class="wa-preview" id="waTestPreview">${esc(qt.sample_text || WaFormat.quietLead(WaFormat.QUIET_TEST_LEAD,{includeNotes:s.quiet_include_notes!==false}))}</pre>
+        <div class="row" style="margin-top:.8rem"><button type="button" class="btn primary" id="waSendTestLead" ${qt.group ? '' : 'disabled'}>Send test lead</button><button type="button" class="btn" id="waRefreshTest">Refresh test results</button></div>
+        <div id="waTestResults" role="status" aria-live="polite"></div>
+        <div class="grid-2" style="margin-top:.8rem"><div class="field"><label for="waTestActor">Simulate as</label><select id="waTestActor"><option value="external">External participant</option><option value="crm">My CRM account</option></select></div>
+          <div class="field"><label for="waTestReply">Try a reply</label><input id="waTestReply" maxlength="2000" value="approved" placeholder="e.g. working, approved, call after 5"></div></div>
+        <button type="button" class="btn" id="waSimulateReply">Simulate reply</button><p class="small muted">Simulation shows the result here without sending a message or saving a reply.</p><div id="waSimulationResult" role="status" aria-live="polite"></div>`;
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
@@ -1574,7 +1607,7 @@
       <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. ${quietMain ? 'Reply directly to a lead post to save a comment. Clear status words update the lead only for recognized CRM users with permission.' : 'In the group, use <b>#123 approved</b> to update an earlier lead.'} An accepted post does not confirm delivery or reading.</p></div>` : '';
     const dx = s.diagnostics;
     const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
-    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved'});
+    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved',quiet_test_reply:'Reply captured on the isolated test lead'});
     const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
       <p class="small muted">Since this server started: ${dx.received} incoming text messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
       <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
@@ -1584,6 +1617,25 @@
     card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${flowHtml}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     on('waRefreshDiagnostics', drawWaLink);
+    drawWaTestResults(qt);
+    if(qt.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
+    on('waRefreshTest',refreshWaTestResults);
+    on('waSendTestLead',async()=>{
+      const button=document.getElementById('waSendTestLead');button.disabled=true;button.textContent='Sending test…';
+      try {const t=await api('/whatsapp/quiet-test',{method:'POST',body:{}});drawWaTestResults(t);refreshWaTestResults();}
+      catch(err){
+        const box=document.getElementById('waTestResults');if(box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;
+        button.disabled=!document.getElementById('waQuietTestGroup')?.value || !!document.getElementById('waTestGroupWarning')?.textContent;
+        button.textContent='Send test lead';
+      }
+    });
+    on('waSimulateReply',async()=>{
+      const button=document.getElementById('waSimulateReply'),box=document.getElementById('waSimulationResult');button.disabled=true;
+      try {
+        const r=await api('/whatsapp/quiet-test/simulate',{method:'POST',body:{actor:document.getElementById('waTestActor').value,text:document.getElementById('waTestReply').value}});
+        box.innerHTML=`<div class="alert ok small" style="margin-top:.6rem">Would save as ${r.actor==='external' ? 'an external comment' : 'a CRM comment'}. Test status: <b>${esc(r.from_status)} → ${esc(r.to_status)}</b>. ${r.ambiguous ? 'Several statuses were mentioned; the status stays unchanged. ' : r.can_change_status ? '' : 'This participant cannot change the status. '}Bot response: <b>nothing</b> — no messages or reactions.</div>`;
+      }catch(err){box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}finally{button.disabled=false;}
+    });
     on('waCopyDiagnostics', async () => {
       try {
         await navigator.clipboard.writeText(JSON.stringify({ status: s.status, group: s.group?.name || '',
@@ -1632,6 +1684,9 @@
           document.getElementById('waQuietGroupWarning').textContent = 'The quiet group was not found on the linked account. Add the alerts phone to the group, or pick another group.';
           document.getElementById('waQuietStatus').textContent = 'Saved quiet group unavailable on the linked account.';
         }
+        const testSelect=document.getElementById('waQuietTestGroup'),testMissing=qt.group && !groups.some(g=>g.id===qt.group.id);
+        testSelect.innerHTML=`<option value="">— pick a test group —</option>${testMissing ? `<option value="${esc(qt.group.id)}" selected>${esc(qt.group.name)} (unavailable)</option>` : ''}${groups.filter(g=>g.id!==s.group?.id || quietMain).map(g=>`<option value="${esc(g.id)}" ${g.id===qt.group?.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if(testMissing){document.getElementById('waTestGroupWarning').textContent='The test group was not found. Add the alerts phone to it, or choose another group.';document.getElementById('waSendTestLead').disabled=true;}
       } catch (err) {
         document.getElementById('waGroupWarning').textContent = `Could not check group membership: ${err.message}`;
         document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
@@ -1653,6 +1708,10 @@
     document.getElementById('waQuietGroup')?.addEventListener('change', async e => {
       const selected = e.target;
       await patchWa({quiet_group_id:selected.value,quiet_group_name:selected.value ? selected.selectedOptions[0].textContent.replace(/ \(\d+\)$/,'') : ''},selected.value ? 'Quiet group saved — switch on lead posts when ready' : 'Quiet group cleared');
+    });
+    document.getElementById('waQuietTestGroup')?.addEventListener('change',async e=>{
+      const selected=e.target;
+      await patchWa({test_group_id:selected.value,test_group_name:selected.value ? selected.selectedOptions[0].textContent.replace(/ \(\d+\)$/,'') : ''},selected.value ? 'Test group saved — regular lead posts stay as configured' : 'Test group cleared');
     });
     // Keep the QR code and status fresh while something is happening.
     if (['starting', 'qr', 'reconnecting'].includes(s.status)) waPoll = setTimeout(drawWaLink, 2500);

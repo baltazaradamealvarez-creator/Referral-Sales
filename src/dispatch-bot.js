@@ -227,13 +227,18 @@ function mount(app, db, deps) {
     const c = cfg();
     const text = String(m.text || '').trim();
     const quiet = m.isGroup && whatsapp.isQuietGroup(m.chat);
-    if (quiet ? !whatsapp.quietCaptureEnabled(m.chat) : !c.enabled) return quiet ? 'quiet_capture_off' : 'two_way_off';
+    const test = m.isGroup && m.chat===whatsapp.testGroupId() ? whatsapp.quietTests.forReply(m.chat,m.quotedId) : null;
+    if (test ? getSettings().wa_enabled!=='1' : quiet ? !whatsapp.quietCaptureEnabled(m.chat) : !c.enabled) return quiet ? 'quiet_capture_off' : 'two_way_off';
     if (!text) return 'empty';
     const inGroup = m.isGroup && m.chat === whatsapp.groupId();
     if (m.isGroup && !inGroup && !quiet) return 'other_group';
     if (m.ts && Date.now() - m.ts > MAX_AGE_MS) return 'old_message';
     if (!db.prepare('INSERT OR IGNORE INTO wa_seen (id) VALUES (?)').run(`${m.chat}|${m.id}`).changes) return 'duplicate';
     if (++handled % 500 === 0) db.prepare("DELETE FROM wa_seen WHERE created_at < datetime('now', '-7 days')").run();
+    if (test) {
+      whatsapp.quietTests.capture(test,{...m,text},findUser(m),{canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:c.approvedStatus});
+      return 'quiet_test_reply';
+    }
     if (quiet) return handleQuiet({ ...m,text });
 
     const lang = detectLang(text);
@@ -355,6 +360,16 @@ function mount(app, db, deps) {
   whatsapp.onMessage(receive);
 
   // ---------- admin ----------
+
+  app.post('/api/whatsapp/quiet-test/simulate',wrap(req=>{
+    const user=requireRole(req,'admin'),b=req.body || {},text=String(b.text || '').trim();
+    if (!text || text.length>2000) throw new HttpError(400,'Enter a reply up to 2,000 characters.');
+    if (!['external','crm'].includes(b.actor)) throw new HttpError(400,'Choose External participant or My CRM account.');
+    const test=whatsapp.quietTests.latest(whatsapp.testGroupId()) || {created_by:user.id,creator_team_id:user.team_id,status:'New',assigned_to:null};
+    const result=whatsapp.quietTests.assess(test,b.actor==='crm' ? user : null,text,
+      {canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:cfg().approvedStatus});
+    return {...result,comment:text,simulation:true};
+  }));
 
   app.post('/api/whatsapp/instructions', wrap((req) => {
     requireRole(req, 'admin');

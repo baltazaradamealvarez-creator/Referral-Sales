@@ -508,6 +508,36 @@ const MIGRATIONS = [
       ALTER TABLE comments ADD COLUMN whatsapp_message_id TEXT NOT NULL DEFAULT '';
       CREATE UNIQUE INDEX idx_comments_whatsapp_message ON comments(whatsapp_chat,whatsapp_message_id) WHERE whatsapp_message_id<>'';`);
   },
+  // v22: quiet-group test posts and replies stay outside customer records and reports.
+  `CREATE TABLE IF NOT EXISTS wa_quiet_tests (
+    id INTEGER PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    sample_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'New',
+    assigned_to INTEGER REFERENCES users(id),
+    post_status TEXT NOT NULL DEFAULT 'queued',
+    post_error TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT(datetime('now')),
+    posted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_quiet_test_group ON wa_quiet_tests(group_id,id);
+  CREATE TABLE IF NOT EXISTS wa_quiet_test_replies (
+    id INTEGER PRIMARY KEY,
+    test_id INTEGER NOT NULL REFERENCES wa_quiet_tests(id) ON DELETE CASCADE,
+    chat TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id),
+    external_author TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    from_status TEXT NOT NULL,
+    to_status TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT(datetime('now')),
+    UNIQUE(chat,message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_quiet_test_replies ON wa_quiet_test_replies(test_id,id);`,
 ];
 
 
