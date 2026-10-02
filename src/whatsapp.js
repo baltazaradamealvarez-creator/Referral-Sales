@@ -42,7 +42,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   let activeItem = null;
   // Runtime diagnostics contain no message bodies or sender numbers. They reset on restart.
   const diagnostics = { received: 0, last_received_at: null, last_result: '', handler_errors: 0,
-    sent: 0, failed: 0, dropped: 0, suppressed: 0, last_sent_at: null, last_error: '' };
+    sent: 0, failed: 0, dropped: 0, suppressed: 0, last_sent_at: null, last_error: '',
+    retry_requests:0,retry_available:0,retry_missing:0,retry_blocked:0,retry_cache_errors:0,auth_save_errors:0,last_retry_at:null };
 
   async function receive(m) {
     diagnostics.received++;
@@ -127,9 +128,22 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     if (starting || !cfg().enabled) return;
     starting = true;
     try {
-      if (transport) transport.stop();
+      if (transport) await transport.stop();
       transport = createTransport({
         authDir,
+        canRetryMessage:record=>{
+          const c=cfg();if(!c.enabled)return false;
+          if(!record.chat.endsWith('@g.us'))return true;
+          if(![c.groupId,c.quietGroupId,c.testGroupId].includes(record.chat))return false;
+          return !isQuietGroup(record.chat) || (record.quiet && ['lead','test_lead'].includes(record.kind));
+        },
+        onDiagnostic:({kind})=>{
+          const fields={retry_request:'retry_requests',retry_available:'retry_available',retry_missing:'retry_missing',retry_blocked:'retry_blocked',retry_cache_error:'retry_cache_errors',auth_save_error:'auth_save_errors'};
+          if(fields[kind])diagnostics[fields[kind]]++;
+          if(kind==='retry_request')diagnostics.last_retry_at=new Date().toISOString();
+          if(kind==='auth_save_error')diagnostics.last_error='WhatsApp could not save its encryption keys. Check the persistent disk.';
+          if(kind==='retry_cache_error')diagnostics.last_error='WhatsApp could not read or save its message-retry cache. Check the persistent disk.';
+        },
         onQr: async (raw) => {
           try { st.qr = await QRCode.toDataURL(raw, { margin: 1, width: 280 }); } catch { st.qr = null; }
           setStatus('qr');
@@ -242,7 +256,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
         }
         const id = item.react
           ? await transport.react(jid, item.react.id, item.react.emoji)
-          : await transport.sendText(jid, text, { quotedId: item.quotedId });
+          : await transport.sendText(jid, text, { quotedId: item.quotedId,kind:item.quietTestId ? 'test_lead' : item.referralId ? 'lead' : 'chat',quiet:!!quiet });
         sentTimes.push(Date.now());
         if (!item.react) { diagnostics.sent++; diagnostics.last_sent_at = new Date().toISOString(); }
         recordLeadPost(item, id ? 'sent' : 'unconfirmed', id ? '' : 'WhatsApp returned no message reference. Check the group before reposting.',id || '');
@@ -278,7 +292,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
 
   const api = {
     start,
-    stop: () => { clearTimeout(retryTimer); if (transport) transport.stop(); },
+    stop: async () => { clearTimeout(retryTimer);setStatus('off');if (transport) await transport.stop(); },
     status: () => st.status,
     // A person's alerts, if they added a WhatsApp number and switched it on.
     sendToUser(user, text, { onSent, onFailed } = {}) {

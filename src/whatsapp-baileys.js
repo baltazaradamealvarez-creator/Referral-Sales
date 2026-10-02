@@ -5,11 +5,13 @@
 // linked number — so use a separate number just for alerts. The rest of the app only
 // sees this small interface, which keeps it replaceable (and testable with a fake).
 //
-// createTransport({ authDir, onQr, onOpen, onClose, onMessage })
+// createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnostic, canRetryMessage })
 //   -> { start, stop, logout, sendText, react, listGroups, exists }
+// stop() waits for pending message operations and session-key writes.
 // onMessage gets plain objects: { id, chat, isGroup, senderJid, senderPhone, name, text, quotedId, mentions, ts }
 
 const fs = require('node:fs');
+const { createRetryStore } = require('./whatsapp-retry-store');
 
 // Baileys logs a lot; keep it quiet except for real errors.
 const quietLogger = {
@@ -21,9 +23,22 @@ const quietLogger = {
 
 const jidDigits = (jid) => (jid ? String(jid).split(/[:@]/)[0].replace(/\D/g, '') : '');
 
-function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
+function createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnostic,
+  canRetryMessage = () => true, loadLibrary = () => import('@whiskeysockets/baileys') }) {
   let sock = null;
   let lib = null;
+  let retryStore = null;
+  const pendingWrites=new Set(),pendingSends=new Set(),peerAliases=new Map();
+  const diagnostic=kind=>{try{onDiagnostic?.({kind});}catch{}};
+  function track(promise,set) {
+    const job=Promise.resolve(promise);set.add(job);
+    job.then(()=>set.delete(job),()=>set.delete(job));return job;
+  }
+  function linkPeers(a,b) {
+    if(!a || !b)return;
+    const peers=new Set([lib.jidNormalizedUser(a),lib.jidNormalizedUser(b),...(peerAliases.get(lib.jidNormalizedUser(a)) || []),...(peerAliases.get(lib.jidNormalizedUser(b)) || [])]);
+    for(const peer of peers)peerAliases.set(peer,peers);
+  }
   // Recent raw messages, so replies can quote them and reactions can point at them.
   const raw = new Map();
   const remember = (m) => {
@@ -32,10 +47,13 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
   };
 
   async function start() {
-    lib = lib || await import('@whiskeysockets/baileys');
+    lib = lib || await loadLibrary();
     const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers, DisconnectReason } = lib;
     fs.mkdirSync(authDir, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const saveKeys=state.keys.set.bind(state.keys);
+    state.keys.set=data=>track(saveKeys(data),pendingWrites).catch(e=>{diagnostic('auth_save_error');throw e;});
+    retryStore=createRetryStore(authDir,{codec:lib.proto.Message,normalizeJid:lib.jidNormalizedUser,allowRetry:canRetryMessage,onDiagnostic});
     const latest = await fetchLatestBaileysVersion().catch(() => null);
     sock = makeWASocket({
       auth: state,
@@ -46,9 +64,13 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
       markOnlineOnConnect: false,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
+      getMessage:async key=>{
+        const peers=peerAliases.get(lib.jidNormalizedUser(key?.remoteJid || ''));
+        return retryStore.get(key,peers ? [...peers] : []);
+      },
     });
     const me = sock;
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update',()=>{track(saveCreds(),pendingWrites).catch(()=>diagnostic('auth_save_error'));});
     sock.ev.on('messages.upsert', ({ messages }) => {
       if (me !== sock || !onMessage) return;
       for (const m of messages || []) {
@@ -65,6 +87,7 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
           const isGroup = chat.endsWith('@g.us');
           const senderJid = isGroup ? m.key.participant : chat;
           const pnJid = m.key.participantPn || m.key.senderPn || (senderJid && senderJid.endsWith('@s.whatsapp.net') ? senderJid : '');
+          if(!isGroup && pnJid)linkPeers(chat,pnJid);
           onMessage({
             id: m.key.id, chat, isGroup, senderJid, senderPhone: jidDigits(pnJid) || null, name: m.pushName || '',
             text: String(text), quotedId: ctx.stanzaId || null, mentions: ctx.mentionedJid || [],
@@ -93,13 +116,15 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
     });
   }
 
-  function stop() {
+  async function stop() {
     if (sock) { const s = sock; sock = null; try { s.end(undefined); } catch { /* already closed */ } }
+    await Promise.allSettled([...pendingSends]);
+    do{await Promise.allSettled([...pendingWrites]);await new Promise(resolve=>setImmediate(resolve));}while(pendingWrites.size);
   }
 
   async function logout() {
     if (sock) { try { await sock.logout(); } catch { /* not connected */ } }
-    stop();
+    await stop();
     fs.rmSync(authDir, { recursive: true, force: true });
   }
 
@@ -107,16 +132,23 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
   async function sendText(jid, text, opts = {}) {
     if (!sock) throw new Error('WhatsApp is not connected');
     const quoted = opts.quotedId ? raw.get(opts.quotedId) : null;
-    const sent = await sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
-    if (sent && sent.key) remember(sent);
-    return sent && sent.key ? sent.key.id : null;
+    const me=sock;
+    return track((async()=>{
+      const sent = await me.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
+      if (sent && sent.key) {
+        remember(sent);
+        const peers=peerAliases.get(lib.jidNormalizedUser(jid));
+        retryStore.put(sent,jid,{kind:opts.kind,quiet:opts.quiet,aliases:peers ? [...peers] : []});
+      }
+      return sent && sent.key ? sent.key.id : null;
+    })(),pendingSends);
   }
 
   async function react(jid, messageId, emoji) {
     if (!sock) throw new Error('WhatsApp is not connected');
     const m = raw.get(messageId);
     if (!m) return;
-    await sock.sendMessage(jid, { react: { text: emoji, key: m.key } });
+    await track(sock.sendMessage(jid, { react: { text: emoji, key: m.key } }),pendingSends);
   }
 
   async function listGroups() {
@@ -129,6 +161,7 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage }) {
   async function exists(digits) {
     if (!sock) throw new Error('WhatsApp is not connected');
     const [r] = (await sock.onWhatsApp(`${digits}@s.whatsapp.net`)) || [];
+    if(r?.exists && r.lid)linkPeers(r.jid,r.lid);
     return r && r.exists ? r.jid : null;
   }
 
