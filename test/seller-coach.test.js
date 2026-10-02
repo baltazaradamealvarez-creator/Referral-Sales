@@ -36,6 +36,7 @@ async function setup(t) {
   const make=async(role='rep',number)=>{
     const username=`person${++n}`;const u=(await a.post('/users',{username,full_name:`Person ${n}`,role,team_id:team})).body;
     const c=client();await c.post('/login',{username,password:u.temp_password});await c.post('/me/password',{current:u.temp_password,next:'seller-password-123'});
+    await c.patch('/me/notification-preferences',{automatic_coaching:true});
     if(number)await c.patch('/me',{whatsapp:number,whatsapp_alerts:true});
     return {id:u.id,c,u:db.prepare('SELECT * FROM users WHERE id=?').get(u.id)};
   };
@@ -49,6 +50,7 @@ test('coaching cadence: weekdays, inactivity, opt-in, cooldown; manual preview a
   const {db,app,a,wa,make,settle}=await setup(t);
   const inactive=await make('rep','512-555-0191');const recent=await make('rep','512-555-0192');const noAlerts=await make('rep','512-555-0193');
   await noAlerts.c.patch('/me',{whatsapp_alerts:false});const manager=await make('manager','512-555-0194');await make('dispatch','512-555-0195');
+  const noCoaching=await make('rep','512-555-0196');await noCoaching.c.patch('/me/notification-preferences',{automatic_coaching:false});
   const now=zonedToUtc(2026,10,5,11,'America/Chicago');
   const lead=(await recent.c.post('/referrals',{name:'Jane Smith',phone:'512-867-5309'})).body;
   db.prepare('UPDATE referrals SET created_at=? WHERE id=?').run(new Date(now-3600000).toISOString().slice(0,19).replace('T',' '),lead.id);
@@ -59,7 +61,10 @@ test('coaching cadence: weekdays, inactivity, opt-in, cooldown; manual preview a
   await settle();
   assert.ok(wa.sent.some((m)=>m.jid==='15125550191@s.whatsapp.net'&&m.text.includes('Have any customer leads ready?')));
   assert.ok(db.prepare('SELECT last_sent_at FROM coach_contacts WHERE user_id=?').get(inactive.id).last_sent_at);
+  assert.ok(!wa.sent.some(m=>m.jid==='15125550196@s.whatsapp.net'),'automatic check-ins need the separate personal opt-in');
   t.mock.method(Date,'now',()=>now);
+  assert.equal((await a.get(`/coach/sellers/${noCoaching.id}/preview`)).body.blocked,'');
+  assert.equal((await a.post(`/coach/sellers/${noCoaching.id}/checkin`)).body.queued,true,'manual check-ins remain available without an automatic opt-in');
   const preview=await a.get(`/coach/sellers/${recent.id}/preview`);assert.equal(preview.status,200);assert.ok(!containsComp(preview.body.text));
   const sent=await a.post(`/coach/sellers/${recent.id}/checkin`);assert.equal(sent.body.queued,true,'manual can contact a recently active seller');
   assert.equal((await a.post(`/coach/sellers/${recent.id}/checkin`)).status,409,'manual respects cooldown');

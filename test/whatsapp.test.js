@@ -76,7 +76,7 @@ test('failed sends and missing recipients are visible in admin diagnostics, and 
   const { a, wa, app, settle } = await setup(t);
   await a.post('/whatsapp/connect');
   wa.handlers.onOpen({ id: '15125550100@s.whatsapp.net' });
-  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team' });
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team', new_lead_group:true });
   wa.sendError = 'Socket closed while sending';
   await a.post('/whatsapp/test', { target: 'group' });
   await settle();
@@ -129,7 +129,7 @@ test('admin links WhatsApp by QR, picks the dispatch group, new leads are posted
   const groups = (await a.get('/whatsapp/groups')).body;
   assert.deepEqual(groups.map((g) => g.name), ['Dispatch Team', 'Family']);
   assert.equal((await a.patch('/whatsapp/settings', { group_id: 'not-a-group' })).status, 400);
-  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team' });
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team', new_lead_group:true });
   await a.post('/whatsapp/test', { target: 'group' });
   await settle();
   assert.equal(wa.sent.length, 1);
@@ -154,7 +154,7 @@ test('admin links WhatsApp by QR, picks the dispatch group, new leads are posted
   assert.equal(wa.sent.length, 2);
 });
 
-test('each person can get their alerts on WhatsApp; dispatchers hear about new leads instantly', async (t) => {
+test('only urgent orders go to WhatsApp; dispatchers still get new-lead alerts in the app', async (t) => {
   const { db, a, wa, makeUser, settle } = await setup(t);
   const rep = await makeUser('rep', 'rep');
   const disp = await makeUser('dee', 'dispatch');
@@ -172,15 +172,14 @@ test('each person can get their alerts on WhatsApp; dispatchers hear about new l
   assert.equal(me.whatsapp_ready, true);
   await disp2.c.patch('/me', { whatsapp: '(512) 555-0177' }); // number saved, alerts left off
 
-  // A new lead: every dispatcher gets an in-app alert; Dee also gets it on WhatsApp.
+  // A new lead: every dispatcher gets an in-app alert; routine leads do not go to WhatsApp.
   const lead = (await rep.c.post('/referrals', { name: 'Maria Lopez', phone: '512-867-5309' })).body;
   await settle();
   for (const d of [disp, disp2]) {
     assert.ok(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND message LIKE '🆕 New lead: Maria Lopez%'").get(d.id));
   }
   const toDee = wa.sent.filter((m) => m.jid === '15125550199@s.whatsapp.net');
-  assert.equal(toDee.length, 1);
-  assert.match(toDee[0].text, /^🔔 🆕 New lead: Maria Lopez · \(512\) 867-5309 — from Rep Person/);
+  assert.equal(toDee.length, 0);
   assert.ok(!wa.sent.some((m) => m.jid.startsWith('15125550177')), 'alerts off: nothing on WhatsApp');
 
   // Other alerts follow too (here: the lead is ordered → the rep, if opted in).
@@ -213,7 +212,7 @@ test('messages wait while the link is down; a logged-out phone tells admins to r
   const rep = await makeUser('rep', 'rep');
   await a.post('/whatsapp/connect');
   wa.handlers.onOpen({ id: '15125550100@s.whatsapp.net' });
-  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team' });
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team', new_lead_group:true });
 
   // Connection drops: the post waits in the queue, and goes out once it's back.
   wa.handlers.onClose({ code: 428, message: 'Connection Closed' });

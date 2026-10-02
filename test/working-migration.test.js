@@ -19,6 +19,8 @@ test('Working migration preserves a populated previous-version record, dependent
     INSERT INTO wa_messages(id,chat,referral_id) VALUES('message-1','chat',1);
     INSERT INTO reminders(user_id,referral_id,text,due_at,created_by) VALUES(1,1,'Follow up','2026-10-02 15:00:00',1);
     INSERT INTO affiliate_earnings(referral_id,earner_id,seller_id,level,pct,base,amount) VALUES(1,1,1,1,15,170,25.5);
+    INSERT INTO notifications(user_id,referral_id,message) VALUES(1,1,'Keep this earlier notification');
+    INSERT OR REPLACE INTO settings(key,value) VALUES('wa_new_lead_group','1');
     INSERT INTO coach_drafts(seller_id,reviewer_id,question,draft,reason,status) VALUES(1,1,'Pricing?','Please check the current offer.','Needs review','rejected');`);
   const before=db.prepare('SELECT * FROM referrals WHERE id=1').get();
   const indexes=db.prepare("SELECT name,sql FROM sqlite_master WHERE tbl_name='referrals' AND type='index' AND sql IS NOT NULL ORDER BY name").all();
@@ -28,15 +30,18 @@ test('Working migration preserves a populated previous-version record, dependent
   db.exec(schema.replace(/CREATE TABLE\s+"?referrals"?/i,'CREATE TABLE previous_referrals').replace("'New','Working','Passed'","'New','Passed'"));
   db.exec('INSERT INTO previous_referrals SELECT * FROM referrals; DROP TABLE referrals; ALTER TABLE previous_referrals RENAME TO referrals;');
   for(const index of indexes)db.exec(index.sql);
-  db.exec('ALTER TABLE coach_drafts DROP COLUMN hidden_at; PRAGMA user_version=15; COMMIT; PRAGMA foreign_keys=ON;');
+  db.exec('ALTER TABLE coach_drafts DROP COLUMN hidden_at; ALTER TABLE users DROP COLUMN notification_preferences; ALTER TABLE users DROP COLUMN comparepower_afuid; ALTER TABLE notifications DROP COLUMN event_type; PRAGMA user_version=15; COMMIT; PRAGMA foreign_keys=ON;');
   assert.throws(()=>db.exec("UPDATE referrals SET status='Working' WHERE id=1"),/CHECK constraint/);
   db.close();
   db=openDb(file);
   try {
     assert.deepEqual(db.prepare('SELECT * FROM referrals WHERE id=1').get(),before);
     assert.deepEqual(db.prepare("SELECT name,sql FROM sqlite_master WHERE tbl_name='referrals' AND type='index' AND sql IS NOT NULL ORDER BY name").all(),indexes);
-    for(const table of ['comments','status_history','wa_messages','reminders','affiliate_earnings'])assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE referral_id=1`).get().n,1,table);
+    for(const table of ['comments','status_history','wa_messages','reminders','affiliate_earnings','notifications'])assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE referral_id=1`).get().n,1,table);
     assert.equal(db.prepare('SELECT hidden_at FROM coach_drafts').get().hidden_at,null);
+    assert.equal(db.prepare('SELECT event_type FROM notifications').get().event_type,'general');
+    assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value,'0');
+    assert.equal(db.prepare('SELECT notification_preferences FROM users').get().notification_preferences,'{}');
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
     db.exec("UPDATE referrals SET status='Working' WHERE id=1");
     assert.equal(db.prepare('SELECT status FROM referrals WHERE id=1').get().status,'Working');

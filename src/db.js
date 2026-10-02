@@ -476,6 +476,13 @@ const MIGRATIONS = [
   },
   // v17: reversible cleanup of completed coaching drafts.
   `ALTER TABLE coach_drafts ADD COLUMN hidden_at TEXT;`,
+  // v18: personal channel preferences, typed notifications and energy attribution.
+  `
+  ALTER TABLE users ADD COLUMN notification_preferences TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE users ADD COLUMN comparepower_afuid TEXT NOT NULL DEFAULT '';
+  ALTER TABLE notifications ADD COLUMN event_type TEXT NOT NULL DEFAULT 'general';
+  INSERT INTO settings(key,value) VALUES('wa_new_lead_group','0') ON CONFLICT(key) DO UPDATE SET value='0';
+  `,
 ];
 
 

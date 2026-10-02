@@ -106,7 +106,7 @@ function mount(app, db, { requireUser, requireRole, wrap, HttpError, getSettings
         const mins = businessMinutes(toMs(r.created_at), now, c);
         if (!r.sla_alerted_at && mins >= c.minutes) {
           const to = r.assigned_to ? [{ id: r.assigned_to }] : activeDispatchers();
-          for (const u of (to.length ? to : activeAdmins())) notify(u.id, r.id, `⏱ ${leadName(r)} has been waiting ${mins} min — call them now`);
+          for (const u of (to.length ? to : activeAdmins())) notify(u.id, r.id, `⏱ ${leadName(r)} has been waiting ${mins} min — call them now`,'escalations');
           db.prepare('UPDATE referrals SET sla_alerted_at = ? WHERE id = ?').run(sqlTime(now), r.id);
           out.alerted.push(r.id);
         }
@@ -117,13 +117,13 @@ function mount(app, db, { requireUser, requireRole, wrap, HttpError, getSettings
               FROM users u WHERE u.role = 'dispatch' AND u.active = 1 AND u.id <> ? ORDER BY open, u.id LIMIT 1`).get(r.assigned_to);
             if (moved) {
               db.prepare('UPDATE referrals SET assigned_to = ?, assigned_at = ? WHERE id = ?').run(moved.id, sqlTime(now), r.id);
-              notify(moved.id, r.id, `⏱ ${leadName(r)} was reassigned to you after waiting ${mins} min — call them now`);
-              notify(r.assigned_to, r.id, `${leadName(r)} was reassigned to ${moved.full_name} because nobody had worked it for ${mins} min`);
+              notify(moved.id, r.id, `⏱ ${leadName(r)} was reassigned to you after waiting ${mins} min — call them now`,'escalations');
+              notify(r.assigned_to, r.id, `${leadName(r)} was reassigned to ${moved.full_name} because nobody had worked it for ${mins} min`,'assignments');
               out.reassigned.push(r.id);
             }
           }
           for (const a of activeAdmins()) {
-            notify(a.id, r.id, `🚨 ${leadName(r)} has had no response for ${mins} min${r.assigned_name ? ` (assigned to ${r.assigned_name})` : ' (unassigned)'}${moved ? `. Reassigned to ${moved.full_name}.` : ''}`);
+            notify(a.id, r.id, `🚨 ${leadName(r)} has had no response for ${mins} min${r.assigned_name ? ` (assigned to ${r.assigned_name})` : ' (unassigned)'}${moved ? `. Reassigned to ${moved.full_name}.` : ''}`,'escalations');
           }
           db.prepare('UPDATE referrals SET sla_escalated_at = ? WHERE id = ?').run(sqlTime(now), r.id);
           out.escalated.push(r.id);
@@ -133,7 +133,7 @@ function mount(app, db, { requireUser, requireRole, wrap, HttpError, getSettings
     const due = db.prepare(`SELECT id, customer_name, phone, follow_up_note, follow_up_user, created_by FROM referrals
       WHERE follow_up_sent = 0 AND follow_up_at IS NOT NULL AND follow_up_at <= ?`).all(sqlTime(now));
     for (const r of due) {
-      notify(r.follow_up_user || r.created_by, r.id, `📞 Call back ${leadName(r)}${r.phone ? ` at ${r.phone}` : ''} now${r.follow_up_note ? `: ${r.follow_up_note}` : ''}`);
+      notify(r.follow_up_user || r.created_by, r.id, `📞 Call back ${leadName(r)}${r.phone ? ` at ${r.phone}` : ''} now${r.follow_up_note ? `: ${r.follow_up_note}` : ''}`,'reminders');
       db.prepare('UPDATE referrals SET follow_up_sent = 1 WHERE id = ?').run(r.id);
       out.reminders.push(r.id);
     }

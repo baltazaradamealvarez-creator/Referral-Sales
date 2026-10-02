@@ -61,7 +61,7 @@ async function setup(t, { ai } = {}) {
   };
   await a.post('/whatsapp/connect');
   wa.handlers.onOpen({ id: '15125550100:4@s.whatsapp.net', lid: '99887766@lid', name: 'E&O Alerts' });
-  await a.patch('/whatsapp/settings', { group_id: GROUP, group_name: 'Dispatch' });
+  await a.patch('/whatsapp/settings', { group_id: GROUP, group_name: 'Dispatch', new_lead_group:true });
   const settle = async () => { await new Promise((r) => setTimeout(r, 20)); await app.locals.whatsapp.drain(); };
   let mid = 0;
   // A message in the group, as WhatsApp would hand it over.
@@ -138,7 +138,7 @@ test('replies become notes; first dispatcher takes the lead; status words move i
   assert.equal(r.assigned_to, dee.id, 'first reply keeps the lead');
   assert.equal(r.status, 'Ordered');
   assert.match(wa.sent.at(-1).text, /\*Ordered\*/);
-  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND message LIKE '%(WhatsApp) commented%install Friday%'").get(rep.id));
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND event_type='owner_mention' AND message LIKE '%install Friday%'").get(rep.id));
   assert.ok(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND message LIKE '%was Ordered%'").get(rep.id));
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM status_history WHERE referral_id = ? AND to_status = 'Ordered'").get(lead.id).n, 1);
 

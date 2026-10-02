@@ -1,8 +1,8 @@
 // Service worker: lets the app open without signal (the app shell is cached) and shows
 // push notifications. API calls always go to the network; leads typed offline are kept
 // on the phone by the app itself and sent when the connection is back.
-const CACHE = 'eo-shell-v2';
-const SHELL = ['/', '/app.js', '/styles.css', '/leadscore.js', '/waformat.js', '/manifest.webmanifest', '/icon.svg', '/brand/mark.svg', '/brand/icon-192.png'];
+const CACHE = 'eo-shell-v3';
+const SHELL = ['/', '/app.js', '/energy.js', '/styles.css', '/leadscore.js', '/waformat.js', '/manifest.webmanifest', '/icon.svg', '/brand/mark.svg', '/brand/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

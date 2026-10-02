@@ -9,6 +9,7 @@
   // ---------- utils ----------
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const personLink=(id,name)=>id?`<a class="person-link" href="#/people/${Number(id)}">${esc(name)}</a>`:esc(name);
 
   async function api(path, opts = {}) {
     const init = { method: opts.method || 'GET', headers: {}, credentials: 'same-origin' };
@@ -326,7 +327,7 @@
       const q = input.value.trim();
       items = [
         ...data.referrals.map((r) => ({ href: `#/r/${r.id}`, html: `<b>${esc(leadName(r))}</b> ${pill(r.status)}<div class="small muted">${esc([r.phone, r.email, r.address].filter(Boolean).join(' · '))}</div><div class="small muted">${esc(r.created_by_name)}${r.team_name ? ` · ${esc(r.team_name)}` : ''}</div>` })),
-        ...data.users.map((u) => ({ href: `#/referrals?scope=${seesAll() ? 'all' : 'team'}&user_id=${u.id}`, html: `👤 <b>${esc(u.full_name)}</b> <span class="small muted">@${esc(u.username)} · ${roleLabel(u.role)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</span>` })),
+        ...data.users.map((u) => ({ href: `#/people/${u.id}`, html: `👤 <b>${esc(u.full_name)}</b> <span class="small muted">@${esc(u.username)} · ${roleLabel(u.role)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</span>` })),
       ];
       items.push({ href: `#/referrals?q=${encodeURIComponent(q)}`, html: `<span class="muted">See all results for “${esc(q)}” →</span>` });
       sel = -1;
@@ -636,7 +637,7 @@
         const credit = document.getElementById('creditTo');
         if (credit && credit.value) body.credit_to = Number(credit.value);
         const ref = await api('/referrals', { method: 'POST', body });
-        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a>
+        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a> · <a href="#/r/${ref.id}?energy=1">Check energy options</a>
           <div class="wa-row">${waButtonsHtml()}</div></div>`;
         bindWhatsapp(msg, ref);
         ta.value = '';
@@ -698,7 +699,7 @@
       <div style="text-align:right;flex-shrink:0">${scoreBadge(r.lead_score)} ${pill(r.status)}<div class="small muted">${when(r.created_at)}</div></div></li>`;
   }
   function bindLeadItems(root) {
-    root.querySelectorAll('[data-id]').forEach((el) => { el.onclick = () => { location.hash = '#/r/' + el.dataset.id; }; });
+    root.querySelectorAll('[data-id]').forEach((el) => { el.onclick = (e) => { if(e.target.closest('a'))return;location.hash = '#/r/' + el.dataset.id; }; });
   }
 
   // ---------- referrals / customers list ----------
@@ -736,7 +737,7 @@
           ${seesAll() && scope === 'all' ? `<select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
         </div>
         <div class="table-wrap"><table class="rtable leads-table">
-          <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Rep</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
+          <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Opportunity owner</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
           <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table></div>
         <p class="small muted" id="count"></p>
@@ -774,8 +775,8 @@
           <td class="c-main"><b>${esc(leadName(r))}</b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
           <td class="c-contact" data-label="Contact">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
-          ${worksLeads() ? `<td class="small" data-label="Rep">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
-          ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
+          ${worksLeads() ? `<td class="small" data-label="Opportunity owner">${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
+          ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
           <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}</td>
           <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
         </tr>`).join('') : '<tr><td colspan="7" class="muted">No referrals match.</td></tr>';
@@ -837,7 +838,7 @@
         ${r.address ? `<div class="small muted kaddr">${esc(r.address)}</div>` : ''}
         ${r.services ? `<div>${svcTags(r.services)}</div>` : ''}
         <div class="kmeta small">
-          <span>👤 ${esc(r.created_by_name)}${seesAll() && r.team_name ? ` · ${esc(r.team_name)}` : ''}</span>
+          <span>👤 ${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? ` · ${esc(r.team_name)}` : ''}</span>
           ${r.install_date ? `<span>📅 ${esc(dayDate(r.install_date))}</span>` : ''}
           ${r.comment_count ? `<span>💬 ${r.comment_count}</span>` : ''}
         </div>
@@ -853,7 +854,7 @@
         document.querySelector(`[data-n="${s}"]`).textContent = list.length;
       }
       document.querySelectorAll('.kcard').forEach((el) => {
-        el.onclick = (e) => { if (!e.target.closest('[data-take]')) location.hash = '#/r/' + el.dataset.id; };
+        el.onclick = (e) => { if (!e.target.closest('[data-take], a')) location.hash = '#/r/' + el.dataset.id; };
         el.ondragstart = (e) => { e.dataTransfer.setData('text/plain', el.dataset.id); el.classList.add('dragging'); };
         el.ondragend = () => el.classList.remove('dragging');
       });
@@ -944,7 +945,7 @@
           <div class="record-title-block">
             <h1>${esc(leadName(r))}</h1>
             <div class="record-subtitle">
-              ${r.company ? esc(r.company) + ' · ' : ''}#${r.id} · ${esc(r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${esc(r.entered_by_name)}` : ''}
+              ${r.company ? esc(r.company) + ' · ' : ''}#${r.id} · Owner: ${personLink(r.created_by,r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${personLink(r.entered_by,r.entered_by_name)}` : ''}
             </div>
             <div class="record-meta-row">
               ${pill(r.status)}
@@ -1093,8 +1094,8 @@
                     ${estVal ? `<span class="field-value value-highlight">$${estVal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>` : empty}
                   </div>
                   <div class="field-row">
-                    <span class="field-label">Created By</span>
-                    <span class="field-value">${esc(r.created_by_name)}${r.team_name ? ` <span class="muted small">(${esc(r.team_name)})</span>` : ''}</span>
+                    <span class="field-label">Opportunity owner</span>
+                    <span class="field-value">${personLink(r.created_by,r.created_by_name)}${r.team_name ? ` <span class="muted small">(${esc(r.team_name)})</span>` : ''}</span>
                   </div>
                   <div class="field-row">
                     <span class="field-label">Created</span>
@@ -1106,7 +1107,7 @@
                   </div>
                   <div class="field-row">
                     <span class="field-label">Dispatch</span>
-                    <span class="field-value">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">Unassigned</span>'}</span>
+                    <span class="field-value">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">Unassigned</span>'}</span>
                   </div>
                 </div>
               </div>
@@ -1200,13 +1201,13 @@
 
           <div class="card">
             <h2>Activity Timeline</h2>
-            <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${esc(h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
+            <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${personLink(h.user_id,h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
           </div>
           <div class="card">
             <h2>Comments</h2>
-            <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
+            <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone. Use <b>@owner</b> or the owner’s username for an urgent WhatsApp alert, if they enabled it.</p>
             <div id="comments">${r.comments.length ? r.comments.map((c) => `
-              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+              <div class="comment"><div class="meta"><b>${personLink(c.user_id,c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
             </div>
             <form id="commentForm" style="margin-top:1rem">
               <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
@@ -1215,9 +1216,10 @@
             </form>
           </div>
         </div>
-      </div>`);
+      </div><section class="card" id="energyOptions" style="margin-top:1rem"></section>`);
 
     // Section collapse toggles
+    window.EnergyOptions?.bind({root:document.getElementById('energyOptions'),ref:r,api,esc,toast});
     document.querySelectorAll('[data-toggle-section]').forEach((hdr) => {
       hdr.onclick = () => hdr.closest('.record-section').classList.toggle('collapsed');
     });
@@ -1418,7 +1420,7 @@
       <tbody>${rows.map((u) => `<tr ${attrs(u)}><td>${nameOf(u)}</td>${STATUSES.map((s) => `<td class="num">${u[s]}</td>`).join('')}<td class="num"><b>${u.total}</b></td></tr>`).join('') || `<tr><td colspan="${STATUSES.length + 2}" class="muted">Nothing yet.</td></tr>`}</tbody>
     </table></div>`;
   }
-  const repName = (u) => `<b>${esc(u.full_name)}</b>${u.role !== 'rep' ? ` <span class="small muted">${roleLabel(u.role)}</span>` : ''}`;
+  const repName = (u) => `<b>${personLink(u.id,u.full_name)}</b>${u.role !== 'rep' ? ` <span class="small muted">${roleLabel(u.role)}</span>` : ''}`;
 
   async function renderSales() {
     const params = query();
@@ -1452,10 +1454,10 @@
       el.onclick = () => { location.hash = '#/sales?' + new URLSearchParams({ ...params, period, team_id: el.dataset.team }).toString(); };
     });
     document.querySelectorAll('[data-user]').forEach((el) => {
-      el.onclick = () => { location.hash = `#/referrals?scope=${listScope}&user_id=${el.dataset.user}`; };
+      el.onclick = (e) => { if (!e.target.closest('a')) location.hash = `#/referrals?scope=${listScope}&user_id=${el.dataset.user}`; };
     });
     document.querySelectorAll('[data-assignee]').forEach((el) => {
-      el.onclick = () => { location.hash = `#/referrals?scope=all&assigned_to=${el.dataset.assignee}`; };
+      el.onclick = (e) => { if (!e.target.closest('a')) location.hash = `#/referrals?scope=all&assigned_to=${el.dataset.assignee}`; };
     });
   }
 
@@ -1493,7 +1495,7 @@
     try { s = await api('/whatsapp/status'); } catch (err) { card.innerHTML = `<h2>WhatsApp alerts</h2><div class="alert err small">${esc(err.message)}</div>`; return; }
     if (!document.getElementById('waLinkCard')) return;
     const chip = { off: ['Off', ''], starting: ['Connecting…', 'wait'], qr: ['Scan the QR code', 'wait'], connected: ['Connected', 'ok'], reconnecting: ['Reconnecting…', 'wait'], logged_out: ['Disconnected — scan again', 'bad'], replaced: ['Linked somewhere else', 'bad'] }[s.status] || [s.status, ''];
-    const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) so the app can post every new lead to your dispatch group and send people their alerts. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
+    const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) for urgent order and owner-mention alerts. Routine updates stay in the app; group lead posts are optional and off by default. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
     let body = '';
     if (s.status === 'off' || s.status === 'logged_out' || s.status === 'replaced') {
       body = `${s.status !== 'off' ? `<div class="alert warn small">${s.status === 'replaced' ? 'This WhatsApp was linked to another computer, so it disconnected here. Connect again to take it back.' : 'The phone disconnected this link. Connect and scan again.'}</div>` : ''}
@@ -1507,7 +1509,7 @@
         <div class="field"><label for="waGroup">Post new leads to this group</label>
           <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
-        <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the group (in the format below)</label>
+        <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Also post every new lead to the group (optional; adds routine WhatsApp messages)</label>
         <h3 class="wa-h3">Replies in the group</h3>
         <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status</span></label>
         <div class="field" style="max-width:420px"><label for="waApproved">When someone writes <b>approved</b> / <b>aprobado</b>, set the lead to</label>
@@ -1616,6 +1618,17 @@
 
   // ---------- assistant page: chat + reminders ----------
 
+  async function drawEnergySettings() {
+    const card=document.getElementById('energySettings');if(!card)return;
+    try {
+      const cfg=await api('/energy/settings');if(!card.isConnected)return;
+      card.innerHTML=`<h2>Energy options · ComparePower</h2><p class="small muted">Optional Texas energy checks on any customer record. Plans and meter lookups need no API key. Checkout attribution credits the opportunity owner’s tracking ID, with the default below when theirs is blank.</p>
+        <form id="energySettingsForm"><div class="grid-2"><div class="field"><label for="energyAfid">Organization refid (cp_afid)</label><input id="energyAfid" maxlength="80" value="${esc(cfg.afid)}"></div><div class="field"><label for="energyAfuid">Default team tracking ID (cp_afuid)</label><input id="energyAfuid" maxlength="80" value="${esc(cfg.default_afuid)}"></div></div><button class="btn primary">Save energy settings</button><p class="small" role="status" id="energySettingsState"></p></form>`;
+      card.querySelector('form').onsubmit=async(e)=>{e.preventDefault();const btn=e.target.querySelector('button'),feedback=card.querySelector('#energySettingsState');btn.disabled=true;
+        try{await api('/energy/settings',{method:'PATCH',body:{afid:card.querySelector('#energyAfid').value,default_afuid:card.querySelector('#energyAfuid').value}});feedback.textContent='Energy attribution saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}};
+    }catch(err){if(card.isConnected)card.innerHTML=`<h2>Energy options</h2><p class="alert err">${esc(err.message)}</p><button class="btn" id="energySettingsRetry">Retry</button>`;card.querySelector('#energySettingsRetry')?.addEventListener('click',drawEnergySettings);}
+  }
+
   async function drawCoachCard() {
     const card=document.getElementById('coachCard'); if(!card)return;
     try {
@@ -1636,7 +1649,7 @@
           <div class="fix-grid" style="margin-top:.8rem"><div><label for="coachTime">Weekday check-in time</label><input type="time" id="coachTime" value="${esc(s.time)}" required></div>
           <div><label for="coachDays">Minimum days between check-ins</label><input type="number" id="coachDays" min="1" max="30" value="${s.days}" required></div>
           <div class="full"><label for="coachReviewer">Owner who approves difficult answers</label><select id="coachReviewer">${s.reviewers.map((r)=>`<option value="${r.id}" ${r.id===(s.reviewer_id||state.me.id)?'selected':''}>${esc(r.full_name)}</option>`).join('')}</select></div></div>
-          <p class="small muted">${esc(s.tz)} · weekdays during business hours. Automatic check-ins go to active sellers and managers with WhatsApp alerts on who have not entered a lead in ${s.days} days. No check-ins while an answer awaits review. Sellers can reply STOP / ALTO and START / REANUDAR. Manual check-ins can include active sellers, but keep the same cooldown.</p>
+          <p class="small muted">${esc(s.tz)} · weekdays during business hours. Automatic check-ins go to active sellers and managers who opted in under My account → Notification preferences and have WhatsApp alerts on, and who have not entered a lead in ${s.days} days. No check-ins while an answer awaits review. Sellers can reply STOP / ALTO and START / REANUDAR. Manual check-ins can include active sellers, but keep the same cooldown.</p>
           <div class="field"><label for="coachKnowledge">Approved seller knowledge: product pricing and FAQ</label><textarea id="coachKnowledge" rows="6" maxlength="6000" placeholder="Add approved products, prices, qualification rules, promo dates, taxes and fees, and how to enter leads. Exclude all compensation information.">${esc(s.knowledge)}</textarea>
             <p class="small muted">The coach quotes only documented offers. Missing prices, exceptions, unclear terms and difficult questions need owner review.</p></div>
           ${!s.ai||!s.connected?'<p class="alert warn small">Coaching needs the assistant enabled with its API key and WhatsApp connected. Settings can be saved now.</p>':''}
@@ -1893,7 +1906,7 @@
           <label class="check"><input type="checkbox" name="auto_assign" ${settings.auto_assign === '1' ? 'checked' : ''}> Automatically assign new leads to dispatch</label>
           <p class="small muted" style="margin:.2rem 0 1rem">Each new lead goes to the active dispatcher with the fewest open leads. Off: leads wait in <b>Unassigned</b> until someone takes them.</p>
           <label class="check"><input type="checkbox" name="new_lead_alert" ${settings.new_lead_alert !== '0' ? 'checked' : ''}> Alert every dispatcher the moment a new lead comes in</label>
-          <p class="small muted" style="margin:.2rem 0 1rem">In the app, on their phone, and on WhatsApp for anyone who turned WhatsApp alerts on.</p>
+          <p class="small muted" style="margin:.2rem 0 1rem">In the app, with email and phone push delivery based on each person’s notification preferences. WhatsApp is reserved for orders and owner mentions.</p>
           <label for="tpl">Entry template</label>
           <textarea id="tpl" name="entry_template" rows="7" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem">${esc(settings.entry_template)}</textarea>
           <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
@@ -1916,6 +1929,7 @@
       <div class="card" id="waLinkCard"><h2>WhatsApp alerts</h2><p class="small muted">Loading…</p></div>
       <div class="card" id="aiCard"><h2>🤖 Assistant</h2><p class="small muted">Loading…</p></div>
       <div class="card" id="coachCard"><h2>Seller coach</h2><p class="small muted">Loading…</p></div>
+      <div class="card" id="energySettings"><h2>Energy options</h2><p class="small muted">Loading…</p></div>
       <form class="card" id="waForm">
         <h2>WhatsApp message for dispatch</h2>
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
@@ -1953,7 +1967,7 @@
             const self = u.id === state.me.id;
             const pwOld = !u.must_change_password && daysSince(u.password_changed_at) > 90;
             return `<tr class="${u.active ? '' : 'inactive'}">
-              <td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
+              <td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
                 <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
                 <div class="small">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div></td>
               <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
@@ -2055,6 +2069,7 @@
     if (document.getElementById('waLinkCard')) drawWaLink();
     if (document.getElementById('aiCard')) drawAiCard();
     if (document.getElementById('coachCard')) drawCoachCard();
+    if (document.getElementById('energySettings')) drawEnergySettings();
     const waForm = document.getElementById('waForm');
     if (waForm) {
       const tpl = document.getElementById('waTpl');
@@ -2641,7 +2656,7 @@
       </div>
       ${adm.pending.length ? `<div class="card"><h2>Waiting for approval (${adm.pending.length})</h2>
         <div class="table-wrap"><table class="rtable"><thead><tr><th>Name</th><th>Contact</th><th>Invited by</th><th>Signed up</th><th></th></tr></thead><tbody>
-        ${adm.pending.map((u) => `<tr><td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</div></td>
+        ${adm.pending.map((u) => `<tr><td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</div></td>
           <td data-label="Contact" class="small">${esc(u.email)}${u.phone ? `<div>${esc(u.phone)}</div>` : ''}</td><td data-label="Invited by">${esc(u.sponsor_name || '—')}</td><td data-label="Signed up">${when(u.created_at)}</td>
           <td class="actions"><button class="btn small primary" data-approve="${u.id}">Approve</button> <button class="btn small danger" data-reject="${u.id}" data-name="${esc(u.full_name)}">Reject</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
@@ -3066,7 +3081,7 @@
       <li><b>Notifications:</b> go to ${isAdmin() ? '<a href="#/account">Admin → My account</a>' : '<a href="#/account">Account → Profile</a>'} → <b>Phone notifications</b> and tap <b>Turn on</b>. You'll get alerts for orders 🎉, leads assigned to you, @mentions and call-back reminders, even when the app is closed. On iPhone this works once the app is on your Home Screen.</li>
       <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
       <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
-      <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on to get your alerts there too${role() === 'dispatch' ? ', including every new lead the moment it comes in' : ''}.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; every new lead is then posted there automatically.' : ''}</li>
+      <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on for urgent orders and owner mentions; choose email and phone push by event under Notification preferences.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; group lead posts are optional and off by default.' : ''}</li>
       <li><b>🤖 Assistant</b> (menu → Assistant): ask in English or Spanish about leads and numbers (<i>what's waiting for a call?</i>, <i>how did we do this week?</i>), or have it add a note, change a status or set a reminder (<i>remind me tomorrow at 9 to call #12</i>). It acts as you, with your permissions. On WhatsApp, start a message in the group with <b>bot</b>, reply to its answer to keep talking, or message the alerts number privately. Reminders can also be added by hand on the same page.</li>
       <li><b>Working leads from the WhatsApp group:</b> <b>reply</b> to a lead's post to add a note (it shows on the lead as <i>via WhatsApp</i>). The first dispatcher to reply takes the lead. Words like <i>approved / aprobado</i>, <i>passed / pasó</i>, <i>DNQ / no califica</i> or <i>cancelled / cancelado</i> change its status. Add <b>@owner</b> (or <b>@dueño</b>) to send the note to the rep who entered it. No post to reply to? Start with the lead number: <i>#123 approved</i>. Type <b>help</b> or <b>ayuda</b> in the group for the full instructions${isAdmin() ? '; admins can also post them from Admin → Settings → WhatsApp alerts' : ''}.</li>
       <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
@@ -3388,7 +3403,7 @@
     if (me.whatsapp) return '';
     const until = lsGet(`eo-wa-nudge-${me.id}`, 0);
     if (until > Date.now()) return '';
-    return `<div class="help-nudge" id="waNudge"><span>💬 <b>Get your alerts on WhatsApp</b> — ${role() === 'dispatch' ? 'every new lead the second it comes in' : 'orders on your leads, @mentions and reminders'}. Add your number in 30 seconds.</span>
+    return `<div class="help-nudge" id="waNudge"><span>💬 <b>Get your alerts on WhatsApp</b> — orders on your opportunities and owner @mentions. Add your number in 30 seconds.</span>
       <a class="btn small primary" href="#/account">Add my WhatsApp</a><button class="link-btn small" id="waNudgeX" aria-label="Dismiss">Later</button></div>`;
   }
   document.addEventListener('click', (e) => {
@@ -3414,19 +3429,34 @@
 
   // ---------- my account ----------
 
+  async function renderPerson(id) {
+    const data=await api(`/people/${id}`),p=data.person;
+    shell(`<div class="card profile-hero"><div class="profile-avatar" aria-hidden="true">${esc(p.full_name.split(/\s+/).map((n)=>n[0]).slice(0,2).join('').toUpperCase())}</div><div><h1 style="margin:0">${esc(p.full_name)}</h1><p class="muted">@${esc(p.username)} · ${roleLabel(p.role)}${p.team_name?' · '+esc(p.team_name):''}${p.active?'':' · Inactive'}</p>${p.id===state.me.id?'<a href="#/account">My account and preferences</a>':''}</div></div>
+      <p class="small muted">This wall shows only opportunities and activity you have permission to see.</p>
+      <div class="stats"><div class="stat"><div class="n">${data.summary.opportunities}</div><div class="l">Opportunities owned</div></div><div class="stat"><div class="n">${data.summary.open}</div><div class="l">Open</div></div><div class="stat"><div class="n">${data.summary.ordered}</div><div class="l">Ordered</div></div></div>
+      <div class="grid-2" style="margin-top:1rem"><div class="card"><h2>Activity wall</h2><ul class="timeline">${data.activity.map((a)=>`<li><span class="small muted">${esc(fullDate(a.created_at))}</span><p><a href="#/r/${a.referral_id}">${esc(a.customer_name)}</a> ${a.kind==='status'?a.from_status?`changed ${pill(a.from_status)} → ${pill(a.to_status)}`:'opportunity entered':`<span style="white-space:pre-wrap">${esc(a.body)}</span>`}</p></li>`).join('')||'<li class="muted">No visible activity yet.</li>'}</ul></div><div class="card"><h2>Owned opportunities</h2><div class="stack">${data.leads.map((r)=>`<div class="row between"><a href="#/r/${r.id}">${esc(r.name)}</a>${pill(r.status)}</div>`).join('')||'<p class="muted">No visible opportunities yet.</p>'}</div></div></div>`);
+  }
+
   async function renderAccount() {
     const me = state.me;
     shell(`
       <div class="narrow narrow-title"><h1 style="margin:0">My account</h1>
-        <p class="muted" style="margin:.2rem 0 0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p></div>
+        <p class="muted" style="margin:.2rem 0 0">${personLink(me.id,me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p></div>
       <form class="card narrow" id="waMeForm">
         <h2>💬 WhatsApp alerts</h2>
-        <p class="small muted" style="margin-top:0">Get your alerts as WhatsApp messages too: ${role() === 'dispatch' ? 'every new lead, leads assigned to you' : 'orders on your leads'}, @mentions and call-back reminders.</p>
+        <p class="small muted" style="margin-top:0">WhatsApp alerts are reserved for orders on your opportunities and messages that @mention you as the owner. Routine updates remain in the app. Choose your channels below.</p>
         <div class="field"><label for="waMe">Your WhatsApp number</label><input id="waMe" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0142" value="${esc(me.whatsapp || '')}"></div>
         <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waMeOn" ${me.whatsapp_alerts || !me.whatsapp ? 'checked' : ''}> Send my alerts to WhatsApp</label>
         ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
         <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
       </form>
+      <form class="card" id="notificationPrefsForm">
+        <h2>Notification preferences</h2><p class="small muted">All events stay in your in-app bell. Choose email and phone push alerts by event. WhatsApp is available for urgent owner events only; its number and master switch are above.</p>
+        <div class="table-wrap"><table class="preferences-table"><thead><tr><th>Event</th><th>Email</th><th>Phone push</th><th>WhatsApp</th></tr></thead><tbody>${Object.entries({ordered:'Lead ordered',owner_mention:'Owner @mentioned',lead_updates:'Other status changes',assignments:'Assignments / entered for you',comments:'Comments / other mentions',new_leads:'New leads',reminders:'Reminders',escalations:'Waiting-lead alerts',coaching_review:'Coaching approvals',general:'Other alerts'}).map(([event,label])=>`<tr><td>${label}</td>${['email','push','whatsapp'].map((channel)=>`<td>${channel!=='whatsapp'||['ordered','owner_mention'].includes(event)?`<label class="pref-choice"><input type="checkbox" data-pref-event="${event}" data-pref-channel="${channel}" aria-label="${label} ${channel}" ${me.notification_preferences?.events?.[event]?.[channel]?'checked':''}></label>`:'<span class="muted" aria-label="Not sent on WhatsApp">—</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <label class="check" style="margin-top:1rem"><input id="automaticCoaching" type="checkbox" ${me.notification_preferences?.automatic_coaching?'checked':''}> Opt in to automatic WhatsApp coaching check-ins</label><p class="small muted">Off by default. Manual check-ins and replies to questions you send still work. STOP / ALTO also pauses coaching.</p>
+        <p id="prefsState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save notification preferences</button>
+      </form>
+      <form class="card narrow" id="energyTrackingForm"><h2>Energy referral attribution</h2><p class="small muted">Your ComparePower team tracking ID credits checkouts for opportunities you own. Leave blank to use the organization default.</p><label for="energyTrackingId">Team tracking ID (cp_afuid)</label><input id="energyTrackingId" maxlength="80" value="${esc(me.comparepower_afuid||'')}"><button class="btn" style="margin-top:.8rem">Save tracking ID</button><p id="energyTrackingState" class="small" role="status"></p></form>
       <form class="card narrow" id="acctForm">
         <h2>Email</h2>
         <div class="field"><label for="em">Email</label><input id="em" type="email" autocapitalize="none" placeholder="you@example.com" value="${esc(me.email)}"></div>
@@ -3446,6 +3476,13 @@
       </div>`);
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
     drawPushCard();
+    document.getElementById('notificationPrefsForm').onsubmit=async(e)=>{
+      e.preventDefault();const btn=e.target.querySelector('button'),feedback=document.getElementById('prefsState');btn.disabled=true;feedback.textContent='Saving preferences…';
+      const prefs={events:{},automatic_coaching:document.getElementById('automaticCoaching').checked};
+      e.target.querySelectorAll('[data-pref-event]').forEach((el)=>{(prefs.events[el.dataset.prefEvent]||={})[el.dataset.prefChannel]=el.checked;});
+      try{await api('/me/notification-preferences',{method:'PATCH',body:prefs});await refreshMe();feedback.textContent='Notification preferences saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}
+    };
+    document.getElementById('energyTrackingForm').onsubmit=async(e)=>{e.preventDefault();const feedback=document.getElementById('energyTrackingState');try{await api('/me',{method:'PATCH',body:{comparepower_afuid:document.getElementById('energyTrackingId').value}});await refreshMe();feedback.textContent='Tracking ID saved.';}catch(err){feedback.textContent=err.message;}};
     document.getElementById('waMeForm').onsubmit = async (e) => {
       e.preventDefault();
       try {
@@ -4116,6 +4153,7 @@
     try {
       let m;
       if ((m = h.match(/^#\/r\/(\d+)$/))) return await renderReferral(m[1]);
+      if ((m = h.match(/^#\/people\/(\d+)$/))) return await renderPerson(m[1]);
       if (h === '#/referrals') return await renderReferrals();
       if (h === '#/board') return await renderBoard();
       if (h === '#/duplicates') return await renderDuplicates();

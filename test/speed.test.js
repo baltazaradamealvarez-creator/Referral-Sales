@@ -141,7 +141,7 @@ test('call-back reminders', async (t) => {
   assert.equal(db.prepare('SELECT follow_up_at FROM referrals WHERE id = ?').get(lead.id).follow_up_at, null);
 });
 
-test('push notifications: subscribe, every notification is pushed, dead devices removed', async (t) => {
+test('push notifications: subscribe, event preferences suppress delivery, dead devices removed', async (t) => {
   const real = webpush.sendNotification;
   const sent = [];
   webpush.sendNotification = async (sub, payload) => {
@@ -169,6 +169,14 @@ test('push notifications: subscribe, every notification is pushed, dead devices 
   assert.equal(sent[0].url, `/#/r/${lead.id}`);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get().n, 1, 'expired device removed');
 
+  await rep.c.patch('/me/notification-preferences',{events:{ordered:{push:false}}});
+  await a.patch(`/referrals/${lead.id}`,{status:'Working'});
+  await new Promise(r=>setTimeout(r,50));
+  const before=sent.length;
+  await a.patch(`/referrals/${lead.id}`,{status:'Ordered'});
+  await new Promise(r=>setTimeout(r,50));
+  assert.equal(sent.length,before,'order push off leaves other event preferences unchanged');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND event_type='ordered'").get(rep.id).n,2,'muted orders remain in the bell');
   assert.equal((await rep.c.post('/push/test')).status, 200);
   await rep.c.post('/push/unsubscribe', { endpoint: 'https://push.example.com/phone' });
   assert.equal((await rep.c.post('/push/test')).status, 400);

@@ -2,6 +2,7 @@
 
 const { digitsOf } = require('./whatsapp');
 const { containsComp, cleanKnowledge } = require('./seller-policy');
+const { read:readPreferences } = require('./notification-preferences');
 
 const sqlTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 const isSpanish = (text) => /[¿¡]|\b(hola|precio|precios|cuanto|cuánto|necesito|ayuda|puedo|gracias)\b/i.test(String(text)) && !/\b(the|what|how|please|need)\b/i.test(String(text));
@@ -18,7 +19,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
       reviewer_id: Number(s.coach_reviewer_id) || null, knowledge: s.coach_knowledge || '' };
   };
   const reviewer = () => db.prepare("SELECT id,username FROM users WHERE id = ? AND role='admin' AND active=1").get(cfg().reviewer_id);
-  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active FROM users WHERE id=? AND role IN ('rep','manager')").get(id);
+  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active,notification_preferences FROM users WHERE id=? AND role IN ('rep','manager')").get(id);
   const pending = (id) => db.prepare("SELECT id FROM coach_drafts WHERE seller_id=? AND status IN ('pending','queued','failed') LIMIT 1").get(id);
   const local = (now) => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: speedConfig().tz, hourCycle:'h23', weekday:'short',hour:'numeric',minute:'numeric' }).formatToParts(new Date(now)).map((x) => [x.type,x.value]));
   const working = (now) => { const p = local(now); const h = +p.hour + +p.minute/60; const hours = speedConfig().hours; return !['Sat','Sun'].includes(p.weekday) && h >= hours[0] && h < hours[1]; };
@@ -29,6 +30,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
 
   function eligibility(u, now, manual = false) {
     if (!u || !u.active || !['rep','manager'].includes(u.role)) return 'Not an active seller or manager';
+    if (!manual && !readPreferences(u.notification_preferences).automatic_coaching) return 'Automatic coaching is off in notification preferences';
     if (!u.whatsapp_alerts || !u.whatsapp || digitsOf(u.whatsapp).length < 11) return 'WhatsApp alerts are off or no number is saved';
     if (whatsapp.me() && digitsOf(whatsapp.me().number) === digitsOf(u.whatsapp)) return 'Seller uses the bot’s own linked number';
     const c = contact(u.id);
@@ -85,7 +87,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const p = local(now); const [h,m] = c.time.split(':').map(Number); const late = +p.hour*60 + +p.minute - (h*60+m);
     if (late < 0 || late > 120) return [];
     const queued = [];
-    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts FROM users WHERE active=1 AND role IN ('rep','manager') AND whatsapp_alerts=1").all()) {
+    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts,notification_preferences FROM users WHERE active=1 AND role IN ('rep','manager') AND whatsapp_alerts=1").all()) {
       if (queued.length >= 20) break;
       if (eligibility(u,now)) continue;
       sendCheckin(u,now);
@@ -102,7 +104,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const r = db.prepare('INSERT OR IGNORE INTO coach_drafts(seller_id,reviewer_id,question,draft,reason,chat,message_id) VALUES (?,?,?,?,?,?,?)')
       .run(u.id,owner.id,String(question).slice(0,2000),draft,String(reason).slice(0,500),chat||'',messageId||'');
     if (r.changes) {
-      notify(owner.id,null,`📝 Seller reply needs your approval: ${u.full_name}. Open Admin → Settings → Seller coach.`);
+      notify(owner.id,null,`📝 Seller reply needs your approval: ${u.full_name}. Open Admin → Settings → Seller coach.`,'coaching_review');
       logAudit({ user:u, ip:'seller-coach' },'coach.review','coach_draft',Number(r.lastInsertRowid),'Seller question routed for owner approval');
     }
     return acknowledgement(isSpanish(question));

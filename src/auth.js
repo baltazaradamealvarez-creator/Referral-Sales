@@ -57,7 +57,7 @@ function loadUser(db, req) {
   if (!token) return null;
   const row = db.prepare(`
     SELECT u.id, u.username, u.full_name, u.role, u.team_id, u.active, u.must_change_password, u.email, u.email_alerts, u.dashboard_layout, u.phone, u.payments_enabled, u.whatsapp, u.whatsapp_alerts,
-           t.name AS team_name, s.expires_at
+           u.notification_preferences,u.comparepower_afuid,t.name AS team_name, s.expires_at
     FROM sessions s JOIN users u ON u.id = s.user_id
     LEFT JOIN teams t ON t.id = u.team_id
     WHERE s.token = ?`).get(token);

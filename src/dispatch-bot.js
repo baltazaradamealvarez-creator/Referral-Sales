@@ -261,7 +261,8 @@ function mount(app, db, deps) {
     // "@owner"/"@dueño", or a WhatsApp @-mention of the rep themselves.
     const owner = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(ref.created_by);
     const ownerDigits = owner && owner.whatsapp ? digitsOf(owner.whatsapp) : '';
-    let notifyOwner = OWNER_TAG.test(note) || (!!ownerDigits && (m.mentions || []).some((j) => digitsOf(String(j).split(/[:@]/)[0]) === ownerDigits));
+    const ownerMention = OWNER_TAG.test(note) || (!!ownerDigits && (m.mentions || []).some((j) => digitsOf(String(j).split(/[:@]/)[0]) === ownerDigits));
+    let notifyOwner = ownerMention;
     let question = '';
     if (ai.enabled()) {
       try {
@@ -277,7 +278,7 @@ function mount(app, db, deps) {
 
     const changes = [];
     try {
-      addComment(user, ref, note, { source: 'whatsapp', notifyOwner });
+      addComment(user, ref, note, { source: 'whatsapp', notifyOwner, ownerMention });
       if (!ref.assigned_to && seesAll(user)) {
         updateReferral(user, ref.id, { assigned_to: user.id });
         changes.push(`👤 ${user.full_name.split(' ')[0]}`);

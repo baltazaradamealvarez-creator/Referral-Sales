@@ -249,10 +249,10 @@ function mount(app, db, deps) {
     const ref = m.referral_id ? db.prepare('SELECT id, customer_name FROM referrals WHERE id = ?').get(m.referral_id) : null;
     const by = m.created_by && m.created_by !== m.user_id ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(m.created_by) : null;
     const text = `⏰ Reminder: ${m.text}${ref ? ` — ${label(ref)}` : ''}${by ? ` (from ${by.full_name})` : ''}`;
-    if (m.user_id != null) { notify(m.user_id, ref ? ref.id : null, text); return; }
+    if (m.user_id != null) { notify(m.user_id, ref ? ref.id : null, text,'reminders'); return; }
     const link = ref && leadLink(ref.id) ? `\n${leadLink(ref.id)}` : '';
     if (!(whatsapp && whatsapp.postToGroup(`${text}${link}`, null, { force: true })) && m.created_by) {
-      notify(m.created_by, ref ? ref.id : null, `${text} (couldn't post it to the WhatsApp group)`);
+      notify(m.created_by, ref ? ref.id : null, `${text} (couldn't post it to the WhatsApp group)`,'reminders');
     }
   }
 

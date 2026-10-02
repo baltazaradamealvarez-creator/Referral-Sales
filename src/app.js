@@ -12,6 +12,7 @@ const { buildDashboard, WIDGETS } = require('./dashboard');
 const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
 const waFormat = require('../public/waformat');
+const notificationPrefs = require('./notification-preferences');
 const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -271,8 +272,9 @@ function createApp(db, opts = {}) {
   // no longer exists when the queue is flushed, so it is never emailed.
   // Also pushed to the user's phones, and emailed when they want email alerts.
   let noteQueue = [];
-  function notify(userId, referralId, message) {
-    const r = db.prepare('INSERT INTO notifications (user_id, referral_id, message) VALUES (?, ?, ?)').run(userId, referralId, message);
+  function notify(userId, referralId, message, event = 'general') {
+    const type=Object.hasOwn(notificationPrefs.EVENTS,event)?event:'general';
+    const r = db.prepare('INSERT INTO notifications (user_id, referral_id, message,event_type) VALUES (?, ?, ?,?)').run(userId, referralId, message,type);
     if (!noteQueue.length) setImmediate(flushNotifications);
     noteQueue.push(Number(r.lastInsertRowid));
   }
@@ -281,22 +283,22 @@ function createApp(db, opts = {}) {
     const ids = noteQueue;
     noteQueue = [];
     const rows = db.prepare(`
-      SELECT n.id, n.user_id, n.referral_id, n.message, u.full_name, u.email, u.email_alerts, u.whatsapp, u.whatsapp_alerts
+      SELECT n.id, n.user_id, n.referral_id, n.message,n.event_type, u.full_name, u.email, u.email_alerts, u.whatsapp, u.whatsapp_alerts,u.notification_preferences
       FROM notifications n JOIN users u ON u.id = n.user_id
       WHERE n.id IN (${ids.map(() => '?').join(',')}) AND u.active = 1`).all(...ids);
     const settings = getSettings();
     const emailOn = mail.emailConfig(settings).enabled;
     for (const row of rows) {
-      if (push) {
+      if (push && notificationPrefs.allows(row.notification_preferences,row.event_type,'push')) {
         push.sendPush(row.user_id, { body: row.message, url: row.referral_id ? `/#/r/${row.referral_id}` : '/#/notifications', tag: `n${row.id}` })
           .catch((e) => console.error(`Push failed: ${e.message}`));
       }
-      if (whatsapp) {
+      if (whatsapp && notificationPrefs.allows(row.notification_preferences,row.event_type,'whatsapp')) {
         const { appUrl } = mail.emailConfig(settings);
         const link = appUrl ? `\n${appUrl}/#/${row.referral_id ? `r/${row.referral_id}` : 'notifications'}` : '';
         whatsapp.sendToUser(row, `🔔 ${row.message}${link}`);
       }
-      if (!emailOn || !row.email_alerts || !row.email) continue;
+      if (!emailOn || !row.email_alerts || !row.email || !notificationPrefs.allows(row.notification_preferences,row.event_type,'email')) continue;
       const msg = mail.alertEmail({ fullName: row.full_name, message: row.message, referralId: row.referral_id }, settings);
       mail.sendEmail({ to: row.email, ...msg }, settings).then((res) => {
         if (!res.ok) console.error(`Email to ${row.email} failed: ${res.error}`);
@@ -482,12 +484,14 @@ function createApp(db, opts = {}) {
       payments: u.role === 'admin' || u.role === 'manager' || !!u.payments_enabled,
       affiliate: getSettings().affiliate_enabled === '1',
       whatsapp: u.whatsapp || '', whatsapp_alerts: !!u.whatsapp_alerts, whatsapp_ready: !!whatsapp && whatsapp.status() === 'connected',
+      notification_preferences:notificationPrefs.read(u.notification_preferences),comparepower_afuid:u.comparepower_afuid||'',
     };
   }));
 
   app.patch('/api/me', wrap((req) => {
     const u = requireUser(req);
     const b = req.body || {};
+    if(b.comparepower_afuid!==undefined){const id=String(b.comparepower_afuid).trim();if(id&&!/^[A-Za-z0-9._-]{1,80}$/.test(id))throw new HttpError(400,'Tracking ID must use letters, numbers, dots, underscores or hyphens.');db.prepare('UPDATE users SET comparepower_afuid=? WHERE id=?').run(id,u.id);}
     if (b.email !== undefined) db.prepare('UPDATE users SET email = ? WHERE id = ?').run(cleanEmail(b.email), u.id);
     if (b.phone !== undefined) {
       const phone = String(b.phone || '').trim().slice(0, 30);
@@ -501,6 +505,12 @@ function createApp(db, opts = {}) {
       db.prepare('UPDATE users SET dashboard_layout = ? WHERE id = ?').run(layout, u.id);
     }
     return { ok: true };
+  }));
+  app.patch('/api/me/notification-preferences',wrap((req)=>{
+    const u=requireUser(req);let preferences;
+    try{notificationPrefs.validate(req.body);preferences=notificationPrefs.read(u.notification_preferences);for(const [event,channels]of Object.entries(req.body.events||{}))Object.assign(preferences.events[event],channels);if(req.body.automatic_coaching!==undefined)preferences.automatic_coaching=req.body.automatic_coaching;}catch(e){throw new HttpError(400,e.message);}
+    db.prepare('UPDATE users SET notification_preferences=? WHERE id=?').run(JSON.stringify(preferences),u.id);
+    return preferences;
   }));
 
   app.post('/api/me/password', wrap((req) => {
@@ -678,8 +688,8 @@ function createApp(db, opts = {}) {
       );
       const id = Number(r.lastInsertRowid);
       db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, NULL, ?)').run(id, u.id, 'New');
-      if (owner.id !== u.id) notify(owner.id, id, `${u.full_name} entered ${lead.name || 'a referral'} for you`);
-      if (assignee && assignee !== u.id) notify(assignee, id, `New lead assigned to you: ${lead.name || `lead #${id}`}`);
+      if (owner.id !== u.id) notify(owner.id, id, `${u.full_name} entered ${lead.name || 'a referral'} for you`,'assignments');
+      if (assignee && assignee !== u.id) notify(assignee, id, `New lead assigned to you: ${lead.name || `lead #${id}`}`,'assignments');
       return { id };
     });
     if (result.dup) {
@@ -699,7 +709,7 @@ function createApp(db, opts = {}) {
     if (settings.new_lead_alert !== '0') {
       const msg = `🆕 New lead: ${leadLabel(ref)}${ref.phone ? ` · ${ref.phone}` : ''} — from ${ref.created_by_name}. Tap to take it.`;
       for (const d of db.prepare("SELECT id FROM users WHERE role = 'dispatch' AND active = 1").all()) {
-        if (d.id !== enteredBy.id && d.id !== ref.assigned_to) notify(d.id, ref.id, msg);
+        if (d.id !== enteredBy.id && d.id !== ref.assigned_to) notify(d.id, ref.id, msg,'new_leads');
       }
     }
     if (whatsapp) {
@@ -820,9 +830,9 @@ function createApp(db, opts = {}) {
     const u = requireUser(req);
     const ref = getReferral(req.params.id);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
-    const comments = db.prepare(`SELECT c.id, c.body, c.created_at, c.source, u.full_name, u.username
+    const comments = db.prepare(`SELECT c.id, c.user_id, c.body, c.created_at, c.source, u.full_name, u.username
       FROM comments c JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
-    const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name
+    const history = db.prepare(`SELECT h.user_id, h.from_status, h.to_status, h.created_at, u.full_name
       FROM status_history h JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
     const toMs = (x) => Date.parse(`${x.replace(' ', 'T')}Z`);
     const speedInfo = ref.first_touch_at
@@ -857,7 +867,7 @@ function createApp(db, opts = {}) {
         if (ref.created_by !== u.id) {
           notify(ref.created_by, ref.id, body.status === 'Ordered'
             ? `🎉 Your lead ${leadLabel(ref)} was Ordered! (${u.full_name})`
-            : `${u.full_name} marked ${leadLabel(ref)} as ${body.status}`);
+            : `${u.full_name} marked ${leadLabel(ref)} as ${body.status}`,body.status==='Ordered'?'ordered':'lead_updates');
         }
         speed.touch(ref, u.id);
         // An order with no commission yet gets the default one (Affiliate settings).
@@ -894,7 +904,7 @@ function createApp(db, opts = {}) {
         if (to !== ref.assigned_to) {
           db.prepare(`UPDATE referrals SET assigned_to = ?, assigned_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ${touch} WHERE id = ?`)
             .run(to, to, ref.id);
-          if (to && to !== u.id) notify(to, ref.id, `${u.full_name} assigned ${leadLabel(ref)} to you`);
+          if (to && to !== u.id) notify(to, ref.id, `${u.full_name} assigned ${leadLabel(ref)} to you`,'assignments');
           if (to === u.id) speed.touch(ref, u.id);
         }
       }
@@ -964,26 +974,30 @@ function createApp(db, opts = {}) {
 
   // A note on a lead. opts.source: 'app' | 'whatsapp'. WhatsApp notes only alert the lead's
   // owner when asked to (@owner), so dispatch chatter in the group doesn't flood the reps.
-  function addComment(u, ref, text, { source = 'app', notifyOwner = true } = {}) {
+  function addComment(u, ref, text, { source = 'app', notifyOwner = true, ownerMention = false, allowMentions = true } = {}) {
     const body = String(text || '').trim().slice(0, 2000);
     if (!body) throw new HttpError(400, 'Comment is empty.');
     tx(db, () => {
       db.prepare('INSERT INTO comments (referral_id, user_id, body, source) VALUES (?, ?, ?, ?)').run(ref.id, u.id, body, source);
       speed.touch(ref, u.id);
       const audience = referralAudience(ref);
-      const mentioned = new Set([...body.matchAll(/@([A-Za-z0-9._-]+)/g)].map((m) => m[1].toLowerCase()));
+      const mentioned = new Set(allowMentions ? [...body.matchAll(/@([A-Za-z0-9._-]+)/g)].map((m) => m[1].toLowerCase()) : []);
       const notified = new Set([u.id]);
       const snippet = body.slice(0, 120);
       // Only people who can already see this lead get notified — mentions never leak leads.
       for (const person of audience) {
         if (mentioned.has(person.username.toLowerCase()) && !notified.has(person.id)) {
-          notify(person.id, ref.id, `${u.full_name} mentioned you on ${leadLabel(ref)}: "${snippet}"`);
+          notify(person.id, ref.id, `${u.full_name} mentioned you on ${leadLabel(ref)}: "${snippet}"`,person.id===ref.created_by?'owner_mention':'comments');
           notified.add(person.id);
         }
       }
+      const taggedOwner=(allowMentions && /\B@(owner|due[nñ]o|rep|vendedor|vendedora)\b/i.test(body))||ownerMention;
+      if(taggedOwner&&!notified.has(ref.created_by)){
+        notify(ref.created_by,ref.id,`${u.full_name} mentioned you on ${leadLabel(ref)}: "${snippet}"`,'owner_mention');notified.add(ref.created_by);
+      }
       for (const id of [notifyOwner ? ref.created_by : null, ref.assigned_to]) {
         if (id && !notified.has(id)) {
-          notify(id, ref.id, `${u.full_name}${source === 'whatsapp' ? ' (WhatsApp)' : ''} commented on ${leadLabel(ref)}: "${snippet}"`);
+          notify(id, ref.id, `${u.full_name}${source === 'whatsapp' ? ' (WhatsApp)' : ''} commented on ${leadLabel(ref)}: "${snippet}"`,'comments');
           notified.add(id);
         }
       }
@@ -1681,6 +1695,8 @@ function createApp(db, opts = {}) {
     });
   }
   affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
+  require('./people').mount(app,db,{requireUser,wrap,HttpError,seesAll,canViewReferral});
+  require('./energy').mount(app,db,{requireUser,requireRole,wrap,awrap,HttpError,getReferral,canViewReferral,getSettings,addComment,logAudit,fetchImpl:opts.energyFetch||globalThis.fetch});
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
