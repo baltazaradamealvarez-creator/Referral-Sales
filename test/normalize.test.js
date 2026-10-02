@@ -54,7 +54,7 @@ test('parses a single line', () => {
 
 test('parses labelled lines', () => {
   const p = parseLeadText('Name: Ana Ruiz\nPhone: 214 555 7788\nAddress: 9 Pine Ct\nNotes: call after 5');
-  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', notes: 'call after 5', dob: '', services: [] });
+  assert.deepEqual(p, { name: 'Ana Ruiz', phone: '214 555 7788', email: '', address: '9 Pine Ct', city: '', state: '', zip: '', notes: 'call after 5', dob: '', services: [] });
 });
 
 test('date of birth: labelled (English or Spanish), or an unlabelled birth-year date', () => {

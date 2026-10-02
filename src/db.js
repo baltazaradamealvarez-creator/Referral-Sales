@@ -491,6 +491,8 @@ const MIGRATIONS = [
     db.prepare(`UPDATE settings SET value='1' WHERE key='wa_new_lead_group'
       AND EXISTS(SELECT 1 FROM settings WHERE key='wa_group_id' AND trim(value)<>'')`).run();
   },
+  // v20: recover separate location fields from existing, unambiguous saved data.
+  (db) => { require('./location-repair').repairLocations(db); },
 ];
 
 

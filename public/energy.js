@@ -4,12 +4,7 @@ window.EnergyOptions = {
   bind({ root, ref, api, esc, toast }) {
     if (!root) return;
     const base = `/energy/referrals/${ref.id}`;
-    const zip =
-      ref.zip ||
-      String(ref.address || '')
-        .match(/\b\d{5}(?:-\d{4})?\b/)?.[0]
-        ?.slice(0, 5) ||
-      '';
+    const zip = String(ref.zip || '').slice(0, 5);
     root.innerHTML = `<div class="row between"><div><h2 style="margin:0">＋ Energy options</h2><p class="small muted">Optional Texas electricity check for this customer.</p></div><button type="button" class="btn" id="energyOpen">Check energy service</button></div>
     <div id="energyBody" hidden><p class="small muted">Find the meter and compare current plans using twelve monthly usage estimates. Opening this tool does not change the opportunity or enroll the customer. The service address is sent to ComparePower when you choose Find meter.</p>
     <form id="energyMeterForm"><div class="energy-address"><div class="field"><label for="energyAddress">Service address (include unit)</label><input id="energyAddress" value="${esc(ref.address || '')}" maxlength="300" required></div><div class="field"><label for="energyZip">ZIP code</label><input id="energyZip" value="${esc(zip)}" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" required></div></div><button class="btn primary">Find meter</button></form>

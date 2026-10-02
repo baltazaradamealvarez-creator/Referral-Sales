@@ -519,6 +519,9 @@
               <div><label for="f_phone">Phone</label><input id="f_phone" inputmode="tel"></div>
               <div><label for="f_email">Email</label><input id="f_email" inputmode="email" autocapitalize="none"></div>
               <div><label for="f_address">Address</label><input id="f_address"></div>
+              <div><label for="f_city">City</label><input id="f_city"></div>
+              <div><label for="f_state">State</label><input id="f_state" maxlength="40" placeholder="TX or Texas"></div>
+              <div><label for="f_zip">ZIP</label><input id="f_zip" inputmode="numeric" maxlength="10" placeholder="75211 or 75211-1234"></div>
               <div><label for="f_dob">Date of birth</label><input id="f_dob" inputmode="numeric" placeholder="MM/DD/YYYY"></div>
               <div class="full"><label for="f_notes">Notes</label><textarea id="f_notes" rows="3"></textarea></div>
             </div>
@@ -537,7 +540,7 @@
     const chips = document.getElementById('chips');
     const fixWrap = document.getElementById('fixWrap');
     const msg = document.getElementById('quickMsg');
-    const fields = ['name', 'phone', 'email', 'address', 'dob', 'notes'];
+    const fields = ['name', 'phone', 'email', 'address', 'city', 'state', 'zip', 'dob', 'notes'];
     const f = Object.fromEntries(fields.map((k) => [k, document.getElementById('f_' + k)]));
     const touched = new Set();
     const svc = new Set();
@@ -556,7 +559,7 @@
     const drawScore = () => {
       const vals = currentVals();
       if (!ta.value.trim() && !fields.some((k) => vals[k])) { meter.hidden = true; return; }
-      const q = LeadScore.scoreLead({ ...vals, zip: parsed.zip, city: parsed.city, services: [...svc] });
+      const q = LeadScore.scoreLead({ ...vals, services: [...svc] });
       const fix = q.checks.email.fix;
       meter.hidden = false;
       meter.style.setProperty('--sc', q.color);
@@ -570,25 +573,34 @@
 
     // "Did you mean …?" for the address read from the box.
     const addrHint = document.getElementById('addrHint');
+    const useAddress = (x) => {
+      for (const k of ['address', 'city', 'state', 'zip']) {
+        f[k].value = k === 'address' ? x.line1 : x[k] || '';
+        touched.add(k);
+      }
+      addrHint.innerHTML = ''; drawChips();
+    };
     const suggestAddress = debounce(async () => {
       const a = currentVals().address;
       if (!a || touched.has('address') || a.length < 6 || !/\d/.test(a)) { addrHint.innerHTML = ''; return; }
       let best;
       try { best = ((await api('/address/suggest?q=' + encodeURIComponent(a))).suggestions || [])[0]; } catch { best = null; }
       const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (!best || currentVals().address !== a || norm(best.label).startsWith(norm(a))) { addrHint.innerHTML = ''; return; }
+      const vals = currentVals();
+      const hasLocality = ['city', 'state', 'zip'].every(k => vals[k]);
+      if (!best || vals.address !== a || (hasLocality && norm(best.label).startsWith(norm(a)))) { addrHint.innerHTML = ''; return; }
       if ((a.match(/^\s*\d+/) || [''])[0].trim() !== (best.line1.match(/^\d+/) || [''])[0]) { addrHint.innerHTML = ''; return; }
       addrHint.innerHTML = `<div class="addr-hint">📍 Did you mean <b>${esc(best.label)}</b>? <button type="button" class="btn small" id="useAddr">Use it</button></div>`;
-      document.getElementById('useAddr').onclick = () => { touched.add('address'); f.address.value = best.label; addrHint.innerHTML = ''; drawChips(); };
+      document.getElementById('useAddr').onclick = () => useAddress(best);
     }, 700);
-    attachAddressSuggest(f.address, (x) => { f.address.value = x.label; touched.add('address'); addrHint.innerHTML = ''; drawChips(); });
+    attachAddressSuggest(f.address, useAddress);
 
     const drawChips = () => {
       const vals = currentVals();
-      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', dob: 'Date of birth', notes: 'Notes' };
+      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', city: 'City', state: 'State', zip: 'ZIP', dob: 'Date of birth', notes: 'Notes' };
       if (vals.dob && /^\d{4}-\d{2}-\d{2}$/.test(vals.dob)) vals.dob = usDate(vals.dob);
       chips.innerHTML = fields
-        .filter((k) => k !== 'notes' || vals.notes)
+        .filter((k) => !['notes', 'city', 'state', 'zip'].includes(k) || vals[k])
         .map((k) => `<span class="chip ${vals[k] ? 'on' : ''}">${vals[k] ? '✓' : '○'} ${label[k]}${vals[k] ? `: <b>${esc(vals[k].split('\n')[0])}</b>` : ''}</span>`)
         .join('')
         + (ta.value.trim() && !vals.phone && !vals.email && !vals.address
@@ -1008,8 +1020,9 @@
                   </div>
                   <div class="field full"><label>Address</label><input name="address" value="${esc(r.address)}" placeholder="Street address"></div>
                   <div class="field"><label>City</label><input name="city" value="${esc(r.city || '')}" placeholder="City"></div>
+                  <div class="field"><label>State</label><input name="state" value="${esc(r.state || '')}" maxlength="40" placeholder="TX or Texas"></div>
                   <div class="field"><label>Date of Birth</label><input name="dob" value="${esc(usDate(r.dob))}" placeholder="MM/DD/YYYY" inputmode="numeric"></div>
-                  <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" placeholder="ZIP code"></div>
+                  <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" inputmode="numeric" maxlength="10" placeholder="ZIP or ZIP+4"></div>
                   <div class="field full"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
                   <div class="field"><label>Lead Priority</label>
                     <select name="lead_priority">${PRIORITIES.map((p) => `<option ${priority === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
@@ -1070,6 +1083,10 @@
                   <div class="field-row">
                     <span class="field-label">City</span>
                     ${fv(r.city ? esc(r.city) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">State</span>
+                    ${fv(r.state ? esc(r.state) : '')}
                   </div>
                   <div class="field-row">
                     <span class="field-label">ZIP Code</span>
@@ -1267,7 +1284,22 @@
 
     const editForm = document.getElementById('editForm');
     if (editForm) {
-      attachAddressSuggest(editForm.address, (x) => { editForm.address.value = x.line1; if (x.city) editForm.city.value = x.city; if (x.zip) editForm.zip.value = x.zip; });
+      const editedLocality = new Set();
+      for (const field of ['city', 'state', 'zip']) editForm[field].addEventListener('input', () => editedLocality.add(field));
+      const readEditedAddress = debounce(async () => {
+        const address = editForm.address.value;
+        try {
+          const location = await api('/parse', { method: 'POST', body: { text: `Address: ${address}` } });
+          if (editForm.address.value !== address) return;
+          for (const field of ['city', 'state', 'zip']) if (location[field] && !editedLocality.has(field)) editForm[field].value = location[field];
+        } catch { /* Keep the visible fields if parsing isn't available. */ }
+      }, 250);
+      editForm.address.addEventListener('input', readEditedAddress);
+      attachAddressSuggest(editForm.address, (x) => {
+        editForm.address.value = x.line1;
+        for (const field of ['city', 'state', 'zip']) editForm[field].value = x[field] || '';
+        editedLocality.clear();
+      });
       document.querySelectorAll('[data-esvc]').forEach((b) => { b.onclick = () => b.classList.toggle('on'); });
       document.getElementById('cancelEdit').onclick = () => { state.editing = null; renderReferral(id); };
       editForm.onsubmit = async (e) => {
@@ -1507,7 +1539,8 @@
     } else if (s.status === 'connected') {
       body = `<p style="margin:.2rem 0 .8rem">Linked to <b>${esc(s.me && s.me.name ? s.me.name : 'WhatsApp')}</b>${s.me && s.me.number ? ` · +${esc(s.me.number)}` : ''}. ${s.people} ${s.people === 1 ? 'person gets' : 'people get'} their alerts on WhatsApp.${s.queued ? ` ${s.queued} message${s.queued === 1 ? '' : 's'} waiting to send.` : ''}</p>
         <div class="field"><label for="waGroup">Post new leads to this group</label>
-          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
+          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0">${s.group ? `<option value="${esc(s.group.id)}">${esc(s.group.name)}</option>` : '<option value="">Loading groups…</option>'}</select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
+          <p class="small err-text" id="waGroupWarning" role="status"></p>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
         <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the dispatch group</label>
         <p class="small muted" style="margin:.3rem 0 .8rem">Reply to a posted lead with a note or status to update its CRM record. Group posts work independently of each person’s notification preferences.</p>
@@ -1521,6 +1554,12 @@
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
+    const flow = s.group_flow, post = flow?.last_lead_post;
+    const postLabels = { queued: 'Waiting to send', sent: 'Accepted by WhatsApp; CRM replies linked', failed: 'Failed to send', skipped: 'Not posted', interrupted: 'Post interrupted by a restart', unconfirmed: 'Post not confirmed', unlinked: 'Accepted; CRM reply link failed' };
+    const flowHtml = flow ? `<div class="alert ${flow.posting_ready && flow.replies_ready ? 'ok' : 'warn'} small" id="waGroupFlow" role="status" style="margin-top:1rem">
+      <b>Dispatch group:</b> <span id="waPostingReady">${esc(flow.posting_ready ? 'New lead posts ready' : flow.posting_blocker)}</span> · <span id="waRepliesReady">${esc(flow.replies_ready ? 'Status replies ready' : flow.reply_blocker)}</span>
+      ${post ? `<p style="margin:.4rem 0 0">Latest lead post: <a href="#/r/${post.referral_id}">#${post.referral_id}</a> — ${esc(postLabels[post.status] || post.status)} · ${esc(new Date(post.at).toLocaleString())}${post.group_id !== s.group?.id ? ' (previous group)' : ''}${post.error ? `<br>${esc(post.error)}` : ''}</p>` : '<p style="margin:.4rem 0 0">No lead-post result recorded yet.</p>'}
+      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. In the group, use <b>#123 approved</b> to update an earlier lead. An accepted post does not confirm delivery or reading.</p></div>` : '';
     const dx = s.diagnostics;
     const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
     const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
@@ -1528,10 +1567,18 @@
       <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
         <dt>Last result</dt><dd>${esc(outcomes[dx.last_result] || dx.last_result || '—')}</dd><dt>Last sent</dt><dd>${dx.last_sent_at ? esc(new Date(dx.last_sent_at).toLocaleString()) : 'None yet'}</dd>
         <dt>Send queue</dt><dd>${s.queued} waiting</dd>${dx.last_error ? `<dt>Last error</dt><dd class="err-text">${esc(dx.last_error)}</dd>` : ''}</dl>
-      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. In the selected group, send <b>bot hello</b> or <b>help</b>; private text goes to the assistant. Replies require the two-way switch. Counters and queued messages reset when the server restarts.</p><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button></details>` : '';
-    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${diagnosticsHtml}`;
+      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. In the selected group, send <b>bot hello</b> or <b>help</b>; private text goes to the assistant. Replies require the two-way switch. Counters and queued messages reset when the server restarts.</p><div class="row"><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button><button type="button" class="btn small" id="waCopyDiagnostics">Copy diagnostics</button></div></details>` : '';
+    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${flowHtml}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     on('waRefreshDiagnostics', drawWaLink);
+    on('waCopyDiagnostics', async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify({ status: s.status, group: s.group?.name || '',
+          new_lead_group: s.new_lead_group, two_way: s.two_way, queued: s.queued,
+          group_flow: flow, diagnostics: dx }, null, 2));
+        toast('Diagnostics copied');
+      } catch { toast('Could not copy. Select the diagnostic text to copy it.'); }
+    });
     on('waConnect', async () => { await api('/whatsapp/connect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink(); });
     on('waCancel', async () => { await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch(() => {}); drawWaLink(); });
     on('waDisconnect', async () => {
@@ -1539,7 +1586,7 @@
       await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink();
     });
     on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test queued for the group — check WhatsApp diagnostics'); } catch (err) { toast(err.message); } });
-    const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } };
+    const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } drawWaLink(); };
     const tw = document.getElementById('waTwoWay');
     if (tw) tw.onchange = () => patchWa({ two_way: tw.checked }, tw.checked ? 'Group replies are on' : 'Group replies are off');
     const ap = document.getElementById('waApproved');
@@ -1548,13 +1595,23 @@
     if (aiBox) aiBox.onchange = () => patchWa({ ai_enabled: aiBox.checked }, aiBox.checked ? 'AI helper on' : 'AI helper off');
     on('waInstr', async () => { try { await api('/whatsapp/instructions', { method: 'POST', body: {} }); toast('Instructions posted to the group'); } catch (err) { toast(err.message); } });
     const nl = document.getElementById('waNewLead');
-    if (nl) nl.onchange = async () => { try { await api('/whatsapp/settings', { method: 'PATCH', body: { new_lead_group: nl.checked } }); toast(nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted'); } catch (err) { toast(err.message); } };
+    if (nl) nl.onchange = () => patchWa({ new_lead_group: nl.checked }, nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted');
     const sel = document.getElementById('waGroup');
     if (sel) {
       try {
         const groups = await api('/whatsapp/groups');
-        sel.innerHTML = `<option value="">— pick a group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
-      } catch (err) { sel.innerHTML = `<option value="">${esc(err.message)}</option>`; }
+        const missing = s.group && !groups.some(g => g.id === s.group.id);
+        sel.innerHTML = `<option value="">— pick a group —</option>${missing ? `<option value="${esc(s.group.id)}" selected>${esc(s.group.name)} (unavailable)</option>` : ''}${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if (missing) {
+          document.getElementById('waGroupWarning').textContent = 'The saved group was not found on the linked account. Add the alerts phone to that group, or select another group.';
+          document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
+          document.getElementById('waPostingReady').textContent = 'Saved group unavailable on the linked account';
+          document.getElementById('waRepliesReady').textContent = 'Status replies need group access';
+        }
+      } catch (err) {
+        document.getElementById('waGroupWarning').textContent = `Could not check group membership: ${err.message}`;
+        document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
+      }
       sel.onchange = async () => {
         const opt = sel.selectedOptions[0];
         try {
@@ -1565,6 +1622,7 @@
             await api('/whatsapp/instructions', { method: 'POST', body: {} });
             toast('Instructions posted to the group');
           } else toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
+          drawWaLink();
         } catch (err) { toast(err.message); }
       };
     }
@@ -1910,8 +1968,9 @@
           <p class="small muted" style="margin:.2rem 0 1rem">In the app, with email and phone push delivery based on each person’s notification preferences. WhatsApp is reserved for orders and owner mentions.</p>
           <label for="tpl">Entry template</label>
           <textarea id="tpl" name="entry_template" rows="7" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem">${esc(settings.entry_template)}</textarea>
-          <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
+          <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, State:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
           <button class="btn primary">Save settings</button>
+          ${settings.location_repair_summary ? `<p class="small muted" id="locationRepairSummary"><b>Past lead locations:</b> recovered missing fields on ${settings.location_repair_summary.leads} earlier leads.${settings.location_repair_summary.conflicts ? ` ${settings.location_repair_summary.conflicts} conflicting addresses need review.` : ''} Open a lead → Edit Record to correct its city, state or ZIP.</p>` : ''}
         </form>
         <form class="card" id="emailForm">
           <h2>Email</h2>

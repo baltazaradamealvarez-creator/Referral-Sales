@@ -154,8 +154,8 @@ function executeReportQuery(db, user, config) {
       } else if (f.field === 'state') {
         const norm = normalizeState(val);
         if (norm) {
-          where.push('(r.address LIKE ? OR r.address LIKE ?)');
-          params.push(`% ${norm.code} %`, `% ${norm.name}%`);
+          where.push('upper(trim(r.state)) IN (?, ?)');
+          params.push(norm.code, norm.name.toUpperCase());
         }
       } else if (f.field === 'service') {
         where.push("(', ' || r.services || ',') LIKE ?");
@@ -167,7 +167,7 @@ function executeReportQuery(db, user, config) {
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
   const sql = `
-    SELECT r.id, r.created_at, r.customer_name, r.phone, r.email, r.address,
+    SELECT r.id, r.created_at, r.customer_name, r.phone, r.email, r.address, r.city, r.state, r.zip,
       r.services, r.status, r.account_number, r.install_date, r.notes,
       u.full_name AS created_by_name, t.name AS team_name,
       a.full_name AS assigned_name
@@ -183,7 +183,7 @@ function executeReportQuery(db, user, config) {
 
   // Derive normalized state for each row
   for (const r of rows) {
-    const st = extractStateFromAddress(r.address);
+    const st = normalizeState(r.state) || extractStateFromAddress(r.address);
     r.state = st ? st.code : 'N/A';
     r.state_name = st ? st.name : 'Unknown';
   }

@@ -13,7 +13,7 @@ const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
 const waFormat = require('../public/waformat');
 const notificationPrefs = require('./notification-preferences');
-const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob } = require('./normalize');
+const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob, parseAddressLocation, normalizeState, normalizeZip } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
 const OPEN_STATUSES = ['New', 'Working', 'Passed'];
@@ -166,14 +166,14 @@ function createApp(db, opts = {}) {
   function getReferral(id) {
     const ref = db.prepare(`${REFERRAL_SELECT} WHERE r.id = ?`).get(Number(id));
     if (!ref) throw new HttpError(404, 'Referral not found.');
-    return ref;
+    return { ...ref, state_name: normalizeState(ref.state)?.name || '' };
   }
 
   function publicReferral(r) {
     const { phone_key, email_key, address_key, address_zip, lead_flags, ...rest } = r;
     let tips = [];
     try { tips = JSON.parse(lead_flags || '[]'); } catch { tips = []; }
-    return { ...rest, lead_tips: tips };
+    return { ...rest, state_name: normalizeState(r.state)?.name || '', lead_tips: tips };
   }
 
   // Leads entered before scoring existed get a score once, at startup.
@@ -204,6 +204,7 @@ function createApp(db, opts = {}) {
       email: pick('email').slice(0, 200),
       address: pick('address').slice(0, 300),
       city: pick('city').slice(0, 100),
+      state: pick('state').slice(0, 40),
       zip: pick('zip').slice(0, 20),
       notes: pick('notes').slice(0, 4000),
       services: cleanServices(input.services !== undefined ? input.services : parsed.services),
@@ -213,6 +214,23 @@ function createApp(db, opts = {}) {
       est_monthly_value: Math.max(0, Number(input.est_monthly_value) || 0),
       dob: '',
     };
+    const location = parseAddressLocation(lead.address);
+    const sourceStreet = addressKey(parsed.address).street;
+    const sameSource = !input.address || (sourceStreet && addressKey(input.address).street === sourceStreet);
+    for (const field of ['city','state','zip']) {
+      const explicit = input[field] != null && String(input[field]).trim() !== '';
+      if (!explicit) lead[field] = (!input.address && parsed[field]) || location[field] || (sameSource ? parsed[field] : '') || '';
+    }
+    if (lead.state) {
+      const state = normalizeState(lead.state);
+      if (!state && (!opts.changed || opts.changed.has('state'))) throw new HttpError(400,'Enter a valid state or territory, such as TX or Texas.');
+      if (state) lead.state = state.code;
+    }
+    if (lead.zip) {
+      const zip = normalizeZip(lead.zip);
+      if (!zip && (!opts.changed || opts.changed.has('zip'))) throw new HttpError(400,'ZIP code must have five digits or ZIP+4, such as 75211 or 75211-1234.');
+      if (zip) lead.zip = zip;
+    }
     const dobRaw = input.dob != null && input.dob !== '' ? String(input.dob).trim() : '';
     if (dobRaw) {
       lead.dob = parseDob(dobRaw);
@@ -236,7 +254,7 @@ function createApp(db, opts = {}) {
       phone: normalizePhone(lead.phone),
       email: normalizeEmail(lead.email),
       address: addr.street,
-      zip: lead.zip || addr.zip,
+      zip: (normalizeZip(lead.zip) || addr.zip).slice(0,5),
     };
     return lead;
   }
@@ -603,9 +621,13 @@ function createApp(db, opts = {}) {
 
   // Only the app settings people need; never internal values like the push keys.
   app.get('/api/settings', wrap((req) => {
-    requireUser(req);
+    const u = requireUser(req);
     const all = getSettings();
-    return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
+    const out = Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, all[k]]));
+    if (isAdmin(u) && all.location_repair_v20) {
+      try { out.location_repair_summary = JSON.parse(all.location_repair_v20); } catch { /* Ignore malformed diagnostics. */ }
+    }
+    return out;
   }));
 
   app.patch('/api/settings', wrap((req) => {
@@ -675,12 +697,12 @@ function createApp(db, opts = {}) {
       if (dup) return { dup };
       const assignee = autoAssign ? pickDispatcher() : null;
       const r = db.prepare(`INSERT INTO referrals
-        (customer_name, company, phone, alt_phone, email, address, city, zip, notes, services,
+        (customer_name, company, phone, alt_phone, email, address, city, state, zip, notes, services,
          contact_pref, package_details, lead_priority, est_monthly_value,
          raw_text, phone_key, email_key, address_key, address_zip,
          created_by, entered_by, team_id, assigned_to, assigned_at, lead_score, lead_flags, dob)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?, ?)`).run(
-        lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, ?, ?, ?)`).run(
+        lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.state, lead.zip,
         lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
         String(req.body.text || '').slice(0, 4000),
         lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip,
@@ -719,7 +741,7 @@ function createApp(db, opts = {}) {
       const footer = settings.wa_two_way !== '0' ? '\n\n↩️ _Reply to this message to add a note or update the lead · Responde a este mensaje para agregar una nota o actualizar el lead_' : '';
       whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}${footer}`, (id, chat) => {
         db.prepare("INSERT OR IGNORE INTO wa_messages (id, chat, referral_id, kind) VALUES (?, ?, ?, 'lead')").run(id, chat, ref.id);
-      });
+      }, { referralId: ref.id });
     }
   }
 
@@ -909,11 +931,13 @@ function createApp(db, opts = {}) {
           if (to === u.id) speed.touch(ref, u.id);
         }
       }
-      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
+      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'state', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
       if (detailFields.some((f) => body[f] !== undefined)) {
         if (!manage && !(ref.created_by === u.id && ref.status === 'New')) {
           throw new HttpError(403, 'You can only edit details while the referral is New.');
         }
+        const editedLocation = body.address !== undefined && String(body.address).trim() !== ref.address
+          ? parseAddressLocation(body.address) : {};
         const lead = cleanLead({
           name: body.name ?? ref.customer_name,
           company: body.company ?? ref.company,
@@ -921,8 +945,9 @@ function createApp(db, opts = {}) {
           alt_phone: body.alt_phone ?? ref.alt_phone,
           email: body.email ?? ref.email,
           address: body.address ?? ref.address,
-          city: body.city ?? ref.city,
-          zip: body.zip ?? ref.zip,
+          city: body.city ?? (editedLocation.city || ref.city),
+          state: body.state ?? (editedLocation.state || ref.state),
+          zip: body.zip ?? (editedLocation.zip || ref.zip),
           notes: body.notes ?? ref.notes,
           services: body.services ?? ref.services,
           contact_pref: body.contact_pref ?? ref.contact_pref,
@@ -932,14 +957,14 @@ function createApp(db, opts = {}) {
           dob: body.dob ?? ref.dob,
         }, {
           requireName: body.name !== undefined || !!ref.customer_name,
-          changed: new Set(['name', 'phone', 'email', 'address'].filter((f) => body[f] !== undefined)),
+          changed: new Set(detailFields.filter((f) => body[f] !== undefined)),
         });
-        const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key });
+        const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key || lead.keys.zip !== ref.address_zip });
         if (d) return { d, lead };
-        db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, zip = ?,
+        db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, state = ?, zip = ?,
           notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
           phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, dob = ?, ${touch} WHERE id = ?`).run(
-          lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.zip,
+          lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.state, lead.zip,
           lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
           lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, lead.dob, ref.id,
         );

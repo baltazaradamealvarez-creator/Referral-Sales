@@ -35,6 +35,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   const sentTimes = [];
   const jidCache = new Map();
   let pumping = false;
+  let activeItem = null;
   // Runtime diagnostics contain no message bodies or sender numbers. They reset on restart.
   const diagnostics = { received: 0, last_received_at: null, last_result: '', handler_errors: 0,
     sent: 0, failed: 0, dropped: 0, last_sent_at: null, last_error: '' };
@@ -67,6 +68,26 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     };
   };
   const setStatus = (status, extra = {}) => { Object.assign(st, { status, since: Date.now() }, extra); };
+
+  // Persist the last lead-post outcome across deploys without saving its text
+  // or customer details. A connected socket alone doesn't prove a post was sent.
+  function recordLeadPost(item, status, error = '') {
+    if (!item.referralId) return;
+    set.run('wa_last_lead_post', JSON.stringify({
+      referral_id: item.referralId, group_id: item.jid || '', status,
+      at: new Date().toISOString(), error: String(error).slice(0, 500),
+    }));
+  }
+
+  function lastLeadPost() {
+    let post;
+    try { post = JSON.parse(getSettings().wa_last_lead_post || 'null'); } catch { return null; }
+    if (!post || !Number.isInteger(post.referral_id)) return null;
+    if (post.status === 'queued' && ![activeItem, ...queue].some(item => item?.referralId === post.referral_id && item.jid === post.group_id)) {
+      return { ...post, status: 'interrupted', error: 'The server restarted before confirming this post. Check the group before reposting.' };
+    }
+    return post;
+  }
 
   function scheduleRetry() {
     clearTimeout(retryTimer);
@@ -140,6 +161,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     queue.push({ ...item, tries: 0 });
     while (queue.length > QUEUE_MAX) {
       const dropped=queue.shift(); diagnostics.dropped++; diagnostics.last_error = 'WhatsApp queue is full; oldest message discarded.';
+      recordLeadPost(dropped, 'failed', diagnostics.last_error);
       if (dropped.onFailed) { try { dropped.onFailed(diagnostics.last_error); } catch (e) { console.error(e.message); } }
     }
     pump();
@@ -162,6 +184,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     if (sentTimes.length >= HOURLY_CAP) { setTimeout(pump, 60000).unref?.(); return; }
     pumping = true;
     const item = queue.shift();
+    activeItem = item;
     try {
       const jid = await resolveJid(item);
       if (jid) {
@@ -170,19 +193,31 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
           : await transport.sendText(jid, item.text, { quotedId: item.quotedId });
         sentTimes.push(Date.now());
         if (!item.react) { diagnostics.sent++; diagnostics.last_sent_at = new Date().toISOString(); }
-        if (item.onSent && id) { try { item.onSent(id, jid); } catch (e) { console.error(e); } }
+        recordLeadPost(item, id ? 'sent' : 'unconfirmed', id ? '' : 'WhatsApp returned no message reference. Check the group before reposting.');
+        if (item.onSent && id) {
+          try { item.onSent(id, jid); }
+          catch (e) {
+            recordLeadPost(item, 'unlinked', 'The post was accepted, but its CRM reply link could not be saved. Use the lead number in your reply.');
+            diagnostics.last_error = e.message;console.error(e);
+          }
+        }
       } else {
         diagnostics.failed++;
         diagnostics.last_error = 'Recipient number was not found on WhatsApp.';
+        recordLeadPost(item, 'failed', diagnostics.last_error);
         if (item.onFailed) item.onFailed(diagnostics.last_error);
       }
     } catch (e) {
       if (++item.tries < 3) queue.push(item);
-      else { diagnostics.failed++; if (item.onFailed) { try { item.onFailed(e.message); } catch (err) { console.error(err.message); } } }
+      else {
+        diagnostics.failed++; recordLeadPost(item, 'failed', e.message);
+        if (item.onFailed) { try { item.onFailed(e.message); } catch (err) { console.error(err.message); } }
+      }
       st.error = e.message;
       diagnostics.last_error = e.message;
     } finally {
       pumping = false;
+      activeItem = null;
       if (queue.length) { const t = setTimeout(pump, GAP_MS); if (t.unref) t.unref(); }
     }
   }
@@ -200,10 +235,15 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       return enqueue({ digits: d, text, onSent, onFailed });
     },
     // The new-lead post to the dispatch group. onSent(messageId) lets replies find the lead.
-    postToGroup(text, onSent, { force = false } = {}) {
+    postToGroup(text, onSent, { force = false, referralId = null } = {}) {
       const c = cfg();
-      if (!c.groupId || (!c.newLeadGroup && !force)) return false;
-      return enqueue({ jid: c.groupId, text, onSent });
+      const item = { jid: c.groupId, text, onSent, referralId };
+      if (!c.enabled || !c.groupId || (!c.newLeadGroup && !force)) {
+        recordLeadPost(item, 'skipped', !c.enabled ? 'WhatsApp is off.' : !c.groupId ? 'No dispatch group is selected.' : 'New-lead group posts are switched off.');
+        return false;
+      }
+      recordLeadPost(item, 'queued');
+      return enqueue(item);
     },
     // A reply in a chat, optionally quoting the message it answers.
     reply(chat, text, { quotedId, onSent } = {}) { return enqueue({ jid: chat, text, quotedId, onSent }); },
@@ -222,12 +262,18 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
 
   const statusView = () => {
     const c = cfg();
+    const postingBlocker = !c.enabled ? 'WhatsApp is off.' : !c.groupId ? 'Pick the dispatch group.'
+      : !c.newLeadGroup ? 'New-lead group posts are switched off.' : st.status !== 'connected' ? 'Waiting for the WhatsApp connection.' : '';
+    const replyBlocker = !c.enabled ? 'WhatsApp is off.' : !c.groupId ? 'Pick the dispatch group.'
+      : getSettings().wa_two_way === '0' ? 'Group replies are switched off.' : st.status !== 'connected' ? 'Waiting for the WhatsApp connection.' : '';
     return {
       enabled: c.enabled, status: st.status, qr: st.status === 'qr' ? st.qr : null, me: st.me, error: st.error,
       group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
       two_way: getSettings().wa_two_way !== '0', approved_status: getSettings().wa_approved_status === 'Passed' ? 'Passed' : 'Ordered',
       ai_available: !!process.env.ANTHROPIC_API_KEY, ai_enabled: getSettings().ai_enabled !== '0',
       diagnostics: { ...diagnostics },
+      group_flow: { posting_ready: !postingBlocker, replies_ready: !replyBlocker,
+        posting_blocker: postingBlocker, reply_blocker: replyBlocker, last_lead_post: lastLeadPost() },
       people: db.prepare("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND whatsapp_alerts = 1 AND whatsapp <> ''").get().n,
     };
   };
@@ -249,7 +295,10 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     clearTimeout(retryTimer);
     if (transport) await transport.logout().catch(() => {});
     setStatus('off', { qr: null, me: null, error: '' });
-    for (const item of queue.splice(0)) if (item.onFailed) { try { item.onFailed('WhatsApp was disconnected before this message was sent.'); } catch (e) { console.error(e.message); } }
+    for (const item of queue.splice(0)) {
+      recordLeadPost(item, 'failed', 'WhatsApp was disconnected before this message was sent.');
+      if (item.onFailed) { try { item.onFailed('WhatsApp was disconnected before this message was sent.'); } catch (e) { console.error(e.message); } }
+    }
     logAudit(req, 'whatsapp.disconnect', 'settings', '', '');
     return statusView();
   }));

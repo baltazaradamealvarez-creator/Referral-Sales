@@ -19,7 +19,7 @@ function fakeWhatsApp() {
       async start() { fake.started++; },
       stop() {},
       async logout() { fake.loggedOut++; },
-      async sendText(jid, text) { if (fake.sendError) throw new Error(fake.sendError); fake.sent.push({ jid, text }); },
+      async sendText(jid, text) { if (fake.sendError) throw new Error(fake.sendError); fake.sent.push({ jid, text }); return fake.withoutMessageId ? undefined : `out-${fake.sent.length}`; },
       async listGroups() { return [{ id: '1203630@g.us', name: 'Dispatch Team', size: 5 }, { id: '999@g.us', name: 'Family', size: 4 }]; },
       async exists(d) { return fake.onWhatsApp.has(d) ? `${d}@s.whatsapp.net` : null; },
     };
@@ -102,6 +102,74 @@ test('failed sends and missing recipients are visible in admin diagnostics, and 
 test('the lockfile installs on Render (no SSH-only git dependencies)', () => {
   const lock = fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8');
   assert.ok(!lock.includes('git+ssh://'), 'a git+ssh:// URL would make `npm ci` fail without SSH keys');
+});
+
+test('dispatch readiness and persistent lead-post outcomes explain skipped, failed and accepted posts', async t => {
+  const { a, wa, db, settle } = await setup(t);
+  const add = phone => a.post('/referrals', { name: 'Sarah Lopez', phone });
+  const off = (await add('5128675309')).body;
+  let status = (await a.get('/whatsapp/status')).body;
+  assert.equal(status.group_flow.posting_ready, false);
+  assert.equal(status.group_flow.last_lead_post.status, 'skipped');
+  assert.equal(status.group_flow.last_lead_post.referral_id, off.id);
+  assert.match(status.group_flow.last_lead_post.error, /WhatsApp is off/);
+  await a.post('/whatsapp/connect');
+  wa.handlers.onOpen({ id: '15125550100@s.whatsapp.net' });
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team', new_lead_group: true, two_way: true });
+  const sent = (await add('5128675310')).body;
+  await settle();status = (await a.get('/whatsapp/status')).body;
+  assert.equal(status.group_flow.posting_ready, true);assert.equal(status.group_flow.replies_ready, true);
+  assert.equal(status.group_flow.last_lead_post.status, 'sent');
+  assert.equal(status.group_flow.last_lead_post.referral_id, sent.id);
+  assert.equal(db.prepare("SELECT referral_id FROM wa_messages WHERE id='out-1'").get().referral_id, sent.id);
+  wa.sendError = 'Permission denied by group';
+  const failed = (await add('5128675311')).body;
+  await settle();status = (await a.get('/whatsapp/status')).body;
+  assert.equal(status.group_flow.last_lead_post.status, 'failed');
+  assert.equal(status.group_flow.last_lead_post.referral_id, failed.id);
+  assert.match(status.group_flow.last_lead_post.error, /Permission denied/);
+  wa.sendError = '';wa.withoutMessageId = true;
+  const uncertain = (await add('5128675312')).body;
+  await settle();status = (await a.get('/whatsapp/status')).body;
+  assert.equal(status.group_flow.last_lead_post.status, 'unconfirmed');
+  assert.equal(status.group_flow.last_lead_post.referral_id, uncertain.id);
+  assert.match(status.group_flow.last_lead_post.error, /Check the group before reposting/);
+  await a.patch('/whatsapp/settings', { new_lead_group: false });
+  await add('5128675313');status = (await a.get('/whatsapp/status')).body;
+  assert.equal(status.group_flow.posting_ready, false);assert.equal(status.group_flow.replies_ready, true);
+  assert.equal(status.group_flow.last_lead_post.status, 'skipped');
+  assert.match(status.group_flow.last_lead_post.error, /switched off/);
+  const saved = db.prepare("SELECT value FROM settings WHERE key='wa_last_lead_post'").get().value;
+  assert.equal(saved.includes('Sarah'), false);assert.equal(saved.includes('512867'), false);
+  const count = wa.sent.length;
+  await a.patch('/whatsapp/settings', { new_lead_group: true });await settle();
+  assert.equal(wa.sent.length, count, 'enabling posts does not replay previous leads');
+});
+
+test('a restart exposes an unconfirmed queued lead post and disconnect reports a pending send as failed', async t => {
+  const { a, wa, db, app } = await setup(t);
+  await a.post('/whatsapp/connect'); // deliberately do not open the socket
+  await a.patch('/whatsapp/settings', { group_id: '1203630@g.us', group_name: 'Dispatch Team', new_lead_group: true });
+  const lead = (await a.post('/referrals', { name: 'Sarah Lopez', phone: '5128675310' })).body;
+  assert.equal((await a.get('/whatsapp/status')).body.group_flow.last_lead_post.status, 'queued');
+  app.locals.whatsapp.stop();
+  const rebooted = createApp(db, { whatsappTransport: wa.factory });
+  const server = rebooted.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => { rebooted.locals.whatsapp.stop();server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}/api`;
+  const login = await fetch(base + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin-pass-1' }) });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const response = await fetch(base + '/whatsapp/status', { headers: { Cookie: cookie } });
+  const status = await response.json();
+  assert.equal(status.group_flow.last_lead_post.referral_id, lead.id);
+  assert.equal(status.group_flow.last_lead_post.status, 'interrupted');
+  assert.match(status.group_flow.last_lead_post.error, /server restarted/);
+  assert.equal(wa.sent.length, 0, 'do not risk duplicate posts on startup');
+  await a.post('/whatsapp/disconnect');
+  const failed = (await a.get('/whatsapp/status')).body.group_flow.last_lead_post;
+  assert.equal(failed.status, 'failed');assert.match(failed.error, /disconnected before/);
 });
 
 test('admin links WhatsApp by QR, picks the dispatch group, new leads are posted there', async (t) => {
