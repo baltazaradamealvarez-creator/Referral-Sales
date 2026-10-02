@@ -1224,7 +1224,7 @@
             <h2>Comments</h2>
             <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone. Use <b>@owner</b> or the owner’s username for an urgent WhatsApp alert, if they enabled it.</p>
             <div id="comments">${r.comments.length ? r.comments.map((c) => `
-              <div class="comment"><div class="meta"><b>${personLink(c.user_id,c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+              <div class="comment"><div class="meta"><b>${personLink(c.user_id,c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}${c.external ? ' · external participant' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
             </div>
             <form id="commentForm" style="margin-top:1rem">
               <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
@@ -1528,6 +1528,9 @@
     if (!document.getElementById('waLinkCard')) return;
     const chip = { off: ['Off', ''], starting: ['Connecting…', 'wait'], qr: ['Scan the QR code', 'wait'], connected: ['Connected', 'ok'], reconnecting: ['Reconnecting…', 'wait'], logged_out: ['Disconnected — scan again', 'bad'], replaced: ['Linked somewhere else', 'bad'] }[s.status] || [s.status, ''];
     const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) to post leads to your dispatch group and update the CRM by replying there. Personal WhatsApp alerts are limited to orders and owner mentions. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
+    const quietMain = s.group_mode === 'quiet';
+    const qg = s.quiet_group || {};
+    const postLabels = { queued: 'Waiting to send', sent: 'Accepted by WhatsApp; CRM replies linked', failed: 'Failed to send', skipped: 'Not posted', interrupted: 'Post interrupted by a restart', unconfirmed: 'Post not confirmed', unlinked: 'Accepted; CRM reply link failed' };
     let body = '';
     if (s.status === 'off' || s.status === 'logged_out' || s.status === 'replaced') {
       body = `${s.status !== 'off' ? `<div class="alert warn small">${s.status === 'replaced' ? 'This WhatsApp was linked to another computer, so it disconnected here. Connect again to take it back.' : 'The phone disconnected this link. Connect and scan again.'}</div>` : ''}
@@ -1539,35 +1542,45 @@
     } else if (s.status === 'connected') {
       body = `<p style="margin:.2rem 0 .8rem">Linked to <b>${esc(s.me && s.me.name ? s.me.name : 'WhatsApp')}</b>${s.me && s.me.number ? ` · +${esc(s.me.number)}` : ''}. ${s.people} ${s.people === 1 ? 'person gets' : 'people get'} their alerts on WhatsApp.${s.queued ? ` ${s.queued} message${s.queued === 1 ? '' : 's'} waiting to send.` : ''}</p>
         <div class="field"><label for="waGroup">Post new leads to this group</label>
-          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0">${s.group ? `<option value="${esc(s.group.id)}">${esc(s.group.name)}</option>` : '<option value="">Loading groups…</option>'}</select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
+          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0">${s.group ? `<option value="${esc(s.group.id)}">${esc(s.group.name)}</option>` : '<option value="">Loading groups…</option>'}</select><button type="button" class="btn" id="waTestGroup" ${s.group && !quietMain ? '' : 'disabled'}>Send a test</button></div>
           <p class="small err-text" id="waGroupWarning" role="status"></p>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
+        <div class="field"><label for="waGroupMode">Dispatch group behavior</label><select id="waGroupMode"><option value="interactive" ${quietMain ? '' : 'selected'}>Interactive — existing bot replies and updates</option><option value="quiet" ${quietMain ? 'selected' : ''}>Quiet — lead posts and silent CRM updates only</option></select></div>
         <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the dispatch group</label>
         <p class="small muted" style="margin:.3rem 0 .8rem">Reply to a posted lead with a note or status to update its CRM record. Group posts work independently of each person’s notification preferences.</p>
         <h3 class="wa-h3">Replies in the group</h3>
-        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status</span></label>
+        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>${quietMain ? 'Save text replies in the CRM silently. External participants add comments only; recognized CRM users keep their status and assignment permissions.' : 'Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status'}</span></label>
         <div class="field" style="max-width:420px"><label for="waApproved">When someone writes <b>approved</b> / <b>aprobado</b>, set the lead to</label>
           <select id="waApproved"><option value="Ordered" ${s.approved_status === 'Ordered' ? 'selected' : ''}>Ordered (the sale went through)</option><option value="Passed" ${s.approved_status === 'Passed' ? 'selected' : ''}>Passed (qualified, still being worked)</option></select></div>
-        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>
-        <p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>
-        <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>`;
+        ${quietMain ? '<p class="small muted">This group receives lead posts only. No acknowledgments, reactions, bot answers, instructions, reminders or briefings are sent here. Private assistant chats remain available.</p>' : `<label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>`}
+        ${quietMain ? '' : `<p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>`}
+        <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group && !quietMain ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>
+        <h3 class="wa-h3">Additional quiet group · Spectrum</h3>
+        <p class="small muted">Use this to keep dispatch interactive and send clean lead posts to a separate group. Replies are saved in the CRM with no bot messages or reactions. External participants can add comments; status changes require a recognized CRM account with permission.</p>
+        <div class="field"><label for="waQuietGroup">Quiet group</label><select id="waQuietGroup">${qg.group ? `<option value="${esc(qg.group.id)}">${esc(qg.group.name)}</option>` : '<option value="">— pick a group —</option>'}</select><p id="waQuietGroupWarning" class="small err-text" role="status"></p></div>
+        <label class="check"><input type="checkbox" id="waQuietOn" ${qg.enabled ? 'checked' : ''} ${qg.group ? '' : 'disabled'}> Post each new lead to this quiet group</label>
+        <label class="check"><input type="checkbox" id="waQuietCapture" ${qg.capture_replies !== false ? 'checked' : ''}> Save replies to its lead posts in the CRM</label>
+        <label class="check"><input type="checkbox" id="waQuietNotes" ${s.quiet_include_notes !== false ? 'checked' : ''}> Include the original lead’s Notes field in quiet posts</label>
+        <p class="small muted">Applies to both quiet-group options. CRM comments are never posted back to a quiet group. Quiet posts use the format below, without lead numbers, rep names, portal links or reply instructions.</p>
+        <details><summary class="small">Preview the quiet post</summary><pre class="wa-preview" id="waQuietPreview">${esc(WaFormat.quietLead({customer_name:'Maria Lopez',phone:'5128675309',address:'1010 Ogden Ave, Dallas TX 75211',dob:'1985-03-14',email:'maria.lopez@gmail.com',services:'Internet, TV',notes:'Internet and cable package\nWait for call'},{includeNotes:s.quiet_include_notes !== false}))}</pre></details>
+        <p class="small" id="waQuietStatus" role="status">${qg.enabled ? qg.posting_ready ? 'Quiet lead posts ready.' : 'Waiting for the connection or group selection.' : 'Additional quiet-group lead posts are off.'}${qg.last_lead_post ? ` Latest post: #${qg.last_lead_post.referral_id} — ${esc(postLabels[qg.last_lead_post.status] || qg.last_lead_post.status)}${qg.last_lead_post.error ? ` · ${esc(qg.last_lead_post.error)}` : ''}` : ''}</p>`;
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
     const flow = s.group_flow, post = flow?.last_lead_post;
-    const postLabels = { queued: 'Waiting to send', sent: 'Accepted by WhatsApp; CRM replies linked', failed: 'Failed to send', skipped: 'Not posted', interrupted: 'Post interrupted by a restart', unconfirmed: 'Post not confirmed', unlinked: 'Accepted; CRM reply link failed' };
     const flowHtml = flow ? `<div class="alert ${flow.posting_ready && flow.replies_ready ? 'ok' : 'warn'} small" id="waGroupFlow" role="status" style="margin-top:1rem">
-      <b>Dispatch group:</b> <span id="waPostingReady">${esc(flow.posting_ready ? 'New lead posts ready' : flow.posting_blocker)}</span> · <span id="waRepliesReady">${esc(flow.replies_ready ? 'Status replies ready' : flow.reply_blocker)}</span>
+      <b>Dispatch group:</b> <span id="waPostingReady">${esc(flow.posting_ready ? 'New lead posts ready' : flow.posting_blocker)}</span> · <span id="waRepliesReady">${esc(flow.replies_ready ? quietMain ? 'Silent CRM reply capture ready' : 'Status replies ready' : flow.reply_blocker)}</span>
       ${post ? `<p style="margin:.4rem 0 0">Latest lead post: <a href="#/r/${post.referral_id}">#${post.referral_id}</a> — ${esc(postLabels[post.status] || post.status)} · ${esc(new Date(post.at).toLocaleString())}${post.group_id !== s.group?.id ? ' (previous group)' : ''}${post.error ? `<br>${esc(post.error)}` : ''}</p>` : '<p style="margin:.4rem 0 0">No lead-post result recorded yet.</p>'}
-      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. In the group, use <b>#123 approved</b> to update an earlier lead. An accepted post does not confirm delivery or reading.</p></div>` : '';
+      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. ${quietMain ? 'Reply directly to a lead post to save a comment. Clear status words update the lead only for recognized CRM users with permission.' : 'In the group, use <b>#123 approved</b> to update an earlier lead.'} An accepted post does not confirm delivery or reading.</p></div>` : '';
     const dx = s.diagnostics;
     const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
+    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved'});
     const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
       <p class="small muted">Since this server started: ${dx.received} incoming text messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
       <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
         <dt>Last result</dt><dd>${esc(outcomes[dx.last_result] || dx.last_result || '—')}</dd><dt>Last sent</dt><dd>${dx.last_sent_at ? esc(new Date(dx.last_sent_at).toLocaleString()) : 'None yet'}</dd>
         <dt>Send queue</dt><dd>${s.queued} waiting</dd>${dx.last_error ? `<dt>Last error</dt><dd class="err-text">${esc(dx.last_error)}</dd>` : ''}</dl>
-      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. In the selected group, send <b>bot hello</b> or <b>help</b>; private text goes to the assistant. Replies require the two-way switch. Counters and queued messages reset when the server restarts.</p><div class="row"><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button><button type="button" class="btn small" id="waCopyDiagnostics">Copy diagnostics</button></div></details>` : '';
+      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. ${quietMain ? 'In this quiet group, reply directly to a lead post; the reply is saved silently in the CRM.' : 'In the dispatch group, send <b>bot hello</b> or <b>help</b>.'} Private text goes to the assistant. Quiet groups only capture lead replies, using their reply-capture switch. Counters and queued messages reset when the server restarts.</p><div class="row"><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button><button type="button" class="btn small" id="waCopyDiagnostics">Copy diagnostics</button></div></details>` : '';
     card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${flowHtml}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     on('waRefreshDiagnostics', drawWaLink);
@@ -1575,7 +1588,7 @@
       try {
         await navigator.clipboard.writeText(JSON.stringify({ status: s.status, group: s.group?.name || '',
           new_lead_group: s.new_lead_group, two_way: s.two_way, queued: s.queued,
-          group_flow: flow, diagnostics: dx }, null, 2));
+          group_mode:s.group_mode,quiet_group:qg,group_flow: flow, diagnostics: dx }, null, 2));
         toast('Diagnostics copied');
       } catch { toast('Could not copy. Select the diagnostic text to copy it.'); }
     });
@@ -1587,6 +1600,10 @@
     });
     on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test queued for the group — check WhatsApp diagnostics'); } catch (err) { toast(err.message); } });
     const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } drawWaLink(); };
+    document.getElementById('waGroupMode')?.addEventListener('change', e => patchWa({group_mode:e.target.value},e.target.value === 'quiet' ? 'Dispatch group is now quiet' : 'Dispatch group is now interactive').then(drawAiCard));
+    document.getElementById('waQuietOn')?.addEventListener('change', e => patchWa({quiet_enabled:e.target.checked},e.target.checked ? 'Quiet lead posts are on' : 'Quiet lead posts are paused'));
+    document.getElementById('waQuietCapture')?.addEventListener('change', e => patchWa({quiet_capture:e.target.checked},e.target.checked ? 'Quiet replies are saved to the CRM' : 'Quiet reply capture is off'));
+    document.getElementById('waQuietNotes')?.addEventListener('change', e => patchWa({quiet_include_notes:e.target.checked},e.target.checked ? 'Original notes included in quiet posts' : 'Notes omitted from quiet posts'));
     const tw = document.getElementById('waTwoWay');
     if (tw) tw.onchange = () => patchWa({ two_way: tw.checked }, tw.checked ? 'Group replies are on' : 'Group replies are off');
     const ap = document.getElementById('waApproved');
@@ -1608,6 +1625,13 @@
           document.getElementById('waPostingReady').textContent = 'Saved group unavailable on the linked account';
           document.getElementById('waRepliesReady').textContent = 'Status replies need group access';
         }
+        const qs = document.getElementById('waQuietGroup');
+        const quietMissing = qg.group && !groups.some(g => g.id === qg.group.id);
+        qs.innerHTML = `<option value="">— pick a group —</option>${quietMissing ? `<option value="${esc(qg.group.id)}" selected>${esc(qg.group.name)} (unavailable)</option>` : ''}${groups.filter(g => g.id !== s.group?.id).map(g => `<option value="${esc(g.id)}" ${g.id === qg.group?.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if (quietMissing) {
+          document.getElementById('waQuietGroupWarning').textContent = 'The quiet group was not found on the linked account. Add the alerts phone to the group, or pick another group.';
+          document.getElementById('waQuietStatus').textContent = 'Saved quiet group unavailable on the linked account.';
+        }
       } catch (err) {
         document.getElementById('waGroupWarning').textContent = `Could not check group membership: ${err.message}`;
         document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
@@ -1616,9 +1640,9 @@
         const opt = sel.selectedOptions[0];
         try {
           await api('/whatsapp/settings', { method: 'PATCH', body: { group_id: sel.value, group_name: sel.value ? opt.textContent.replace(/ \(\d+\)$/, '') : '' } });
-          document.getElementById('waTestGroup').disabled = !sel.value;
-          document.getElementById('waInstr').disabled = !sel.value;
-          if (sel.value && confirm('Dispatch group saved. Post the instructions (English + Español) to the group now?')) {
+          document.getElementById('waTestGroup').disabled = !sel.value || quietMain;
+          document.getElementById('waInstr').disabled = !sel.value || quietMain;
+          if (sel.value && !quietMain && confirm('Dispatch group saved. Post the instructions (English + Español) to the group now?')) {
             await api('/whatsapp/instructions', { method: 'POST', body: {} });
             toast('Instructions posted to the group');
           } else toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
@@ -1626,6 +1650,10 @@
         } catch (err) { toast(err.message); }
       };
     }
+    document.getElementById('waQuietGroup')?.addEventListener('change', async e => {
+      const selected = e.target;
+      await patchWa({quiet_group_id:selected.value,quiet_group_name:selected.value ? selected.selectedOptions[0].textContent.replace(/ \(\d+\)$/,'') : ''},selected.value ? 'Quiet group saved — switch on lead posts when ready' : 'Quiet group cleared');
+    });
     // Keep the QR code and status fresh while something is happening.
     if (['starting', 'qr', 'reconnecting'].includes(s.status)) waPoll = setTimeout(drawWaLink, 2500);
   }
@@ -1654,7 +1682,7 @@
         <button type="button" class="btn primary" id="aiSave">Save</button>
         <button type="button" class="btn" id="aiReset">Reset the text</button>
         <button type="button" class="btn" id="aiPreview">👀 Preview the briefing</button>
-        <button type="button" class="btn" id="aiPost" ${s.group && s.connected ? '' : 'disabled'}>📣 Post it to the group now</button>
+        <button type="button" class="btn" id="aiPost" ${s.group && s.connected && !s.group_quiet ? '' : 'disabled'}>📣 Post it to the group now</button>
       </div>
       <pre class="wa-preview" id="aiPreviewBox" hidden></pre>`;
     const on = document.getElementById('aiOn');

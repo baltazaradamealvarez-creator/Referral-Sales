@@ -493,6 +493,21 @@ const MIGRATIONS = [
   },
   // v20: recover separate location fields from existing, unambiguous saved data.
   (db) => { require('./location-repair').repairLocations(db); },
+  // v21: capture external WhatsApp replies without impersonating a CRM account.
+  (db) => {
+    if (db.prepare('PRAGMA table_info(comments)').all().some(column => column.name === 'external_author')) return;
+    const oldSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='comments'").get().sql;
+    const nullable = oldSql.replace(/user_id\s+INTEGER\s+NOT NULL/i, 'user_id INTEGER');
+    if (nullable === oldSql) throw new Error('Could not expand comment authorship.');
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='comments' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(nullable.replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?comments["`]?/i, 'CREATE TABLE comments_next'));
+    db.exec('INSERT INTO comments_next SELECT * FROM comments; DROP TABLE comments; ALTER TABLE comments_next RENAME TO comments;');
+    for (const item of objects) db.exec(item.sql);
+    db.exec(`ALTER TABLE comments ADD COLUMN external_author TEXT NOT NULL DEFAULT '';
+      ALTER TABLE comments ADD COLUMN whatsapp_chat TEXT NOT NULL DEFAULT '';
+      ALTER TABLE comments ADD COLUMN whatsapp_message_id TEXT NOT NULL DEFAULT '';
+      CREATE UNIQUE INDEX idx_comments_whatsapp_message ON comments(whatsapp_chat,whatsapp_message_id) WHERE whatsapp_message_id<>'';`);
+  },
 ];
 
 

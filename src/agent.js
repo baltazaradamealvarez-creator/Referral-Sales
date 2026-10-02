@@ -191,6 +191,7 @@ function mount(app, db, deps) {
     const t = plain(target || 'me').trim();
     if (['group', 'grupo', 'the group', 'el grupo', 'dispatch'].includes(t)) {
       if (u.role === 'rep') throw new HttpError(403, 'Only dispatch, managers and admins can set reminders for the group.');
+      if (whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())) throw new HttpError(409,'This group is quiet. Set a personal reminder instead.');
       to = null;
     } else if (!['me', 'myself', 'yo', 'mi'].includes(t)) {
       to = findPerson(target);
@@ -296,6 +297,7 @@ function mount(app, db, deps) {
   }
 
   async function postBriefing(kind, now = Date.now()) {
+    if (whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())) return false;
     let text = briefing(kind, now);
     if (ai && ai.enabled() && kind === 'morning') {
       try {
@@ -324,7 +326,7 @@ function mount(app, db, deps) {
     }
     // Briefings go out once a day, within 2 hours after their time (not hours late after a restart).
     const s = getSettings();
-    if (whatsapp && whatsapp.groupId() && whatsapp.status() === 'connected') {
+    if (whatsapp && whatsapp.groupId() && !whatsapp.isQuietGroup(whatsapp.groupId()) && whatsapp.status() === 'connected') {
       const p = localParts(now, tz());
       const today = `${p.y}-${pad(p.m)}-${pad(p.d)}`;
       for (const [kind, key] of [['morning', 'ai_briefing_time'], ['evening', 'ai_recap_time']]) {
@@ -487,7 +489,7 @@ function mount(app, db, deps) {
 
   function leadDetail(u, id) {
     const r = viewable(u, id);
-    const notes = db.prepare(`SELECT c.body, c.created_at, c.source, u.full_name FROM comments c JOIN users u ON u.id = c.user_id
+    const notes = db.prepare(`SELECT c.body, c.created_at, c.source, COALESCE(u.full_name,NULLIF(c.external_author,''),'WhatsApp participant') AS full_name FROM comments c LEFT JOIN users u ON u.id = c.user_id
       WHERE c.referral_id = ? ORDER BY c.id DESC LIMIT 10`).all(r.id);
     const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name FROM status_history h LEFT JOIN users u ON u.id = h.user_id
       WHERE h.referral_id = ? ORDER BY h.id DESC LIMIT 10`).all(r.id);
@@ -654,7 +656,7 @@ function mount(app, db, deps) {
 
   app.get('/api/assistant', wrap((req) => {
     const u = requireUser(req);
-    return { ai: !!(ai && ai.enabled()), model: ai ? ai.model : null, reminders: listReminders(u), group: !!(whatsapp && whatsapp.groupId()), tz: tz() };
+    return { ai: !!(ai && ai.enabled()), model: ai ? ai.model : null, reminders: listReminders(u), group: !!(whatsapp && whatsapp.groupId() && !whatsapp.isQuietGroup(whatsapp.groupId())), tz: tz() };
   }));
 
   app.post('/api/assistant/chat', awrap(async (req) => {
@@ -689,7 +691,8 @@ function mount(app, db, deps) {
     return {
       available: !!(ai && ai.available()), enabled: !!(ai && ai.enabled()), model: ai ? ai.model : null,
       brief: s.ai_brief, default_brief: DEFAULT_BRIEF, briefing_time: s.ai_briefing_time, recap_time: s.ai_recap_time,
-      group: !!(whatsapp && whatsapp.groupId()), connected: !!(whatsapp && whatsapp.status() === 'connected'), tz: tz(),
+      group: !!(whatsapp && whatsapp.groupId()), connected: !!(whatsapp && whatsapp.status() === 'connected'),
+      group_quiet: !!(whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())), tz: tz(),
     };
   }));
 
@@ -722,6 +725,7 @@ function mount(app, db, deps) {
   app.post('/api/assistant/briefing', awrap(async (req) => {
     requireRole(req, 'admin');
     if (!whatsapp || !whatsapp.groupId()) throw new HttpError(400, 'Link WhatsApp and pick the dispatch group first.');
+    if (whatsapp.isQuietGroup(whatsapp.groupId())) throw new HttpError(409, 'Quiet groups accept lead posts only. You can preview the briefing here.');
     await postBriefing(req.body && req.body.kind === 'evening' ? 'evening' : 'morning');
     return { ok: true };
   }));

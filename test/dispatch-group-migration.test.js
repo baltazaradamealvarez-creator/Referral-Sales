@@ -32,7 +32,7 @@ function fixture(t, version, group) {
 test('v18 upgrade restores the selected dispatch group while preserving personal preferences and old reply mappings', (t) => {
   const file = fixture(t, 18, '1203630@g.us');
   let db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 20);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 21);
   assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value, '1');
   assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_group_id'").get().value, '1203630@g.us');
   const prefs = JSON.parse(db.prepare('SELECT notification_preferences FROM users WHERE id=1').get().notification_preferences);
@@ -52,7 +52,7 @@ test('v18 upgrade restores the selected dispatch group while preserving personal
 test('pre-v18 upgrades preserve an existing explicit group opt-out', (t) => {
   const db = openDb(fixture(t, 17, '1203630@g.us'));
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 20);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 21);
     assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value, '0');
   } finally { db.close(); }
 });

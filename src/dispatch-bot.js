@@ -172,6 +172,12 @@ function mount(app, db, deps) {
     return k ? { id: Number(k[1]), via: 'number' } : null;
   }
 
+  function mentionsOwner(m, ref, note) {
+    const owner = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(ref.created_by);
+    const ownerDigits = owner && owner.whatsapp ? digitsOf(owner.whatsapp) : '';
+    return OWNER_TAG.test(note) || (!!ownerDigits && (m.mentions || []).some(j => digitsOf(String(j).split(/[:@]/)[0]) === ownerDigits));
+  }
+
   // Short memory per person and chat, so follow-ups ("and yesterday?", "yes, do it") work.
   const convos = new Map();
   const pending = new Map();
@@ -184,16 +190,51 @@ function mount(app, db, deps) {
     return msgs;
   }
 
+  // Quiet groups accept only lead replies. External participants contribute
+  // attributed comments; account permissions still govern CRM status changes.
+  async function handleQuiet(m) {
+    const quoted = m.quotedId ? db.prepare('SELECT referral_id,kind FROM wa_messages WHERE id=? AND chat=?').get(m.quotedId,m.chat) : null;
+    const user = findUser(m);
+    const linked = quoted && quoted.referral_id && quoted.kind !== 'agent';
+    const target = linked ? { id: quoted.referral_id, via: 'reply' } : user ? leadFor(m,null) : null;
+    if (!target) return 'quiet_ignored';
+    let ref;
+    try { ref = getReferral(target.id); } catch { return 'lead_not_found'; }
+    const authorized = user && canViewReferral(user,ref) ? user : null;
+    if (!authorized && !linked) return 'no_access';
+    const note = target.via === 'number' ? String(m.text).replace(/(?:^|\s)(?:#|lead\s*#?\s*)\d{1,7}\b/i,'').trim() || m.text : m.text;
+    const externalAuthor = String(m.name || user?.full_name || 'WhatsApp participant').trim().slice(0,100) || 'WhatsApp participant';
+    try {
+      addComment(authorized,ref,note,{ source:'whatsapp', notifyOwner:true, allowMentions:!!authorized,
+        ownerMention:!!authorized && mentionsOwner(m,ref,note),
+        externalAuthor, whatsappChat:m.chat, whatsappMessageId:m.id });
+      if (authorized) {
+        if (!ref.assigned_to && seesAll(authorized)) updateReferral(authorized,ref.id,{assigned_to:authorized.id});
+        const verdict = detectStatus(note,cfg().approvedStatus);
+        if (verdict.status && verdict.status !== ref.status && canManageReferral(authorized,ref)) updateReferral(authorized,ref.id,{status:verdict.status});
+      }
+      db.prepare("INSERT OR IGNORE INTO wa_messages(id,chat,referral_id,kind) VALUES(?,?,?,'lead_reply')").run(m.id,m.chat,ref.id);
+      logAudit({user:authorized,ip:'whatsapp'},'whatsapp.quiet_reply','referral',ref.id,
+        `${authorized ? authorized.full_name : `External: ${externalAuthor}`} · ${m.chat} · ${String(note).slice(0,160)}`);
+      return authorized ? 'quiet_lead_updated' : 'quiet_external_comment';
+    } catch (e) {
+      console.error('Quiet WhatsApp reply failed:',e.message);
+      return 'quiet_update_failed';
+    }
+  }
+
   async function handle(m) {
     const c = cfg();
     const text = String(m.text || '').trim();
-    if (!c.enabled) return 'two_way_off';
+    const quiet = m.isGroup && whatsapp.isQuietGroup(m.chat);
+    if (quiet ? !whatsapp.quietCaptureEnabled(m.chat) : !c.enabled) return quiet ? 'quiet_capture_off' : 'two_way_off';
     if (!text) return 'empty';
     const inGroup = m.isGroup && m.chat === whatsapp.groupId();
-    if (m.isGroup && !inGroup) return 'other_group';
+    if (m.isGroup && !inGroup && !quiet) return 'other_group';
     if (m.ts && Date.now() - m.ts > MAX_AGE_MS) return 'old_message';
     if (!db.prepare('INSERT OR IGNORE INTO wa_seen (id) VALUES (?)').run(`${m.chat}|${m.id}`).changes) return 'duplicate';
     if (++handled % 500 === 0) db.prepare("DELETE FROM wa_seen WHERE created_at < datetime('now', '-7 days')").run();
+    if (quiet) return handleQuiet({ ...m,text });
 
     const lang = detectLang(text);
     const me = whatsapp.me() || {};
@@ -259,9 +300,7 @@ function mount(app, db, deps) {
     const note = ref0.via === 'number' ? text.replace(/(?:^|\s)(?:#|lead\s*#?\s*)\d{1,7}\b/i, '').trim() || text : text;
     let verdict = detectStatus(note, c.approvedStatus);
     // "@owner"/"@dueño", or a WhatsApp @-mention of the rep themselves.
-    const owner = db.prepare('SELECT whatsapp FROM users WHERE id = ?').get(ref.created_by);
-    const ownerDigits = owner && owner.whatsapp ? digitsOf(owner.whatsapp) : '';
-    const ownerMention = OWNER_TAG.test(note) || (!!ownerDigits && (m.mentions || []).some((j) => digitsOf(String(j).split(/[:@]/)[0]) === ownerDigits));
+    const ownerMention = mentionsOwner(m, ref, note);
     let notifyOwner = ownerMention;
     let question = '';
     if (ai.enabled()) {
@@ -320,6 +359,7 @@ function mount(app, db, deps) {
   app.post('/api/whatsapp/instructions', wrap((req) => {
     requireRole(req, 'admin');
     if (!whatsapp.groupId()) throw new HttpError(400, 'Pick the dispatch group first.');
+    if (whatsapp.isQuietGroup(whatsapp.groupId())) throw new HttpError(409, 'Quiet groups accept lead posts only. Instructions are available in the app.');
     if (whatsapp.status() !== 'connected') throw new HttpError(409, 'WhatsApp isn\'t connected.');
     whatsapp.postToGroup(instructions(cfg().approvedStatus), null, { force: true });
     return { ok: true };

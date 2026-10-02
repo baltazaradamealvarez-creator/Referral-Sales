@@ -739,9 +739,11 @@ function createApp(db, opts = {}) {
       const { appUrl } = mail.emailConfig(settings);
       const { text } = waFormat.fill(ref, settings.whatsapp_template, ref.created_by_name);
       const footer = settings.wa_two_way !== '0' ? '\n\n↩️ _Reply to this message to add a note or update the lead · Responde a este mensaje para agregar una nota o actualizar el lead_' : '';
-      whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}${footer}`, (id, chat) => {
+      const remember = (id, chat) => {
         db.prepare("INSERT OR IGNORE INTO wa_messages (id, chat, referral_id, kind) VALUES (?, ?, ?, 'lead')").run(id, chat, ref.id);
-      }, { referralId: ref.id });
+      };
+      whatsapp.postToGroup(`${text}${appUrl ? `\n🔗 ${appUrl}/#/r/${ref.id}` : ''}${footer}`, remember, { referralId: ref.id });
+      if (whatsapp.quietGroupId()) whatsapp.postToGroup('', remember, { referralId: ref.id, groupId: whatsapp.quietGroupId() });
     }
   }
 
@@ -853,8 +855,10 @@ function createApp(db, opts = {}) {
     const u = requireUser(req);
     const ref = getReferral(req.params.id);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
-    const comments = db.prepare(`SELECT c.id, c.user_id, c.body, c.created_at, c.source, u.full_name, u.username
-      FROM comments c JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
+    const comments = db.prepare(`SELECT c.id, c.user_id, c.body, c.created_at, c.source,
+      COALESCE(u.full_name,NULLIF(c.external_author,''),'WhatsApp participant') AS full_name, u.username,
+      CASE WHEN c.user_id IS NULL THEN 1 ELSE 0 END AS external
+      FROM comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
     const history = db.prepare(`SELECT h.user_id, h.from_status, h.to_status, h.created_at, u.full_name
       FROM status_history h JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
     const toMs = (x) => Date.parse(`${x.replace(' ', 'T')}Z`);
@@ -1000,30 +1004,34 @@ function createApp(db, opts = {}) {
 
   // A note on a lead. opts.source: 'app' | 'whatsapp'. WhatsApp notes only alert the lead's
   // owner when asked to (@owner), so dispatch chatter in the group doesn't flood the reps.
-  function addComment(u, ref, text, { source = 'app', notifyOwner = true, ownerMention = false, allowMentions = true } = {}) {
+  function addComment(u, ref, text, { source = 'app', notifyOwner = true, ownerMention = false, allowMentions = true,
+    externalAuthor = '', whatsappChat = '', whatsappMessageId = '' } = {}) {
     const body = String(text || '').trim().slice(0, 2000);
     if (!body) throw new HttpError(400, 'Comment is empty.');
+    if (!u && (source !== 'whatsapp' || !externalAuthor || !whatsappChat || !whatsappMessageId)) throw new HttpError(403, 'A comment needs an author.');
+    const author = u?.full_name || String(externalAuthor).slice(0, 100);
     tx(db, () => {
-      db.prepare('INSERT INTO comments (referral_id, user_id, body, source) VALUES (?, ?, ?, ?)').run(ref.id, u.id, body, source);
-      speed.touch(ref, u.id);
+      db.prepare('INSERT INTO comments (referral_id,user_id,body,source,external_author,whatsapp_chat,whatsapp_message_id) VALUES (?,?,?,?,?,?,?)')
+        .run(ref.id, u?.id ?? null, body, source, u ? '' : author, whatsappChat, whatsappMessageId);
+      if (u) speed.touch(ref, u.id);
       const audience = referralAudience(ref);
       const mentioned = new Set(allowMentions ? [...body.matchAll(/@([A-Za-z0-9._-]+)/g)].map((m) => m[1].toLowerCase()) : []);
-      const notified = new Set([u.id]);
+      const notified = new Set([u?.id]);
       const snippet = body.slice(0, 120);
       // Only people who can already see this lead get notified — mentions never leak leads.
       for (const person of audience) {
         if (mentioned.has(person.username.toLowerCase()) && !notified.has(person.id)) {
-          notify(person.id, ref.id, `${u.full_name} mentioned you on ${leadLabel(ref)}: "${snippet}"`,person.id===ref.created_by?'owner_mention':'comments');
+          notify(person.id, ref.id, `${author} mentioned you on ${leadLabel(ref)}: "${snippet}"`,person.id===ref.created_by?'owner_mention':'comments');
           notified.add(person.id);
         }
       }
       const taggedOwner=(allowMentions && /\B@(owner|due[nñ]o|rep|vendedor|vendedora)\b/i.test(body))||ownerMention;
       if(taggedOwner&&!notified.has(ref.created_by)){
-        notify(ref.created_by,ref.id,`${u.full_name} mentioned you on ${leadLabel(ref)}: "${snippet}"`,'owner_mention');notified.add(ref.created_by);
+        notify(ref.created_by,ref.id,`${author} mentioned you on ${leadLabel(ref)}: "${snippet}"`,'owner_mention');notified.add(ref.created_by);
       }
       for (const id of [notifyOwner ? ref.created_by : null, ref.assigned_to]) {
         if (id && !notified.has(id)) {
-          notify(id, ref.id, `${u.full_name}${source === 'whatsapp' ? ' (WhatsApp)' : ''} commented on ${leadLabel(ref)}: "${snippet}"`,'comments');
+          notify(id, ref.id, `${author}${source === 'whatsapp' ? ' (WhatsApp)' : ''} commented on ${leadLabel(ref)}: "${snippet}"`,'comments');
           notified.add(id);
         }
       }

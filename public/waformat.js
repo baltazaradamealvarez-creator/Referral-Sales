@@ -8,6 +8,7 @@
   'use strict';
 
   const DEFAULT_TEMPLATE = '*New referral #{id}*\n👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}\n📝 *Notes:* {notes}\n🙋 *Rep:* {rep}';
+  const QUIET_TEMPLATE = '👤 *Name:* {name}\n📞 *Phone:* {phone}\n🏠 *Address:* {address}\n🎂 *Date of birth:* {dob}\n✉️ *Email:* {email}\n📦 *Services:* {services}';
   const FIELDS = ['id', 'name', 'phone', 'alt_phone', 'address', 'city', 'state', 'zip', 'dob', 'email', 'services', 'notes', 'rep', 'team', 'company', 'status'];
   const OPTIONAL = new Set(['notes', 'alt_phone', 'company', 'team', 'services', 'city', 'state', 'zip']);
   const DISPATCH_NEEDS = [['name', 'name'], ['phone', 'phone'], ['address', 'address'], ['dob', 'date of birth'], ['email', 'email']];
@@ -40,5 +41,12 @@
     return { text: lines.join('\n'), missing };
   }
 
-  return { fill, usDate, DEFAULT_TEMPLATE, FIELDS };
+  function quietLead(r, { includeNotes = true } = {}) {
+    let digits = String(r.phone || '').replace(/\D/g, '');
+    if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+    const phone = digits.length === 10 ? `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}` : r.phone;
+    return fill({ ...r, phone, services: r.services || '—' }, QUIET_TEMPLATE + (includeNotes ? '\n📝 *Notes:* {notes}' : '')).text;
+  }
+
+  return { fill, quietLead, usDate, DEFAULT_TEMPLATE, QUIET_TEMPLATE, FIELDS };
 }));

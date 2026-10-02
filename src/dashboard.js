@@ -187,8 +187,8 @@ function buildDashboard(db, u, q) {
         h.from_status, h.to_status, NULL AS body
       FROM status_history h JOIN referrals r ON r.id = h.referral_id JOIN users a ON a.id = h.user_id WHERE ${S}
       UNION ALL
-      SELECT 'comment', c.created_at, r.id, r.customer_name, a.full_name, NULL, NULL, substr(c.body, 1, 140)
-      FROM comments c JOIN referrals r ON r.id = c.referral_id JOIN users a ON a.id = c.user_id WHERE ${S}
+      SELECT 'comment', c.created_at, r.id, r.customer_name, COALESCE(a.full_name,NULLIF(c.external_author,''),'WhatsApp participant'), NULL, NULL, substr(c.body, 1, 140)
+      FROM comments c JOIN referrals r ON r.id = c.referral_id LEFT JOIN users a ON a.id = c.user_id WHERE ${S}
     ) ORDER BY at DESC LIMIT 12`, ...sp, ...sp);
 
   out.insights = insights(out, u, seesAll, db, S, sp, R, local);
