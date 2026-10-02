@@ -161,7 +161,7 @@ test('notification preferences constrain WhatsApp, persist partial choices, and 
   assert.equal(
     db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get()
       .value,
-    '0'
+    '1'
   );
   const initial = (await rep.c.get('/me')).body.notification_preferences;
   assert.equal(initial.automatic_coaching, false);

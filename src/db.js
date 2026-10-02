@@ -481,8 +481,16 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN notification_preferences TEXT NOT NULL DEFAULT '{}';
   ALTER TABLE users ADD COLUMN comparepower_afuid TEXT NOT NULL DEFAULT '';
   ALTER TABLE notifications ADD COLUMN event_type TEXT NOT NULL DEFAULT 'general';
-  INSERT INTO settings(key,value) VALUES('wa_new_lead_group','0') ON CONFLICT(key) DO UPDATE SET value='0';
+  INSERT INTO settings(key,value) VALUES('wa_new_lead_group','1') ON CONFLICT(key) DO NOTHING;
   `,
+  // v19: v18 accidentally disabled dispatch-group lead posts when introducing
+  // personal alert preferences. Repair affected installations with a selected
+  // group; upgrades from older versions retain their explicit group setting.
+  (db, startingVersion) => {
+    if (startingVersion !== 18) return;
+    db.prepare(`UPDATE settings SET value='1' WHERE key='wa_new_lead_group'
+      AND EXISTS(SELECT 1 FROM settings WHERE key='wa_group_id' AND trim(value)<>'')`).run();
+  },
 ];
 
 
@@ -495,7 +503,7 @@ function migrate(db) {
     try {
       tx(db, () => {
         const migration = MIGRATIONS[v - 2];
-        if (typeof migration === 'function') migration(db); else db.exec(migration);
+        if (typeof migration === 'function') migration(db, version); else db.exec(migration);
         const broken = db.prepare('PRAGMA foreign_key_check').all();
         if (broken.length) throw new Error(`Migration to v${v} broke foreign keys: ${JSON.stringify(broken)}`);
         db.exec(`PRAGMA user_version = ${v}`);

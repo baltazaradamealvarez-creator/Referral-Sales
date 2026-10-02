@@ -61,7 +61,7 @@ async function setup(t, { ai } = {}) {
   };
   await a.post('/whatsapp/connect');
   wa.handlers.onOpen({ id: '15125550100:4@s.whatsapp.net', lid: '99887766@lid', name: 'E&O Alerts' });
-  await a.patch('/whatsapp/settings', { group_id: GROUP, group_name: 'Dispatch', new_lead_group:true });
+  await a.patch('/whatsapp/settings', { group_id: GROUP, group_name: 'Dispatch' });
   const settle = async () => { await new Promise((r) => setTimeout(r, 20)); await app.locals.whatsapp.drain(); };
   let mid = 0;
   // A message in the group, as WhatsApp would hand it over.
@@ -100,6 +100,35 @@ test('keywords: statuses in English and Spanish, negation and ambiguity', () => 
   const help = instructions('Ordered');
   assert.match(help, /how this group works/);
   assert.match(help, /cómo funciona este grupo/);
+});
+
+test('muting all personal alerts preserves group lead posts and replies that update CRM statuses', async (t) => {
+  const { db, a, wa, makeUser, say, settle } = await setup(t);
+  const rep = await makeUser('rita', 'rep', '512-555-0142');
+  const dee = await makeUser('dee', 'dispatch', '512-555-0199');
+  for (const person of [rep, dee]) {
+    await person.c.patch('/me', { whatsapp_alerts: true });
+    const prefs = (await person.c.get('/me')).body.notification_preferences;
+    for (const channels of Object.values(prefs.events)) for (const channel of Object.keys(channels)) channels[channel] = false;
+    await person.c.patch('/me/notification-preferences', prefs);
+  }
+  const group = (await a.get('/whatsapp/status')).body;
+  assert.equal(group.new_lead_group, true, 'posting is enabled without a separate opt-in on a fresh database');
+  assert.equal(group.two_way, true);
+  const lead = (await rep.c.post('/referrals', { name: 'Carla Vega', phone: '512-867-5309' })).body;
+  await settle();
+  const post = wa.sent.find(m => m.jid === GROUP && m.text.includes('Carla Vega'));
+  assert.ok(post, 'personal preferences do not suppress the dispatch-group post');
+  assert.equal(db.prepare('SELECT referral_id FROM wa_messages WHERE id=?').get(post.id).referral_id, lead.id);
+  for (const [text, status] of [['working', 'Working'], ['approved', 'Ordered'], ['cancelado', 'Cancelled']]) {
+    await say('15125550199', text, { quotedId: post.id });
+    assert.equal(db.prepare('SELECT status FROM referrals WHERE id=?').get(lead.id).status, status);
+    assert.ok(wa.sent.some(m => m.jid === GROUP && m.text.includes(`*${status}*`)), 'the group sees the update acknowledgement');
+  }
+  assert.equal(db.prepare('SELECT assigned_to FROM referrals WHERE id=?').get(lead.id).assigned_to, dee.id);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comments WHERE referral_id=? AND source='whatsapp'").get(lead.id).n, 3);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND event_type='ordered'").get(rep.id).n, 1, 'muted urgent alerts stay in the app');
+  assert.ok(wa.sent.every(m => m.jid === GROUP), 'routine group work does not restore private message noise');
 });
 
 test('replies become notes; first dispatcher takes the lead; status words move it; @owner tells the rep', async (t) => {

@@ -702,8 +702,9 @@ function createApp(db, opts = {}) {
     return publicReferral(created);
   }));
 
-  // The moment a lead comes in: every dispatcher is alerted (app, phone, WhatsApp) and the
-  // lead is posted to the dispatch WhatsApp group in the Copy-for-WhatsApp format.
+  // Dispatchers receive new-lead alerts according to their personal preferences.
+  // The shared dispatch group receives the full lead post independently, so
+  // replies can add notes and update the CRM even when personal alerts are muted.
   function announceNewLead(ref, enteredBy) {
     const settings = getSettings();
     if (settings.new_lead_alert !== '0') {

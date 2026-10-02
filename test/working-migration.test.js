@@ -40,7 +40,7 @@ test('Working migration preserves a populated previous-version record, dependent
     for(const table of ['comments','status_history','wa_messages','reminders','affiliate_earnings','notifications'])assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE referral_id=1`).get().n,1,table);
     assert.equal(db.prepare('SELECT hidden_at FROM coach_drafts').get().hidden_at,null);
     assert.equal(db.prepare('SELECT event_type FROM notifications').get().event_type,'general');
-    assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value,'0');
+    assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value,'1');
     assert.equal(db.prepare('SELECT notification_preferences FROM users').get().notification_preferences,'{}');
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
     db.exec("UPDATE referrals SET status='Working' WHERE id=1");
