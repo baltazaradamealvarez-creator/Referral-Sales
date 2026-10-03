@@ -13,6 +13,9 @@
 // they could do in the app (reps add notes; dispatch, managers and admins change status).
 
 const { digitsOf } = require('./whatsapp');
+const partnersModule = require('./whatsapp-partners');
+const orderPdf = require('./whatsapp-order-pdf');
+const waFormat = require('../public/waformat');
 
 const MAX_AGE_MS = 24 * 3600 * 1000;
 
@@ -33,16 +36,19 @@ function detectLang(text) {
 function detectStatus(text, approvedStatus = 'Ordered') {
   const t = ` ${plain(text).replace(/[^\w\s#@'-]/g, ' ')} `;
   // "not approved yet", "todavia no aprobado"… report nothing yet.
-  const cleaned = t.replace(/\b(not|no|todavia no|aun no|still not|not yet)\s+(yet\s+)?(been\s+)?(approved|aprobad[oa]|ordered|ordenad[oa]|sold|vendid[oa]|cancel\w*|cancelad[oa])\b/g, ' ');
+  let cleaned = t.replace(/\b(not|no|todavia no|aun no|still not|not yet)\s+(yet\s+)?(?:(?:been|is|was|esta|fue)\s+)?(approved|aprobad[oa]|confirmed|confirmad[oa]|passed|order confirmed|order placed|ordered|ordenad[oa]|sold|vendid[oa]|cancel\w*|cancelad[oa])\b/g, ' ');
+  cleaned = cleaned.replace(/\b(?:will|going to|should|would|could|if|waiting (?:for|to)|awaiting|pending|cuando|vamos a)(?:\s+\w+){0,4}?\s+(?:on it|working(?: on it)?|in progress|confirmed|confirmad[oa]|approved|aprobad[oa]|ordered|order placed|order confirmed|cancelled|cancelad[oa]|passed|qualified)\b/g,' ');
   const found = new Set();
   if (/\b(dnq|no califica|no califico|not qualif\w*|didn'?t qualify|did not qualify|no paso|denied|denegad[oa]|negad[oa]|rechazad[oa]|declined|no aplica|credit (fail\w*|denied))\b/.test(cleaned)) found.add('DNQ');
   if (/\b(cancel+ed|cancel+ation|cancel|cancelad[oa]|cancelar|not interested|no le interesa|ya no quiere)\b/.test(cleaned)) found.add('Cancelled');
-  if (/\b(ordered|order placed|ordenad[oa]|orden puesta|sold|vendid[oa]|venta (hecha|cerrada|lista)|installed|instalad[oa])\b/.test(cleaned)) found.add('Ordered');
+  if (/\b(ordered|order placed|order confirmed|orden confirmada|ordenad[oa]|orden puesta|sold|vendid[oa]|venta (hecha|cerrada|lista)|installed|instalad[oa])\b/.test(cleaned)) found.add('Ordered');
   if (/\b(approved|approve|aprobad[oa]|aprobaron)\b/.test(cleaned)) found.add(approvedStatus);
   if (!found.has('DNQ') && /\b(passed|paso|qualified|califica|calificad[oa])\b/.test(cleaned)) found.add('Passed');
+  if (!found.has('Ordered') && /\b(confirmed|confirmad[oa])\b/.test(cleaned) && !/\b(?:appointment|callback|call back|address|phone|email|pricing|price|cita|direccion|telefono)\b/.test(cleaned)) found.add('Passed');
   // Working is an activity stage, not qualification. A reported outcome takes precedence.
-  const activity = cleaned.replace(/\b(not|no|still not|not yet|todavia no|aun no)\s+(?:(?:yet|estoy|estamos|esta)\s+)?(?:working|in progress|trabajando|en proceso)\b/g, ' ');
-  if (!found.size && (/^\s*working\s*$/.test(activity) || /\b(working on (?:it|this lead|this customer)|in progress|en proceso|trabajando)\b/.test(activity))) found.add('Working');
+  const activity = cleaned.replace(/\b(not|no|still not|not yet|todavia no|aun no)\s+(?:(?:yet|estoy|estamos|esta)\s+)?(?:on it|working(?: on (?:it|this lead|this customer))?|in progress|trabajando|en proceso)\b/g, ' ');
+  if (!found.size && (/^\s*working\s*$/.test(activity) || /\b(on it|working on (?:it|this lead|this customer)|in progress|en proceso|trabajando)\b/.test(activity))) found.add('Working');
+  if (found.size===1 && /[?¿]/.test(String(text))) return {};
   const list = [...found];
   if (list.length === 1) return { status: list[0] };
   if (list.length > 1) return { options: list };
@@ -60,7 +66,7 @@ function instructions(approvedStatus) {
     '',
     '• Every new lead is posted here.',
     '• *Reply* to a lead (swipe right on it) to add a note. The *first dispatcher to reply takes the lead*.',
-    `• Write *working*, *approved* (→ ${ap}), *passed*, *DNQ* or *cancelled* in your reply to change its status.`,
+    `• Write *on it* / *working* (→ Working), *confirmed* (→ Passed), *approved* (→ ${ap}), *passed*, *DNQ* or *cancelled* in your reply to change its status.`,
     '• Add *@owner* to send your note to the rep who entered the lead.',
     '• Can\'t find the post? Start with the lead number: *#123 approved*.',
     '• Ask the assistant — start with *bot*: _bot what\'s waiting?_ · _bot remind me at 5pm to call #12_ · _bot how did we do this week?_ Reply to its answer to keep talking, or message this number privately.',
@@ -71,7 +77,7 @@ function instructions(approvedStatus) {
     '',
     '• Cada lead nuevo se publica aquí.',
     '• *Responde* a un lead (desliza a la derecha) para agregar una nota. El *primer dispatcher en responder toma el lead*.',
-    `• Escribe *trabajando*, *aprobado* (→ ${ap}), *pasó*, *no califica* o *cancelado* en tu respuesta para cambiar el estado.`,
+    `• Escribe *trabajando* (→ Working), *confirmado* (→ Passed), *aprobado* (→ ${ap}), *pasó*, *no califica* o *cancelado* en tu respuesta para cambiar el estado.`,
     '• Agrega *@dueño* para enviar tu nota al vendedor que ingresó el lead.',
     '• ¿No encuentras el mensaje? Empieza con el número del lead: *#123 aprobado*.',
     '• Pregúntale al asistente — empieza con *bot*: _bot ¿qué está pendiente?_ · _bot recuérdame a las 5pm llamar al #12_ · _bot ¿cómo nos fue esta semana?_ Responde a su mensaje para seguir, o escríbele a este número en privado.',
@@ -114,6 +120,8 @@ const T = {
 
 function mount(app, db, deps) {
   const { whatsapp, ai, agent, coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
+
+  const partners = partnersModule.mount(app,db,{whatsapp,requireRole,wrap,HttpError,logAudit});
 
   const cfg = () => {
     const s = getSettings();
@@ -190,37 +198,122 @@ function mount(app, db, deps) {
     return msgs;
   }
 
-  // Quiet groups accept only lead replies. External participants contribute
-  // attributed comments; account permissions still govern CRM status changes.
-  async function handleQuiet(m) {
-    const quoted = m.quotedId ? db.prepare('SELECT referral_id,kind FROM wa_messages WHERE id=? AND chat=?').get(m.quotedId,m.chat) : null;
-    const user = findUser(m);
-    const linked = quoted && quoted.referral_id && quoted.kind !== 'agent';
-    const target = linked ? { id: quoted.referral_id, via: 'reply' } : user ? leadFor(m,null) : null;
-    if (!target) return 'quiet_ignored';
-    let ref;
-    try { ref = getReferral(target.id); } catch { return 'lead_not_found'; }
-    const authorized = user && canViewReferral(user,ref) ? user : null;
-    if (!authorized && !linked) return 'no_access';
-    const note = target.via === 'number' ? String(m.text).replace(/(?:^|\s)(?:#|lead\s*#?\s*)\d{1,7}\b/i,'').trim() || m.text : m.text;
-    const externalAuthor = String(m.name || user?.full_name || 'WhatsApp participant').trim().slice(0,100) || 'WhatsApp participant';
-    try {
-      addComment(authorized,ref,note,{ source:'whatsapp', notifyOwner:true, allowMentions:!!authorized,
-        ownerMention:!!authorized && mentionsOwner(m,ref,note),
-        externalAuthor, whatsappChat:m.chat, whatsappMessageId:m.id });
-      if (authorized) {
-        if (!ref.assigned_to && seesAll(authorized)) updateReferral(authorized,ref.id,{assigned_to:authorized.id});
-        const verdict = detectStatus(note,cfg().approvedStatus);
-        if (verdict.status && verdict.status !== ref.status && canManageReferral(authorized,ref)) updateReferral(authorized,ref.id,{status:verdict.status});
-      }
-      db.prepare("INSERT OR IGNORE INTO wa_messages(id,chat,referral_id,kind) VALUES(?,?,?,'lead_reply')").run(m.id,m.chat,ref.id);
-      logAudit({user:authorized,ip:'whatsapp'},'whatsapp.quiet_reply','referral',ref.id,
-        `${authorized ? authorized.full_name : `External: ${externalAuthor}`} · ${m.chat} · ${String(note).slice(0,160)}`);
-      return authorized ? 'quiet_lead_updated' : 'quiet_external_comment';
-    } catch (e) {
-      console.error('Quiet WhatsApp reply failed:',e.message);
-      return 'quiet_update_failed';
+  function quietActor(m, ref) {
+    const user=findUser(m);
+    if(user) return canViewReferral(user,ref) ? user : null;
+    const partner=partners.find(m);
+    return partner ? partners.actorFor(partner,m,ref.id,!!ref.quiet_test) : null;
+  }
+  function testReferral(test) {
+    return {...waFormat.QUIET_TEST_LEAD,...JSON.parse(test.document_fields || '{}'),id:test.id,
+      created_by:test.created_by,team_id:test.creator_team_id,assigned_to:test.assigned_to,status:test.status,quiet_test:true};
+  }
+  function comment(m,ref,actor,note) {
+    const crm=actor && !partnersModule.isPartner(actor) ? actor : null;
+    addComment(crm,ref,note,{source:'whatsapp',notifyOwner:true,allowMentions:!!crm,
+      ownerMention:!!crm && mentionsOwner(m,ref,note),
+      externalAuthor:actor?.full_name || String(m.name || 'WhatsApp participant').slice(0,100),
+      whatsappChat:m.chat,whatsappMessageId:m.id});
+  }
+  const statusAllowed=(from,to)=>!((from==='Passed' && to==='Working') || (['Ordered','Cancelled','DNQ'].includes(from) && ['Working','Passed'].includes(to)));
+
+  // A PDF is read only for a recognized, permitted account or an explicitly allowed
+  // Spectrum number. Its bytes and customer data never go to the conversational AI.
+  async function handleDocument(m,test=null) {
+    const user=findUser(m), partner=!user && partners.find(m), filename=String(m.document.filename || 'Order.pdf').replace(/[\r\n]/g,' ').slice(0,150);
+    const quoted=m.quotedId ? db.prepare('SELECT referral_id,kind FROM wa_messages WHERE id=? AND chat=?').get(m.quotedId,m.chat) : null;
+    const target=quoted?.referral_id && quoted.kind!=='agent' ? {id:quoted.referral_id} : user ? leadFor(m,null) : null;
+    let ref=test ? testReferral(test) : null;
+    if(!test && target) {try{ref=getReferral(target.id);}catch{}}
+    const actor=ref ? quietActor(m,ref) : null;
+    db.prepare(`INSERT OR IGNORE INTO wa_order_documents(chat,message_id,filename,author,referral_id,test_id)
+      VALUES(?,?,?,?,?,?)`).run(m.chat,m.id,filename,actor?.full_name || user?.full_name || String(m.name || 'WhatsApp participant').slice(0,100),
+      ref && !test ? ref.id : null,test?.id || null);
+    let fields={};
+    const finish=(status,detail)=>{
+      db.prepare("UPDATE wa_order_documents SET status=?,detail=?,fields=?,updated_at=datetime('now') WHERE chat=? AND message_id=?")
+        .run(status,detail.slice(0,500),JSON.stringify(fields),m.chat,m.id);
+      return `quiet_pdf_${status}`;
+    };
+    const capture=(who,note,ordered=false)=>{
+      if(!ref)return;
+      if(test)whatsapp.quietTests.capture(whatsapp.quietTests.get(test.id),{...m,text:note},who,
+        {canViewReferral,canManageReferral,seesAll,detectStatus:()=>ordered?{status:'Ordered'}:{},approvedStatus:cfg().approvedStatus});
+      else {comment(m,ref,who,note);rememberPost(ref.id,'lead_reply')(m.id,m.chat);}
+    };
+    if((ref && (!actor || !canManageReferral(actor,ref))) || (!ref && !user && !partner)) {
+      capture(actor,`PDF received: ${filename}${m.text ? '\n'+m.text : ''}\nComment only: this participant is not allowed to update order details.`);
+      return finish('comment','Participant cannot update order details. No PDF was downloaded.');
     }
+    try {
+      const result=await orderPdf.readOrder(m.document);fields=result.fields;
+      // Permission, capture and record checks happen again after an asynchronous download.
+      if(test ? m.chat!==whatsapp.testGroupId() || getSettings().wa_enabled!=='1' : !whatsapp.quietCaptureEnabled(m.chat))
+        return finish('review','Reply capture was turned off while processing this PDF.');
+      if(test) {test=whatsapp.quietTests.get(test.id);ref=testReferral(test);}
+      else if(ref) {try{ref=getReferral(ref.id);}catch{return finish('review','The linked lead no longer exists.');}}
+      else {
+        const posted=db.prepare('SELECT DISTINCT referral_id FROM wa_messages WHERE chat=? AND referral_id IS NOT NULL AND kind=\'lead\'').all(m.chat);
+        const matches=[];
+        for(const row of posted) {
+          let candidate;try{candidate=getReferral(row.referral_id);}catch{continue;}
+          const who=quietActor(m,candidate);
+          if(who && canManageReferral(who,candidate) && orderPdf.identityMatches(fields,candidate))matches.push(candidate);
+        }
+        if(matches.length!==1)return finish('review',matches.length ? 'Several posted leads match this PDF. Reply directly to the correct lead and resend it.' : 'No unique permitted lead matches this PDF. Reply directly to its lead post and resend it.');
+        ref=matches[0];
+        db.prepare('UPDATE wa_order_documents SET referral_id=? WHERE chat=? AND message_id=?').run(ref.id,m.chat,m.id);
+      }
+      const current=quietActor(m,ref);
+      if(!current || !canManageReferral(current,ref))return finish('review','Sender permission was removed or does not cover this lead.');
+      const conflict=result.issue || orderPdf.orderPatch(fields,ref).issue;
+      const duplicate=!test && fields.account_number && db.prepare("SELECT id FROM referrals WHERE replace(replace(account_number,'-',''),' ','')=? AND id<>?").get(fields.account_number,ref.id);
+      if(conflict || duplicate) {
+        const reason=conflict || 'This account number is already linked to another CRM lead.';
+        capture(current,`PDF needs review: ${filename}\n${reason}`);
+        return finish('review',reason);
+      }
+      const {body}=orderPdf.orderPatch(fields,ref);
+      if(test) {
+        db.prepare('UPDATE wa_quiet_tests SET document_fields=? WHERE id=?').run(JSON.stringify({...JSON.parse(test.document_fields || '{}'),...fields}),test.id);
+      } else updateReferral(current,ref.id,body);
+      finish('applied',test ? 'Order details saved on the isolated test lead only.' : 'Lead marked Ordered and order details saved.');
+      const summary=['PDF processed: '+filename,...Object.entries(fields).filter(([,v])=>v!=='' && v!=null).map(([k,v])=>`${k.replace(/_/g,' ')}: ${v}`),'Status: Ordered'].join('\n');
+      try{capture(current,summary,true);}catch{console.error('Order PDF comment could not be saved.');}
+      logAudit({user:current,ip:'whatsapp'},'whatsapp.order_pdf',test?'whatsapp_test':'referral',ref.id,`${filename} · ${m.chat} · Ordered`);
+      return 'quiet_pdf_applied';
+    } catch(error) {
+      const safe=error.status===409 ? 'Order customer details match another existing record. Review before applying this PDF.' : /^(?:PDF |Password-protected PDF|The attachment|No readable)/.test(error.message) ? error.message.slice(0,250) : 'PDF could not be processed. Review it in the CRM.';
+      // Failure is visible in Settings, and as an attributed comment when linked.
+      try{capture(ref ? quietActor(m,ref) : null,`PDF needs review: ${filename}\n${safe}`);}catch{}
+      return finish('review',safe);
+    }
+  }
+
+  // Quiet messages always remain silent, including failures and ambiguous statuses.
+  async function handleQuiet(m) {
+    if(m.document)return handleDocument(m);
+    const quoted=m.quotedId ? db.prepare('SELECT referral_id,kind FROM wa_messages WHERE id=? AND chat=?').get(m.quotedId,m.chat) : null;
+    const user=findUser(m), linked=quoted && quoted.referral_id && quoted.kind!=='agent';
+    const target=linked ? {id:quoted.referral_id,via:'reply'} : user ? leadFor(m,null) : null;
+    if(!target)return 'quiet_ignored';
+    let ref;try{ref=getReferral(target.id);}catch{return 'lead_not_found';}
+    const actor=quietActor(m,ref);
+    if(!actor && !linked)return 'no_access';
+    const note=target.via==='number' ? String(m.text).replace(/(?:^|\s)(?:#|lead\s*#?\s*)\d{1,7}\b/i,'').trim() || m.text : m.text;
+    try {
+      comment(m,ref,actor,note);
+      if(actor) {
+        if(!ref.assigned_to && seesAll(actor))updateReferral(actor,ref.id,{assigned_to:actor.id});
+        const verdict=detectStatus(note,cfg().approvedStatus);
+        if(verdict.status && verdict.status!==ref.status && statusAllowed(ref.status,verdict.status) && canManageReferral(actor,ref))
+          updateReferral(actor,ref.id,{status:verdict.status});
+      }
+      rememberPost(ref.id,'lead_reply')(m.id,m.chat);
+      logAudit({user:actor,ip:'whatsapp'},'whatsapp.quiet_reply','referral',ref.id,
+        `${actor?.full_name || `External: ${m.name || 'WhatsApp participant'}`} · ${m.chat} · ${String(note).slice(0,160)}`);
+      return actor ? 'quiet_lead_updated' : 'quiet_external_comment';
+    } catch(error) {console.error('Quiet WhatsApp reply failed:',error.message);return 'quiet_update_failed';}
   }
 
   async function handle(m) {
@@ -229,14 +322,16 @@ function mount(app, db, deps) {
     const quiet = m.isGroup && whatsapp.isQuietGroup(m.chat);
     const test = m.isGroup && m.chat===whatsapp.testGroupId() ? whatsapp.quietTests.forReply(m.chat,m.quotedId) : null;
     if (test ? getSettings().wa_enabled!=='1' : quiet ? !whatsapp.quietCaptureEnabled(m.chat) : !c.enabled) return quiet ? 'quiet_capture_off' : 'two_way_off';
-    if (!text) return 'empty';
+    if (!text && !m.document) return 'empty';
+    if(m.document && !quiet && !test)return 'unsupported_document';
     const inGroup = m.isGroup && m.chat === whatsapp.groupId();
     if (m.isGroup && !inGroup && !quiet) return 'other_group';
     if (m.ts && Date.now() - m.ts > MAX_AGE_MS) return 'old_message';
     if (!db.prepare('INSERT OR IGNORE INTO wa_seen (id) VALUES (?)').run(`${m.chat}|${m.id}`).changes) return 'duplicate';
     if (++handled % 500 === 0) db.prepare("DELETE FROM wa_seen WHERE created_at < datetime('now', '-7 days')").run();
     if (test) {
-      whatsapp.quietTests.capture(test,{...m,text},findUser(m),{canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:c.approvedStatus});
+      if(m.document)return handleDocument({...m,text},test);
+      whatsapp.quietTests.capture(test,{...m,text},quietActor(m,testReferral(test)),{canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:c.approvedStatus});
       return 'quiet_test_reply';
     }
     if (quiet) return handleQuiet({ ...m,text });
@@ -350,8 +445,15 @@ function mount(app, db, deps) {
   // A resend may arrive while the first AI request is still running. Keep each person's
   // conversation ordered instead of mutating the same history in parallel.
   function receive(m) {
-    const key = `${m.chat}|${m.senderJid || m.senderPhone || ''}`;
-    const next = (pending.get(key) || Promise.resolve()).then(() => handle(m));
+    const key = m.isGroup ? m.chat : `${m.chat}|${m.senderJid || m.senderPhone || ''}`;
+    const next = (pending.get(key) || Promise.resolve()).then(async () => {
+      if(!m.senderPhone && m.resolveSenderPhone && m.isGroup &&
+        [whatsapp.groupId(),whatsapp.quietGroupId(),whatsapp.testGroupId()].includes(m.chat)) {
+        const phone=await m.resolveSenderPhone().catch(()=>null);
+        if(phone)m={...m,senderPhone:phone};
+      }
+      return handle(m);
+    });
     const settled = next.catch(() => {});
     pending.set(key, settled);
     settled.then(() => { if (pending.get(key) === settled) pending.delete(key); });
@@ -364,9 +466,12 @@ function mount(app, db, deps) {
   app.post('/api/whatsapp/quiet-test/simulate',wrap(req=>{
     const user=requireRole(req,'admin'),b=req.body || {},text=String(b.text || '').trim();
     if (!text || text.length>2000) throw new HttpError(400,'Enter a reply up to 2,000 characters.');
-    if (!['external','crm'].includes(b.actor)) throw new HttpError(400,'Choose External participant or My CRM account.');
+    if (!['external','crm','partner'].includes(b.actor)) throw new HttpError(400,'Choose an external participant, trusted Spectrum participant, or your CRM account.');
     const test=whatsapp.quietTests.latest(whatsapp.testGroupId()) || {created_by:user.id,creator_team_id:user.team_id,status:'New',assigned_to:null};
-    const result=whatsapp.quietTests.assess(test,b.actor==='crm' ? user : null,text,
+    const partner=b.actor==='partner' ? db.prepare('SELECT * FROM wa_group_partners WHERE group_id=? AND enabled=1 ORDER BY id LIMIT 1').get(whatsapp.testGroupId()) : null;
+    if(b.actor==='partner' && !partner)throw new HttpError(400,'Allow a Spectrum participant for the test group first.');
+    const actor=b.actor==='crm' ? user : partner ? partners.actorFor(partner,{chat:whatsapp.testGroupId(),id:'simulation'},test.id,true) : null;
+    const result=whatsapp.quietTests.assess(test,actor,text,
       {canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:cfg().approvedStatus});
     return {...result,comment:text,simulation:true};
   }));

@@ -13,8 +13,8 @@ const PHONE='15125550142@s.whatsapp.net',LID='987654321@lid',GROUP='1203630@g.us
 async function setup(t,{canRetryMessage}={}) {
   const library=await import('@whiskeysockets/baileys');
   const authDir=fs.mkdtempSync(path.join(os.tmpdir(),'whatsapp-recovery-'));
-  const fake={sockets:[],diagnostics:[],savedKeys:0,savedCreds:0,nextId:0,peers:[]};
-  const lib={...library,async fetchLatestBaileysVersion(){return {version:[2,3000,1]};},
+  const fake={sockets:[],diagnostics:[],savedKeys:0,savedCreds:0,nextId:0,peers:[],incoming:[],downloads:0};
+  const lib={...library,async downloadMediaMessage(){fake.downloads++;return require('node:stream').Readable.from(fake.mediaChunks || [Buffer.from('fixture PDF')]);},async fetchLatestBaileysVersion(){return {version:[2,3000,1]};},
     async useMultiFileAuthState(){
       return {state:{creds:{},keys:{async set(){if(fake.keyGate)await fake.keyGate;fake.savedKeys++;}}},
         async saveCreds(){if(fake.credError)throw new Error('Fixture key-write failure');if(fake.credGate)await fake.credGate;fake.savedCreds++;}};
@@ -30,7 +30,7 @@ async function setup(t,{canRetryMessage}={}) {
         async onWhatsApp(){return fake.peers;},async groupFetchAllParticipating(){return {};}};
       fake.sockets.push(sock);return sock;
     }};
-  const options={authDir,loadLibrary:async()=>lib,onQr(){},onOpen(){},onClose(){},onMessage(){},canRetryMessage,
+  const options={authDir,loadLibrary:async()=>lib,onQr(){},onOpen(){},onClose(){},onMessage:m=>fake.incoming.push(m),canRetryMessage,
     onDiagnostic:event=>fake.diagnostics.push(event)};
   const transports=[];
   const make=()=>{const transport=createTransport(options);transports.push(transport);return transport;};
@@ -155,4 +155,33 @@ test('app retry policy follows current quiet-group selection and exposes content
   const {diagnostics}=await response.json();assert.equal(diagnostics.retry_requests,1);assert.equal(diagnostics.retry_missing,1);assert.equal(diagnostics.auth_save_errors,1);
   assert.ok(diagnostics.last_retry_at);assert.match(diagnostics.last_error,/encryption keys/);
   assert.equal(JSON.stringify(diagnostics).includes(PHONE),false);
+});
+
+test('QR transport forwards captionless and wrapped PDF replies with quote context and lazy bounded download',async t=>{
+  const {sock,fake}=await setup(t);
+  const doc={fileName:'Order.pdf',mimetype:'application/pdf',fileLength:12,contextInfo:{stanzaId:'lead-post',mentionedJid:[PHONE]}};
+  const message={key:{id:'pdf-in',remoteJid:GROUP,participant:LID,participantPn:PHONE},pushName:'Spectrum',
+    message:{ephemeralMessage:{message:{documentWithCaptionMessage:{message:{documentMessage:doc}}}}},messageTimestamp:Math.floor(Date.now()/1000)};
+  sock.ev.emit('messages.upsert',{messages:[message]});
+  assert.equal(fake.downloads,0,'receiving metadata does not download media');
+  assert.equal(fake.incoming.length,1);
+  const incoming=fake.incoming[0];assert.equal(incoming.text,'');assert.equal(incoming.quotedId,'lead-post');
+  assert.equal(incoming.senderPhone,'15125550142');assert.equal(incoming.document.filename,'Order.pdf');
+  assert.equal((await incoming.document.download()).toString(),'fixture PDF');assert.equal(fake.downloads,1);
+  fake.mediaChunks=[Buffer.alloc(5*1024*1024),Buffer.from('overflow')];
+  await assert.rejects(incoming.document.download(),/5 MB/);
+  sock.ev.emit('messages.upsert',{messages:[{...message,key:{...message.key,fromMe:true}}]});
+  assert.equal(fake.incoming.length,1,'linked-phone messages still cannot loop back into the CRM');
+});
+
+test('privacy-only group senders resolve from WhatsApp metadata for that exact group without guessing the LID as a number',async t=>{
+  const {sock,fake}=await setup(t);let lookedUp=0;
+  sock.groupMetadata=async chat=>{lookedUp++;return {id:chat,participants:chat===GROUP ? [{id:LID,lid:LID,jid:PHONE}] : []};};
+  const message={key:{id:'lid-in',remoteJid:GROUP,participant:LID},message:{conversation:'on it'}};
+  sock.ev.emit('messages.upsert',{messages:[message]});
+  assert.equal(fake.incoming[0].senderPhone,null);assert.equal(lookedUp,0,'metadata is looked up only when the handler asks');
+  assert.equal(await fake.incoming[0].resolveSenderPhone(),'15125550142');assert.equal(lookedUp,1);
+  assert.equal(await fake.incoming[0].resolveSenderPhone(),'15125550142');assert.equal(lookedUp,1,'verified group mapping is briefly cached');
+  sock.ev.emit('messages.upsert',{messages:[{...message,key:{...message.key,id:'wrong-group',remoteJid:'different@g.us'}}]});
+  assert.equal(await fake.incoming[1].resolveSenderPhone(),null,'a mapping from another group is never reused');
 });

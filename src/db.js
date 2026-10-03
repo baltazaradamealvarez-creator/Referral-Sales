@@ -538,6 +538,37 @@ const MIGRATIONS = [
     UNIQUE(chat,message_id)
   );
   CREATE INDEX IF NOT EXISTS idx_wa_quiet_test_replies ON wa_quiet_test_replies(test_id,id);`,
+  // v23: trusted external updates retain their own attribution; PDFs have reviewable outcomes.
+  (db) => {
+    if (!db.prepare('PRAGMA table_info(status_history)').all().some(c => c.name === 'external_author')) {
+      const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='status_history'").get().sql;
+      const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='status_history' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+      db.exec(sql.replace(/user_id\s+INTEGER\s+NOT NULL/i,'user_id INTEGER')
+        .replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?status_history["`]?/i,'CREATE TABLE status_history_next'));
+      db.exec('INSERT INTO status_history_next SELECT * FROM status_history; DROP TABLE status_history; ALTER TABLE status_history_next RENAME TO status_history;');
+      for (const item of objects) db.exec(item.sql);
+      db.exec(`ALTER TABLE status_history ADD COLUMN external_author TEXT NOT NULL DEFAULT '';
+        ALTER TABLE status_history ADD COLUMN whatsapp_chat TEXT NOT NULL DEFAULT '';
+        ALTER TABLE status_history ADD COLUMN whatsapp_message_id TEXT NOT NULL DEFAULT '';`);
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS wa_group_partners (
+      id INTEGER PRIMARY KEY,group_id TEXT NOT NULL,name TEXT NOT NULL,phone TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,authorized_by INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+      UNIQUE(group_id,phone));
+      CREATE TABLE IF NOT EXISTS wa_partner_identities (
+      group_id TEXT NOT NULL,jid TEXT NOT NULL,partner_id INTEGER NOT NULL REFERENCES wa_group_partners(id) ON DELETE CASCADE,
+      PRIMARY KEY(group_id,jid));
+      CREATE TABLE IF NOT EXISTS wa_order_documents (
+      id INTEGER PRIMARY KEY,chat TEXT NOT NULL,message_id TEXT NOT NULL,filename TEXT NOT NULL,
+      author TEXT NOT NULL,referral_id INTEGER REFERENCES referrals(id) ON DELETE SET NULL,
+      test_id INTEGER REFERENCES wa_quiet_tests(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'processing',detail TEXT NOT NULL DEFAULT '',fields TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+      UNIQUE(chat,message_id));`);
+    if (!db.prepare('PRAGMA table_info(wa_quiet_tests)').all().some(c => c.name === 'document_fields'))
+      db.exec("ALTER TABLE wa_quiet_tests ADD COLUMN document_fields TEXT NOT NULL DEFAULT '{}';");
+  },
 ];
 
 

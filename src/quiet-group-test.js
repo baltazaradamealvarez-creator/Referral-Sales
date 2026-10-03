@@ -2,6 +2,7 @@
 
 const waFormat = require('../public/waformat');
 const { tx } = require('./db');
+const {isPartner}=require('./whatsapp-partners');
 
 function createStore(db) {
   const get = id => db.prepare(`SELECT t.*, u.team_id AS creator_team_id FROM wa_quiet_tests t
@@ -15,15 +16,16 @@ function createStore(db) {
       FROM wa_quiet_test_replies r LEFT JOIN users u ON u.id=r.user_id WHERE r.test_id=? ORDER BY r.id DESC LIMIT 10`).all(test.id);
     return { id:test.id,group_id:test.group_id,group_name:test.group_name,sample_text:test.sample_text,status:test.status,
       assigned_to:test.assigned_to,post_status:test.post_status,post_error:test.post_error,
-      created_at:test.created_at,posted_at:test.posted_at,replies };
+      created_at:test.created_at,posted_at:test.posted_at,replies,document_fields:JSON.parse(test.document_fields || '{}') };
   }
   function assess(test, user, text, { canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus }) {
-    const ref = { created_by:test.created_by,team_id:test.creator_team_id,assigned_to:test.assigned_to,status:test.status };
+    const ref = { id:test.id,quiet_test:true,created_by:test.created_by,team_id:test.creator_team_id,assigned_to:test.assigned_to,status:test.status };
     const authorized = user && canViewReferral(user,ref) ? user : null;
     const verdict = detectStatus(text,approvedStatus);
     const permitted = !!authorized && canManageReferral(authorized,ref);
-    const status = permitted && verdict.status ? verdict.status : test.status;
-    return { actor:authorized ? 'crm' : 'external',user_id:authorized?.id || null,
+    const regression=(test.status==='Passed' && verdict.status==='Working') || (['Ordered','Cancelled','DNQ'].includes(test.status) && ['Working','Passed'].includes(verdict.status));
+    const status = permitted && verdict.status && !regression ? verdict.status : test.status;
+    return { actor:authorized ? isPartner(authorized) ? 'partner' : 'crm' : 'external',user_id:authorized?.id || null,
       from_status:test.status,to_status:status,can_change_status:permitted,
       assigned_to:!test.assigned_to && authorized && seesAll(authorized) ? authorized.id : test.assigned_to,
       ambiguous:!!verdict.options,bot_messages:0,bot_reactions:0 };
@@ -52,7 +54,7 @@ function createStore(db) {
     capture(test,m,user,policy) {
       const body = String(m.text).trim().slice(0,2000);
       const result = assess(test,user,body,policy);
-      const author = String(m.name || user?.full_name || 'WhatsApp participant').trim().slice(0,100) || 'WhatsApp participant';
+      const author = String(isPartner(user) ? user.full_name : m.name || user?.full_name || 'WhatsApp participant').trim().slice(0,100) || 'WhatsApp participant';
       tx(db,() => {
         const inserted = db.prepare(`INSERT OR IGNORE INTO wa_quiet_test_replies
           (test_id,chat,message_id,user_id,external_author,body,from_status,to_status) VALUES(?,?,?,?,?,?,?,?)`)

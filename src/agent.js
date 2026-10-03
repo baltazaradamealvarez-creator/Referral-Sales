@@ -491,7 +491,7 @@ function mount(app, db, deps) {
     const r = viewable(u, id);
     const notes = db.prepare(`SELECT c.body, c.created_at, c.source, COALESCE(u.full_name,NULLIF(c.external_author,''),'WhatsApp participant') AS full_name FROM comments c LEFT JOIN users u ON u.id = c.user_id
       WHERE c.referral_id = ? ORDER BY c.id DESC LIMIT 10`).all(r.id);
-    const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name FROM status_history h LEFT JOIN users u ON u.id = h.user_id
+    const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, COALESCE(u.full_name,NULLIF(h.external_author,''),'WhatsApp participant') AS full_name FROM status_history h LEFT JOIN users u ON u.id = h.user_id
       WHERE h.referral_id = ? ORDER BY h.id DESC LIMIT 10`).all(r.id);
     let tips = [];
     try { tips = JSON.parse(r.lead_flags || '[]'); } catch { tips = []; }

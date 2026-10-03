@@ -13,6 +13,7 @@ const { historyMatch } = require('./history');
 const { scoreLead } = require('../public/leadscore');
 const waFormat = require('../public/waformat');
 const notificationPrefs = require('./notification-preferences');
+const waPartners = require('./whatsapp-partners');
 const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob, parseAddressLocation, normalizeState, normalizeZip } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -137,12 +138,14 @@ function createApp(db, opts = {}) {
   const seesAll = (u) => u.role === 'admin' || u.role === 'dispatch';
 
   function canViewReferral(u, ref) {
+    if (waPartners.isPartner(u)) return waPartners.canAccess(u,ref);
     if (seesAll(u)) return true;
     if (ref.created_by === u.id || ref.assigned_to === u.id) return true;
     return isManager(u) && u.team_id != null && ref.team_id === u.team_id;
   }
 
   function canManageReferral(u, ref) {
+    if (waPartners.isPartner(u)) return waPartners.canAccess(u,ref);
     if (seesAll(u)) return true;
     return isManager(u) && u.team_id != null && ref.team_id === u.team_id;
   }
@@ -859,8 +862,8 @@ function createApp(db, opts = {}) {
       COALESCE(u.full_name,NULLIF(c.external_author,''),'WhatsApp participant') AS full_name, u.username,
       CASE WHEN c.user_id IS NULL THEN 1 ELSE 0 END AS external
       FROM comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.referral_id = ? ORDER BY c.id`).all(ref.id);
-    const history = db.prepare(`SELECT h.user_id, h.from_status, h.to_status, h.created_at, u.full_name
-      FROM status_history h JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
+    const history = db.prepare(`SELECT h.user_id, h.from_status, h.to_status, h.created_at, COALESCE(u.full_name,NULLIF(h.external_author,''),'WhatsApp participant') AS full_name
+      FROM status_history h LEFT JOIN users u ON u.id = h.user_id WHERE h.referral_id = ? ORDER BY h.id`).all(ref.id);
     const toMs = (x) => Date.parse(`${x.replace(' ', 'T')}Z`);
     const speedInfo = ref.first_touch_at
       ? { response_minutes: speed.businessMinutes(toMs(ref.created_at), toMs(ref.first_touch_at)),
@@ -882,15 +885,57 @@ function createApp(db, opts = {}) {
     const ref = getReferral(refId);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
     const manage = canManageReferral(u, ref);
+    if (waPartners.isPartner(u) && Object.keys(body).some(k => !['status','account_number','install_date','name','phone','email','address','city','state','zip','services','package_details','est_monthly_value'].includes(k)))
+      throw new HttpError(403,'Spectrum participants may update only the linked lead status and order details.');
     const touch = "updated_at = datetime('now')";
 
     const dup = tx(db, () => {
+      // Validate customer edits before status changes or notifications, so a duplicate
+      // cannot partially apply an order. All accepted fields still commit together.
+      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'state', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
+      if (detailFields.some((f) => body[f] !== undefined)) {
+        if (!manage && !(ref.created_by === u.id && ref.status === 'New')) {
+          throw new HttpError(403, 'You can only edit details while the referral is New.');
+        }
+        const editedLocation = body.address !== undefined && String(body.address).trim() !== ref.address
+          ? parseAddressLocation(body.address) : {};
+        const lead = cleanLead({
+          name: body.name ?? ref.customer_name,
+          company: body.company ?? ref.company,
+          phone: body.phone ?? ref.phone,
+          alt_phone: body.alt_phone ?? ref.alt_phone,
+          email: body.email ?? ref.email,
+          address: body.address ?? ref.address,
+          city: body.city ?? (editedLocation.city || ref.city),
+          state: body.state ?? (editedLocation.state || ref.state),
+          zip: body.zip ?? (editedLocation.zip || ref.zip),
+          notes: body.notes ?? ref.notes,
+          services: body.services ?? ref.services,
+          contact_pref: body.contact_pref ?? ref.contact_pref,
+          package_details: body.package_details ?? ref.package_details,
+          lead_priority: body.lead_priority ?? ref.lead_priority,
+          est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
+          dob: body.dob ?? ref.dob,
+        }, {
+          requireName: body.name !== undefined || !!ref.customer_name,
+          changed: new Set(detailFields.filter((f) => body[f] !== undefined)),
+        });
+        const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key || lead.keys.zip !== ref.address_zip });
+        if (d) return { d, lead };
+        db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, state = ?, zip = ?,
+          notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
+          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, dob = ?, ${touch} WHERE id = ?`).run(
+          lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.state, lead.zip,
+          lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
+          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, lead.dob, ref.id,
+        );
+      }
       if (body.status !== undefined && body.status !== ref.status) {
         if (!manage) throw new HttpError(403, 'Only a manager or dispatch can change the status.');
         if (!STATUSES.includes(body.status)) throw new HttpError(400, 'Unknown status.');
         db.prepare(`UPDATE referrals SET status = ?, ${touch} WHERE id = ?`).run(body.status, ref.id);
-        db.prepare('INSERT INTO status_history (referral_id, user_id, from_status, to_status) VALUES (?, ?, ?, ?)')
-          .run(ref.id, u.id, ref.status, body.status);
+        db.prepare('INSERT INTO status_history (referral_id,user_id,from_status,to_status,external_author,whatsapp_chat,whatsapp_message_id) VALUES (?,?,?,?,?,?,?)')
+          .run(ref.id,u.id,ref.status,body.status,waPartners.isPartner(u)?u.full_name:'',u.whatsapp_chat||'',u.whatsapp_message_id||'');
         if (ref.created_by !== u.id) {
           notify(ref.created_by, ref.id, body.status === 'Ordered'
             ? `🎉 Your lead ${leadLabel(ref)} was Ordered! (${u.full_name})`
@@ -935,48 +980,11 @@ function createApp(db, opts = {}) {
           if (to === u.id) speed.touch(ref, u.id);
         }
       }
-      const detailFields = ['name', 'company', 'phone', 'alt_phone', 'email', 'address', 'city', 'state', 'zip', 'notes', 'services', 'contact_pref', 'package_details', 'lead_priority', 'est_monthly_value', 'dob'];
-      if (detailFields.some((f) => body[f] !== undefined)) {
-        if (!manage && !(ref.created_by === u.id && ref.status === 'New')) {
-          throw new HttpError(403, 'You can only edit details while the referral is New.');
-        }
-        const editedLocation = body.address !== undefined && String(body.address).trim() !== ref.address
-          ? parseAddressLocation(body.address) : {};
-        const lead = cleanLead({
-          name: body.name ?? ref.customer_name,
-          company: body.company ?? ref.company,
-          phone: body.phone ?? ref.phone,
-          alt_phone: body.alt_phone ?? ref.alt_phone,
-          email: body.email ?? ref.email,
-          address: body.address ?? ref.address,
-          city: body.city ?? (editedLocation.city || ref.city),
-          state: body.state ?? (editedLocation.state || ref.state),
-          zip: body.zip ?? (editedLocation.zip || ref.zip),
-          notes: body.notes ?? ref.notes,
-          services: body.services ?? ref.services,
-          contact_pref: body.contact_pref ?? ref.contact_pref,
-          package_details: body.package_details ?? ref.package_details,
-          lead_priority: body.lead_priority ?? ref.lead_priority,
-          est_monthly_value: body.est_monthly_value ?? ref.est_monthly_value,
-          dob: body.dob ?? ref.dob,
-        }, {
-          requireName: body.name !== undefined || !!ref.customer_name,
-          changed: new Set(detailFields.filter((f) => body[f] !== undefined)),
-        });
-        const d = findDuplicate(lead.keys, ref.id, { phone: lead.keys.phone !== ref.phone_key, address: lead.keys.address !== ref.address_key || lead.keys.zip !== ref.address_zip });
-        if (d) return { d, lead };
-        db.prepare(`UPDATE referrals SET customer_name = ?, company = ?, phone = ?, alt_phone = ?, email = ?, address = ?, city = ?, state = ?, zip = ?,
-          notes = ?, services = ?, contact_pref = ?, package_details = ?, lead_priority = ?, est_monthly_value = ?,
-          phone_key = ?, email_key = ?, address_key = ?, address_zip = ?, lead_score = ?, lead_flags = ?, dob = ?, ${touch} WHERE id = ?`).run(
-          lead.name, lead.company, lead.phone, lead.alt_phone, lead.email, lead.address, lead.city, lead.state, lead.zip,
-          lead.notes, lead.services, lead.contact_pref, lead.package_details, lead.lead_priority, lead.est_monthly_value,
-          lead.keys.phone, lead.keys.email, lead.keys.address, lead.keys.zip, lead.score, lead.flags, lead.dob, ref.id,
-        );
-      }
       return null;
     });
     if (dup) {
-      logDuplicate(u.id, dup.d, dup.lead);
+      if(waPartners.isPartner(u))logAudit({user:u,ip:'whatsapp'},'whatsapp.order_duplicate','referral',ref.id,'Order details match an existing customer.');
+      else logDuplicate(u.id, dup.d, dup.lead);
       throw new HttpError(409, DUPLICATE_MESSAGE);
     }
     return publicReferral(getReferral(ref.id));

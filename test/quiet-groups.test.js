@@ -221,7 +221,7 @@ test('v21 preserves existing comments, indexes and group mappings while allowing
     PRAGMA user_version=20;`);
   const before=db.prepare('SELECT * FROM comments').get();db.close();db=openDb(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version,22);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
     const after=db.prepare('SELECT * FROM comments WHERE id=7').get();
     for(const field of Object.keys(before))assert.equal(after[field],before[field],field);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='custom_comment_index'").get());
@@ -360,7 +360,7 @@ test('v22 upgrades a populated v21 database and persists isolated test replies a
     INSERT OR REPLACE INTO settings(key,value) VALUES('wa_group_id','${DISPATCH}'),('wa_new_lead_group','0');
     DROP TABLE wa_quiet_test_replies;DROP TABLE wa_quiet_tests;PRAGMA user_version=21;`);
   const before=db.prepare('SELECT * FROM referrals WHERE id=7').get();db.close();db=openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,22);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
   let store=require('../src/quiet-group-test').createStore(db);
   const sample=store.create({id:SANDBOX,name:'Sandbox'},{id:1},false);store.mark(sample.id,'sent','','sample-message');
   db.prepare(`INSERT INTO wa_quiet_test_replies(test_id,chat,message_id,external_author,body,from_status,to_status)
@@ -378,4 +378,157 @@ test('v22 upgrades a populated v21 database and persists isolated test replies a
     assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_new_lead_group'").get().value,'0');
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
   }finally{db.close();}
+});
+
+test('selected Spectrum numbers may silently update only posted leads in their approved group, with revocable attribution',async t=>{
+  const {db,a,wa,makeUser,settle,say}=await setup(t);
+  const seller=await makeUser('seller','rep','15125550142');
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  const lead=(await seller.c.post('/referrals',{name:'Maria Lopez',phone:'5128675309'})).body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET),sent=wa.sent.length;
+  assert.equal((await seller.c.post('/whatsapp/partners',{name:'Not allowed',phone:'+528117841668',group_id:QUIET})).status,403);
+  assert.equal((await a.post('/whatsapp/partners',{name:'Spectrum dispatch',phone:'+528117841668',group_id:DISPATCH})).status,400);
+  assert.equal((await a.post('/whatsapp/partners',{name:'Spectrum dispatch',phone:'+528117841668',group_id:QUIET})).status,200);
+  const actor={senderJid:'spectrum@lid',senderPhone:'5218117841668',quotedId:post.id};
+  assert.equal(await say('on it',actor),'quiet_lead_updated');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Working');
+  await say('confirmed',{...actor,senderPhone:null});
+  let updated=(await a.get(`/referrals/${lead.id}`)).body;
+  assert.equal(updated.status,'Passed');assert.equal(updated.assigned_to,null);
+  assert.equal(updated.history.at(-1).user_id,null);assert.equal(updated.history.at(-1).full_name,'Spectrum dispatch');
+  assert.equal(updated.comments.at(-1).full_name,'Spectrum dispatch');
+  assert.ok((await a.get('/dashboard')).body.activity.some(x=>x.kind==='status'&&x.actor==='Spectrum dispatch'));
+  assert.equal(db.prepare("SELECT username FROM audit_logs WHERE action='whatsapp.quiet_reply' ORDER BY id DESC LIMIT 1").get().username,'Spectrum: Spectrum dispatch');
+  await say('cancelled',{...actor,chat:SANDBOX});
+  await say(`#${lead.id} cancelled`,{...actor,quotedId:null});
+  await say('cancelled',{...actor,senderPhone:'15125550999'});
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Passed');
+  const access=(await a.get('/whatsapp/partners')).body.participants[0];
+  await a.delete(`/whatsapp/partners/${access.id}`);
+  await say('cancelled',{...actor,senderPhone:null});
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Passed');
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
+});
+
+test('order PDFs update the linked CRM record and history silently; untrusted senders and CRM sellers cannot download or promote orders',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,makeUser,settle,say}=await setup(t);
+  const seller=await makeUser('seller','rep','15125550142'),dispatcher=await makeUser('dispatcher','dispatch','15125550199');
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  db.prepare("INSERT INTO settings(key,value) VALUES('affiliate_commission','25') ON CONFLICT(key) DO UPDATE SET value='25'").run();
+  const lead=(await seller.c.post('/referrals',{name:'Maria Lopez',phone:'5128675309',address:'1010 Ogden Ave, Dallas TX 75211'})).body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET),sent=wa.sent.length;
+  let downloaded=0;
+  const document={filename:'Order.pdf',mimetype:'application/pdf',download:async()=>{downloaded++;return pdf(orderLines());}};
+  await say('',{quotedId:post.id,document});assert.equal(downloaded,0);
+  await a.post('/whatsapp/partners',{name:'Seller in allowlist',phone:'15125550142',group_id:QUIET});
+  await say('',{quotedId:post.id,document,senderPhone:'15125550142'});assert.equal(downloaded,0,'allowlist never escalates a CRM seller');
+  await a.post('/whatsapp/partners',{name:'Spectrum dispatch',phone:'+528117841668',group_id:QUIET});
+  const actor={senderPhone:'528117841668',senderJid:'partner@lid',quotedId:post.id,document};
+  assert.equal(await say('',{...actor,id:'pdf-order'}),'quiet_pdf_applied');
+  assert.equal(await say('',{...actor,id:'pdf-order'}),'duplicate');
+  const updated=(await a.get(`/referrals/${lead.id}`)).body;
+  assert.equal(updated.status,'Ordered');assert.equal(updated.account_number,'123456789012');assert.equal(updated.install_date,'2026-10-15');
+  assert.equal(updated.services,'Internet, TV');assert.equal(updated.est_monthly_value,80);assert.equal(updated.commission,25);
+  assert.equal(updated.history.at(-1).full_name,'Spectrum dispatch');assert.equal(updated.history.at(-1).user_id,null);
+  assert.match(updated.comments.at(-1).body,/order number: ABC12345/);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM notifications WHERE referral_id=? AND event_type='ordered'").get(lead.id).n,1);
+  const result=(await a.get('/whatsapp/documents')).body[0];assert.equal(result.status,'applied');assert.equal(result.referral_id,lead.id);
+  await say('on it',actor);await say('confirmed',actor);
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Ordered','progress phrases do not undo an order');
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
+  // A recognized dispatcher follows the same document path.
+  assert.equal(await say('',{quotedId:post.id,senderPhone:'15125550199',senderJid:'dispatch@lid',document}),'quiet_pdf_applied');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.history.filter(x=>x.to_status==='Ordered').length,1);
+});
+
+test('unquoted PDFs require a unique permitted lead in the same group and conflicting, unreadable or revoked documents need review',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {a,wa,makeUser,settle,say}=await setup(t);
+  const seller=await makeUser('seller','rep','15125550142');
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  await a.post('/whatsapp/partners',{name:'Spectrum',phone:'15125550177',group_id:QUIET});
+  const lead=(await seller.c.post('/referrals',{name:'Maria Lopez',phone:'5128675309'})).body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET),actor={senderPhone:'15125550177',senderJid:'spectrum@lid'};
+  const doc=lines=>({filename:'Order.pdf',download:async()=>pdf(lines)});
+  assert.equal(await say('',{...actor,document:doc(orderLines('Another Customer').map(x=>x.replace('867-5309','555-0999')))}),'quiet_pdf_review');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'New');
+  assert.equal(await say('',{...actor,quotedId:post.id,document:doc(orderLines('Another Customer').map(x=>x.replace('867-5309','555-0999')))}),'quiet_pdf_review');
+  assert.equal(await say('',{...actor,quotedId:post.id,document:{filename:'Broken.pdf',download:async()=>Buffer.from('%PDF-corrupt')}}),'quiet_pdf_review');
+  assert.equal(await say('',{...actor,document:doc(orderLines())}),'quiet_pdf_applied','a unique posted match works without guessing latest lead');
+  let release;
+  const downloading=new Promise(resolve=>{release=resolve;});
+  const processing=say('',{...actor,quotedId:post.id,document:{filename:'Revoked.pdf',download:()=>downloading}});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  const access=(await a.get('/whatsapp/partners')).body.participants.find(x=>x.phone==='15125550177');
+  await a.delete(`/whatsapp/partners/${access.id}`);release(pdf(orderLines()));
+  assert.equal(await processing,'quiet_pdf_review');
+  assert.match((await a.get('/whatsapp/documents')).body[0].detail,/permission/i);
+  assert.equal(wa.reacts.length,0);
+});
+
+test('trusted Spectrum status and PDF tests stay isolated from real leads, notifications and sales',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,settle,say}=await setup(t);
+  await a.patch('/whatsapp/settings',{test_group_id:SANDBOX,test_group_name:'Sandbox'});
+  await a.post('/whatsapp/partners',{name:'Spectrum tester',phone:'15125550177',group_id:SANDBOX});
+  await a.post('/whatsapp/quiet-test');await settle();const post=wa.sent.find(m=>m.jid===SANDBOX),sent=wa.sent.length;
+  const actor={chat:SANDBOX,senderPhone:'15125550177',senderJid:'test-partner@lid',quotedId:post.id};
+  await say('on it',actor);assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Working');
+  await say('confirmed',actor);assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Passed');
+  const lines=orderLines('[TEST] Sample Customer').map(x=>x.replace('(512) 867-5309','(202) 555-0105').replace('1010 Ogden Ave','123 Sample St'));
+  assert.equal(await say('',{...actor,document:{filename:'Sample.pdf',download:async()=>pdf(lines)}}),'quiet_pdf_applied');
+  const result=(await a.get('/whatsapp/quiet-test')).body.last_test;
+  assert.equal(result.status,'Ordered');assert.equal(result.document_fields.account_number,'123456789012');
+  assert.equal(result.replies[0].from_status,'Passed');assert.equal(result.replies[0].to_status,'Ordered');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM referrals').get().n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM notifications').get().n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM status_history').get().n,0);
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
+  const simulation=(await a.post('/whatsapp/quiet-test/simulate',{actor:'partner',text:'on it'})).body;
+  assert.equal(simulation.actor,'partner');assert.equal(simulation.can_change_status,true);
+});
+
+test('a duplicate found in PDF customer details cannot partially change status, account, history or urgent notifications',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,makeUser,settle,say}=await setup(t);
+  const seller=await makeUser('seller','rep','15125550142');
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  await a.post('/whatsapp/partners',{name:'Spectrum',phone:'15125550177',group_id:QUIET});
+  await seller.c.post('/referrals',{name:'Different Customer',phone:'5128675309'});
+  const created=await seller.c.post('/referrals',{name:'Maria Lopez',email:'maria.lopez@gmail.com'});
+  assert.equal(created.status,201,JSON.stringify(created.body));const lead=created.body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET&&m.text.includes('Maria Lopez'));
+  assert.equal(await say('',{senderPhone:'15125550177',quotedId:post.id,document:{filename:'Duplicate.pdf',download:async()=>pdf(orderLines())}}),'quiet_pdf_review');
+  const updated=(await a.get(`/referrals/${lead.id}`)).body;
+  assert.equal(updated.status,'New');assert.equal(updated.account_number,'');assert.equal(updated.phone,'');
+  assert.equal(updated.history.length,1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM notifications WHERE event_type='ordered'").get().n,0);
+  assert.match((await a.get('/whatsapp/documents')).body[0].detail,/existing record/);
+});
+
+test('v23 preserves populated v22 history and indexes, supports attributed external changes and survives reopen',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'quiet-v23-')),file=path.join(dir,'db.sqlite');
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  let db=openDb(file);ensureAdmin(db,()=>{});
+  db.exec(`INSERT INTO referrals(id,customer_name,created_by) VALUES(1,'Existing lead',1);
+    INSERT INTO status_history(referral_id,user_id,from_status,to_status) VALUES(1,1,'New','Working');
+    PRAGMA foreign_keys=OFF;
+    CREATE TABLE status_history_v22(id INTEGER PRIMARY KEY,referral_id INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),from_status TEXT,to_status TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(datetime('now')));
+    INSERT INTO status_history_v22 SELECT id,referral_id,user_id,from_status,to_status,created_at FROM status_history;
+    DROP TABLE status_history;ALTER TABLE status_history_v22 RENAME TO status_history;
+    CREATE INDEX idx_history_ref ON status_history(referral_id);
+    DROP TABLE wa_order_documents;DROP TABLE wa_partner_identities;DROP TABLE wa_group_partners;
+    ALTER TABLE wa_quiet_tests DROP COLUMN document_fields;
+    PRAGMA user_version=22;`);
+  db.close();db=openDb(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
+  assert.equal(db.prepare('SELECT to_status FROM status_history WHERE id=1').get().to_status,'Working');
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='idx_history_ref'").get());
+  db.prepare('INSERT INTO status_history(referral_id,user_id,from_status,to_status,external_author,whatsapp_chat,whatsapp_message_id) VALUES(1,NULL,?,?,?,?,?)')
+    .run('Working','Passed','Spectrum dispatch',QUIET,'external-confirmation');
+  db.close();db=openDb(file);
+  assert.equal(db.prepare('SELECT external_author FROM status_history ORDER BY id DESC LIMIT 1').get().external_author,'Spectrum dispatch');
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);db.close();
 });

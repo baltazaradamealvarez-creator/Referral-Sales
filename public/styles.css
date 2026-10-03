@@ -1126,3 +1126,9 @@ button.chip:disabled { cursor: default; opacity: .55; }
   .preferences-table td { min-width: 0; padding: 0; border: 0; }
   .preferences-table td::before { content: attr(data-label); display: flex; align-items: center; justify-content: center; min-height: 2.6em; font-size: .72rem; line-height: 1.3; color: var(--muted); font-weight: 600; }
 }
+
+/* Quiet-group automation stays readable on a phone, including long PDF names. */
+#waQuietAutomation { min-width: 0; overflow-wrap: anywhere; }
+.wa-pdf-fields { display: grid; grid-template-columns: minmax(0, 110px) minmax(0, 1fr); gap: .45rem .8rem; }
+.wa-pdf-fields dt { color: var(--muted); }
+.wa-pdf-fields dd { margin: 0; }

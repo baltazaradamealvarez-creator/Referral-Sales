@@ -1611,7 +1611,8 @@
     const labels={queued:'Sending test…',sent:'Test posted. Reply to it in WhatsApp to check capture.',failed:'Test could not be sent.',skipped:'Test was not posted.',interrupted:'Test interrupted by a restart.',unconfirmed:'Post not confirmed. Check the group before sending again.'};
     box.innerHTML=run ? `<p style="margin:.4rem 0"><b>${esc(labels[run.post_status] || run.post_status)}</b>${run.post_error ? ` ${esc(run.post_error)}` : ''}</p>
       <p class="small">Test lead status: <b>${esc(run.status)}</b> · ${run.replies.length} captured ${run.replies.length===1 ? 'reply' : 'replies'}. Bot messages and reactions: <b>none</b>.</p>
-      ${run.replies.length ? `<div class="small">${run.replies.map(r=>`<div class="comment"><div class="meta"><b>${esc(r.author)}</b> · ${r.actor==='external' ? 'external participant' : 'CRM user'}${r.from_status!==r.to_status ? ` · ${esc(r.from_status)} → ${esc(r.to_status)}` : ' · comment only'}</div><p>${esc(r.body)}</p></div>`).join('')}</div>` : '<p class="small muted">From a different phone, reply directly to the sample lead. External replies add comments; recognized CRM users keep their normal status permissions. The bot stays silent.</p>'}`
+      ${run.document_fields && Object.keys(run.document_fields).length ? `<p class="small">PDF test account: <b>${esc(run.document_fields.account_number || '—')}</b> · Install: ${esc(run.document_fields.install_date || '—')}</p>` : ''}
+      ${run.replies.length ? `<div class="small">${run.replies.map(r=>`<div class="comment"><div class="meta"><b>${esc(r.author)}</b> · ${r.actor==='external' ? 'external participant' : 'CRM user'}${r.from_status!==r.to_status ? ` · ${esc(r.from_status)} → ${esc(r.to_status)}` : ' · comment only'}</div><p>${esc(r.body)}</p></div>`).join('')}</div>` : '<p class="small muted">From a different phone, reply directly to the sample lead. External replies add comments; trusted Spectrum numbers and permitted CRM users can change test status. Reply with a sample order PDF to test extraction too. The bot stays silent.</p>'}`
       : '<p class="small muted">No test sent yet. Only the selected group receives the sample.</p>';
     const send=document.getElementById('waSendTestLead');
     if(send){send.disabled=!t.group || !t.connected || run?.post_status==='queued' || !!document.getElementById('waTestGroupWarning')?.textContent;send.textContent=run?.post_status==='queued' ? 'Sending test…' : 'Send test lead';}
@@ -1624,6 +1625,38 @@
       drawWaTestResults(t);
       if(t.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
     } catch(err){if(document.getElementById('waTestResults')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}
+  }
+  async function drawQuietAutomation(s) {
+    const box=document.getElementById('waQuietAutomation');if(!box)return;
+    try {
+      const [access,documents]=await Promise.all([api('/whatsapp/partners'),api('/whatsapp/documents')]);
+      if(document.getElementById('waQuietAutomation')!==box)return;
+      const names=new Map([s.group,s.quiet_group?.group,s.quiet_test?.group].filter(Boolean).map(g=>[g.id,g.name]));
+      const trusted=access.participants.filter(p=>p.enabled);
+      box.innerHTML=`<h3 class="wa-h3" id="waTrustedHeading">Trusted Spectrum participants</h3>
+        <p class="small muted">Allow specific WhatsApp numbers to update status and order details in one quiet group. They receive no CRM login. Everyone else adds comments only. Recognized CRM users keep their existing permissions.</p>
+        <p class="small"><b>on it</b> → Working · <b>confirmed</b> → Passed · an order PDF with a complete account number → Ordered. Reply directly to the lead post. The bot stays silent.</p>
+        <form id="waPartnerForm"><div class="field"><label for="waPartnerGroup">Allow updates in</label><select id="waPartnerGroup" required><option value="">— choose a quiet or test group —</option>${access.groups.map(id=>`<option value="${esc(id)}">${esc(names.get(id) || id)}</option>`).join('')}</select></div>
+        <div class="grid-2"><div class="field"><label for="waPartnerName">Participant name</label><input id="waPartnerName" required maxlength="100" autocomplete="off" placeholder="e.g. Spectrum dispatch"></div>
+        <div class="field"><label for="waPartnerPhone">WhatsApp number, including country code</label><input id="waPartnerPhone" type="tel" required maxlength="25" autocomplete="off" placeholder="e.g. +1 512 555 0100"></div></div>
+        <button class="btn primary" id="waPartnerSave" ${access.groups.length ? '' : 'disabled'}>Allow updates</button><p id="waPartnerResult" class="small" role="status"></p></form>
+        ${trusted.length ? `<div>${trusted.map(p=>`<div class="comment"><div class="row between"><span><b>${esc(p.name)}</b> · +${esc(p.phone)}<br><span class="small muted">${esc(names.get(p.group_id) || 'Previously selected group')}</span></span><button type="button" class="btn small" data-revoke-partner="${p.id}" aria-label="Remove update access for ${esc(p.name)}">Remove access</button></div></div>`).join('')}</div>` : '<p class="small muted">No Spectrum participants have update access yet.</p>'}
+        <h3 class="wa-h3">Order PDF activity</h3>
+        <p class="small muted">Text-based PDFs up to 5 MB and 20 pages are read inside the app. Scans, password protection, missing account numbers and conflicting customer details need review. Existing customer details are preserved. Unquoted documents must match one permitted lead posted in the same group.</p>
+        <button type="button" class="btn small" id="waRefreshDocuments">Refresh PDF activity</button>
+        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div><p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${Object.entries(d.fields).filter(([,v])=>v!=='' && v!=null).map(([k,v])=>`<dt>${esc(k.replace(/_/g,' '))}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
+      box.querySelector('#waPartnerForm').onsubmit=async e=>{
+        e.preventDefault();const button=box.querySelector('#waPartnerSave'),result=box.querySelector('#waPartnerResult');button.disabled=true;button.textContent='Saving…';
+        try {await api('/whatsapp/partners',{method:'POST',body:{group_id:box.querySelector('#waPartnerGroup').value,name:box.querySelector('#waPartnerName').value,phone:box.querySelector('#waPartnerPhone').value}});toast('Participant can now update leads in this group');await drawQuietAutomation(s);}
+        catch(err){result.textContent=err.message;button.disabled=false;button.textContent='Allow updates';}
+      };
+      box.querySelectorAll('[data-revoke-partner]').forEach(button=>{button.onclick=async()=>{
+        button.disabled=true;
+        try{await api('/whatsapp/partners/'+button.dataset.revokePartner,{method:'DELETE'});toast('Update access removed');await drawQuietAutomation(s);}
+        catch(err){toast(err.message);button.disabled=false;}
+      };});
+      box.querySelector('#waRefreshDocuments').onclick=()=>drawQuietAutomation(s);
+    } catch(err) {if(document.getElementById('waQuietAutomation')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}
   }
   async function drawWaLink() {
     clearTimeout(waPoll);
@@ -1657,14 +1690,14 @@
         <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the dispatch group</label>
         <p class="small muted" style="margin:.3rem 0 .8rem">Reply to a posted lead with a note or status to update its CRM record. Group posts work independently of each person’s notification preferences.</p>
         <h3 class="wa-h3">Replies in the group</h3>
-        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>${quietMain ? 'Save text replies in the CRM silently. External participants add comments only; recognized CRM users keep their status and assignment permissions.' : 'Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status'}</span></label>
+        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>${quietMain ? 'Save lead replies and order PDFs in the CRM silently. Trusted Spectrum participants may update orders; other external participants add comments only. CRM permissions still apply.' : 'Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status'}</span></label>
         <div class="field" style="max-width:420px"><label for="waApproved">When someone writes <b>approved</b> / <b>aprobado</b>, set the lead to</label>
           <select id="waApproved"><option value="Ordered" ${s.approved_status === 'Ordered' ? 'selected' : ''}>Ordered (the sale went through)</option><option value="Passed" ${s.approved_status === 'Passed' ? 'selected' : ''}>Passed (qualified, still being worked)</option></select></div>
         ${quietMain ? '<p class="small muted">This group receives lead posts only. No acknowledgments, reactions, bot answers, instructions, reminders or briefings are sent here. Private assistant chats remain available.</p>' : `<label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>`}
         ${quietMain ? '' : `<p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>`}
         <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group && !quietMain ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>
         <h3 class="wa-h3">Additional quiet group · Spectrum</h3>
-        <p class="small muted">Use this to keep dispatch interactive and send clean lead posts to a separate group. Replies are saved in the CRM with no bot messages or reactions. External participants can add comments; status changes require a recognized CRM account with permission.</p>
+        <p class="small muted">Use this to keep dispatch interactive and send clean lead posts to a separate group. Replies are saved in the CRM with no bot messages or reactions. External participants add comments. Allow selected Spectrum numbers below to update statuses and order details, alongside CRM users with permission.</p>
         <div class="field"><label for="waQuietGroup">Quiet group</label><select id="waQuietGroup">${qg.group ? `<option value="${esc(qg.group.id)}">${esc(qg.group.name)}</option>` : '<option value="">— pick a group —</option>'}</select><p id="waQuietGroupWarning" class="small err-text" role="status"></p></div>
         <label class="check"><input type="checkbox" id="waQuietOn" ${qg.enabled ? 'checked' : ''} ${qg.group ? '' : 'disabled'}> Post each new lead to this quiet group</label>
         <label class="check"><input type="checkbox" id="waQuietCapture" ${qg.capture_replies !== false ? 'checked' : ''}> Save replies to its lead posts in the CRM</label>
@@ -1679,8 +1712,8 @@
         <pre class="wa-preview" id="waTestPreview">${esc(qt.sample_text || WaFormat.quietLead(WaFormat.QUIET_TEST_LEAD,{includeNotes:s.quiet_include_notes!==false}))}</pre>
         <div class="row" style="margin-top:.8rem"><button type="button" class="btn primary" id="waSendTestLead" ${qt.group ? '' : 'disabled'}>Send test lead</button><button type="button" class="btn" id="waRefreshTest">Refresh test results</button></div>
         <div id="waTestResults" role="status" aria-live="polite"></div>
-        <div class="grid-2" style="margin-top:.8rem"><div class="field"><label for="waTestActor">Simulate as</label><select id="waTestActor"><option value="external">External participant</option><option value="crm">My CRM account</option></select></div>
-          <div class="field"><label for="waTestReply">Try a reply</label><input id="waTestReply" maxlength="2000" value="approved" placeholder="e.g. working, approved, call after 5"></div></div>
+        <div class="grid-2" style="margin-top:.8rem"><div class="field"><label for="waTestActor">Simulate as</label><select id="waTestActor"><option value="external">External participant</option><option value="crm">My CRM account</option><option value="partner">Trusted Spectrum participant</option></select></div>
+          <div class="field"><label for="waTestReply">Try a reply</label><input id="waTestReply" maxlength="2000" value="approved" placeholder="e.g. on it, confirmed, approved"></div></div>
         <button type="button" class="btn" id="waSimulateReply">Simulate reply</button><p class="small muted">Simulation shows the result here without sending a message or saving a reply.</p><div id="waSimulationResult" role="status" aria-live="polite"></div>`;
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
@@ -1689,19 +1722,20 @@
     const flowHtml = flow ? `<div class="alert ${flow.posting_ready && flow.replies_ready ? 'ok' : 'warn'} small" id="waGroupFlow" role="status" style="margin-top:1rem">
       <b>Dispatch group:</b> <span id="waPostingReady">${esc(flow.posting_ready ? 'New lead posts ready' : flow.posting_blocker)}</span> · <span id="waRepliesReady">${esc(flow.replies_ready ? quietMain ? 'Silent CRM reply capture ready' : 'Status replies ready' : flow.reply_blocker)}</span>
       ${post ? `<p style="margin:.4rem 0 0">Latest lead post: <a href="#/r/${post.referral_id}">#${post.referral_id}</a> — ${esc(postLabels[post.status] || post.status)} · ${esc(new Date(post.at).toLocaleString())}${post.group_id !== s.group?.id ? ' (previous group)' : ''}${post.error ? `<br>${esc(post.error)}` : ''}</p>` : '<p style="margin:.4rem 0 0">No lead-post result recorded yet.</p>'}
-      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. ${quietMain ? 'Reply directly to a lead post to save a comment. Clear status words update the lead only for recognized CRM users with permission.' : 'In the group, use <b>#123 approved</b> to update an earlier lead.'} An accepted post does not confirm delivery or reading.</p></div>` : '';
+      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. ${quietMain ? 'Reply directly to a lead post to save a comment. Clear status words update the lead for permitted CRM users and trusted Spectrum participants.' : 'In the group, use <b>#123 approved</b> to update an earlier lead.'} An accepted post does not confirm delivery or reading.</p></div>` : '';
     const dx = s.diagnostics;
     const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
-    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved',quiet_test_reply:'Reply captured on the isolated test lead'});
+    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved',quiet_test_reply:'Reply captured on the isolated test lead',quiet_pdf_applied:'Order PDF saved silently',quiet_pdf_review:'PDF needs review in Settings',quiet_pdf_comment:'PDF sender does not have order-update access',unsupported_document:'PDF automation is available in quiet lead groups'});
     const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
-      <p class="small muted">Since this server started: ${dx.received} incoming text messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
+      <p class="small muted">Since this server started: ${dx.received} incoming messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
       <p class="small muted">Decryption-retry requests: ${dx.retry_requests || 0} · originals provided: ${dx.retry_available || 0} · unavailable: ${dx.retry_missing || 0} · blocked by chat rules: ${dx.retry_blocked || 0}. Session-save errors: ${dx.auth_save_errors || 0}; retry-cache errors: ${dx.retry_cache_errors || 0}. Providing the original for retry does not confirm delivery.</p>
-      <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
+      <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming messages yet'}</dd>
         <dt>Last result</dt><dd>${esc(outcomes[dx.last_result] || dx.last_result || '—')}</dd><dt>Last sent</dt><dd>${dx.last_sent_at ? esc(new Date(dx.last_sent_at).toLocaleString()) : 'None yet'}</dd>
         <dt>Send queue</dt><dd>${s.queued} waiting</dd>${dx.last_error ? `<dt>Last error</dt><dd class="err-text">${esc(dx.last_error)}</dd>` : ''}</dl>
       <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. ${quietMain ? 'In this quiet group, reply directly to a lead post; the reply is saved silently in the CRM.' : 'In the dispatch group, send <b>bot hello</b> or <b>help</b>.'} Private text goes to the assistant. Quiet groups only capture lead replies, using their reply-capture switch. Counters and queued messages reset when the server restarts.</p><div class="row"><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button><button type="button" class="btn small" id="waCopyDiagnostics">Copy diagnostics</button></div></details>` : '';
-    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${flowHtml}${diagnosticsHtml}`;
+    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}<div id="waQuietAutomation"></div>${flowHtml}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+    drawQuietAutomation(s);
     on('waRefreshDiagnostics', drawWaLink);
     drawWaTestResults(qt);
     if(qt.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
@@ -1719,7 +1753,7 @@
       const button=document.getElementById('waSimulateReply'),box=document.getElementById('waSimulationResult');button.disabled=true;
       try {
         const r=await api('/whatsapp/quiet-test/simulate',{method:'POST',body:{actor:document.getElementById('waTestActor').value,text:document.getElementById('waTestReply').value}});
-        box.innerHTML=`<div class="alert ok small" style="margin-top:.6rem">Would save as ${r.actor==='external' ? 'an external comment' : 'a CRM comment'}. Test status: <b>${esc(r.from_status)} → ${esc(r.to_status)}</b>. ${r.ambiguous ? 'Several statuses were mentioned; the status stays unchanged. ' : r.can_change_status ? '' : 'This participant cannot change the status. '}Bot response: <b>nothing</b> — no messages or reactions.</div>`;
+        box.innerHTML=`<div class="alert ok small" style="margin-top:.6rem">Would save as ${r.actor==='external' ? 'an external comment' : r.actor==='partner' ? 'a trusted Spectrum comment' : 'a CRM comment'}. Test status: <b>${esc(r.from_status)} → ${esc(r.to_status)}</b>. ${r.ambiguous ? 'Several statuses were mentioned; the status stays unchanged. ' : r.can_change_status ? '' : 'This participant cannot change the status. '}Bot response: <b>nothing</b> — no messages or reactions.</div>`;
       }catch(err){box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}finally{button.disabled=false;}
     });
     on('waCopyDiagnostics', async () => {

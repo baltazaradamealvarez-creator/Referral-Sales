@@ -183,9 +183,9 @@ function buildDashboard(db, u, q) {
 
   // ---- recent activity
   out.activity = all(`SELECT * FROM (
-      SELECT 'status' AS kind, h.created_at AS at, r.id AS referral_id, r.customer_name, a.full_name AS actor,
+      SELECT 'status' AS kind, h.created_at AS at, r.id AS referral_id, r.customer_name, COALESCE(a.full_name,NULLIF(h.external_author,''),'WhatsApp participant') AS actor,
         h.from_status, h.to_status, NULL AS body
-      FROM status_history h JOIN referrals r ON r.id = h.referral_id JOIN users a ON a.id = h.user_id WHERE ${S}
+      FROM status_history h JOIN referrals r ON r.id = h.referral_id LEFT JOIN users a ON a.id = h.user_id WHERE ${S}
       UNION ALL
       SELECT 'comment', c.created_at, r.id, r.customer_name, COALESCE(a.full_name,NULLIF(c.external_author,''),'WhatsApp participant'), NULL, NULL, substr(c.body, 1, 140)
       FROM comments c JOIN referrals r ON r.id = c.referral_id LEFT JOIN users a ON a.id = c.user_id WHERE ${S}

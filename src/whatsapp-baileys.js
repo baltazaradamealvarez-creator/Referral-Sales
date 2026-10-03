@@ -29,6 +29,16 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnost
   let lib = null;
   let retryStore = null;
   const pendingWrites=new Set(),pendingSends=new Set(),peerAliases=new Map();
+  const groupNumbers=new Map(),groupLookups=new Map();
+  function rememberGroup(group) {
+    const phones=new Map();
+    for(const member of group.participants || []) {
+      const phone=member.jid?.endsWith('@s.whatsapp.net') ? member.jid : member.id?.endsWith('@s.whatsapp.net') ? member.id : '';
+      const lid=member.lid || (member.id?.endsWith('@lid') ? member.id : '');
+      if(phone && lid)phones.set(lib.jidNormalizedUser(lid),jidDigits(phone));
+    }
+    groupNumbers.set(group.id,{at:Date.now(),phones});
+  }
   const diagnostic=kind=>{try{onDiagnostic?.({kind});}catch{}};
   function track(promise,set) {
     const job=Promise.resolve(promise);set.add(job);
@@ -78,11 +88,13 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnost
           if (!m.message || !m.key || !m.key.remoteJid || m.key.remoteJid === 'status@broadcast') continue;
           remember(m);
           if (m.key.fromMe) continue;
-          const msg = (m.message.ephemeralMessage && m.message.ephemeralMessage.message) || m.message;
+          const msg = lib.extractMessageContent(m.message) || m.message;
           const ext = msg.extendedTextMessage || {};
-          const text = msg.conversation || ext.text || (msg.imageMessage && msg.imageMessage.caption) || '';
-          if (!text) continue;
-          const ctx = ext.contextInfo || (msg.imageMessage && msg.imageMessage.contextInfo) || {};
+          const doc = msg.documentMessage;
+          const pdf = doc && (doc.mimetype === 'application/pdf' || /\.pdf$/i.test(doc.fileName || ''));
+          const text = msg.conversation || ext.text || msg.imageMessage?.caption || doc?.caption || '';
+          if (!text && !pdf) continue;
+          const ctx = ext.contextInfo || msg.imageMessage?.contextInfo || doc?.contextInfo || {};
           const chat = m.key.remoteJid;
           const isGroup = chat.endsWith('@g.us');
           const senderJid = isGroup ? m.key.participant : chat;
@@ -92,6 +104,41 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnost
             id: m.key.id, chat, isGroup, senderJid, senderPhone: jidDigits(pnJid) || null, name: m.pushName || '',
             text: String(text), quotedId: ctx.stanzaId || null, mentions: ctx.mentionedJid || [],
             ts: Number(m.messageTimestamp || 0) * 1000 || Date.now(),
+            ...(!pnJid && isGroup && senderJid?.endsWith('@lid') ? {
+              async resolveSenderPhone() {
+                let group=groupNumbers.get(chat);
+                if(!group || Date.now()-group.at>5*60000) {
+                  if(!me.groupMetadata)return null;
+                  if(!groupLookups.has(chat)) {
+                    let timer;
+                    const lookup=Promise.race([me.groupMetadata(chat),new Promise((_,reject)=>{
+                      timer=setTimeout(()=>reject(new Error('Group lookup timed out')),5000);timer.unref();
+                    })]).then(data=>rememberGroup(data)).catch(()=>{}).finally(()=>{clearTimeout(timer);groupLookups.delete(chat);});
+                    groupLookups.set(chat,lookup);
+                  }
+                  await groupLookups.get(chat);group=groupNumbers.get(chat);
+                }
+                return group?.phones.get(lib.jidNormalizedUser(senderJid)) || null;
+              }} : {}),
+            ...(pdf ? {document:{ filename:String(doc.fileName || 'Order.pdf').slice(0,150), mimetype:'application/pdf',
+              bytes:Number(doc.fileLength?.toNumber?.() ?? doc.fileLength ?? 0),
+              // No media is fetched until the quiet-group handler checks the sender.
+              async download(signal) {
+                const {MAX_BYTES}=require('./whatsapp-order-pdf');
+                if (Number(doc.fileLength?.toNumber?.() ?? doc.fileLength ?? 0)>MAX_BYTES) throw new Error('PDF is larger than 5 MB.');
+                const stream=await lib.downloadMediaMessage(m,'stream',{options:{timeout:15000,signal}},
+                  {logger:quietLogger,reuploadRequest:me.updateMediaMessage?.bind(me)});
+                const chunks=[];let size=0;
+                try {
+                  for await(const chunk of stream) {
+                    size+=chunk.length;
+                    if(signal?.aborted)throw new Error('PDF download cancelled.');
+                    if(size>MAX_BYTES)throw new Error('PDF is larger than 5 MB.');
+                    chunks.push(chunk);
+                  }
+                  return Buffer.concat(chunks);
+                } finally {stream.destroy();}
+              }}} : {}),
           });
         } catch (e) {
           if (process.env.WHATSAPP_DEBUG) console.error('[whatsapp] bad message', e);
@@ -154,6 +201,7 @@ function createTransport({ authDir, onQr, onOpen, onClose, onMessage, onDiagnost
   async function listGroups() {
     if (!sock) throw new Error('WhatsApp is not connected');
     const all = await sock.groupFetchAllParticipating();
+    for(const group of Object.values(all))rememberGroup(group);
     return Object.values(all).map((g) => ({ id: g.id, name: g.subject || g.id, size: (g.participants || []).length }));
   }
 
