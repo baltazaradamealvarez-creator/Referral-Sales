@@ -71,6 +71,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       groupName: s.wa_group_name || '',
       newLeadGroup: s.wa_new_lead_group !== '0',
       groupMode: s.wa_group_mode === 'quiet' ? 'quiet' : 'interactive',
+      quietAccess: s.wa_quiet_access === 'selected' ? 'selected' : 'everyone',
       quietGroupId: s.wa_quiet_group_id || '', quietGroupName: s.wa_quiet_group_name || '',
       quietEnabled: s.wa_quiet_enabled === '1', quietCapture: s.wa_quiet_capture !== '0',
       includeNotes: s.wa_quiet_include_notes !== '0',
@@ -320,6 +321,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     react(chat, messageId, emoji) { return enqueue({ jid: chat, react: { id: messageId, emoji } }); },
     groupId: () => cfg().groupId,
     quietGroupId: () => cfg().quietGroupId,
+    quietAccess: () => cfg().quietAccess,
     quietGroupEnabled: () => cfg().quietEnabled,
     testGroupId: () => cfg().testGroupId,
     quietTests,
@@ -370,7 +372,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     return {
       enabled: c.enabled, status: st.status, qr: st.status === 'qr' ? st.qr : null, me: st.me, error: st.error,
       group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
-      group_mode: c.groupMode, quiet_include_notes: c.includeNotes,
+      group_mode: c.groupMode, quiet_include_notes: c.includeNotes, quiet_access: c.quietAccess,
       quiet_test: testView(),
       quiet_group: { enabled: c.quietEnabled, group: c.quietGroupId ? { id: c.quietGroupId, name: c.quietGroupName } : null,
         capture_replies: c.quietCapture, posting_ready: !!(c.enabled && c.quietEnabled && c.quietGroupId && st.status === 'connected'),
@@ -419,6 +421,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
   app.patch('/api/whatsapp/settings', wrap((req) => {
     requireRole(req, 'admin');
     const b = req.body || {};
+    if (b.quiet_access !== undefined && !['everyone','selected'].includes(b.quiet_access))
+      throw new HttpError(400,'Choose everyone in the quiet group or selected numbers.');
     for (const field of ['quiet_enabled','quiet_capture','quiet_include_notes']) {
       if (b[field] !== undefined && typeof b[field] !== 'boolean') throw new HttpError(400,'Quiet group switches must be on or off.');
     }
@@ -440,6 +444,7 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     }
     if (b.new_lead_group !== undefined) set.run('wa_new_lead_group', b.new_lead_group ? '1' : '0');
     if (b.group_mode !== undefined) set.run('wa_group_mode', b.group_mode);
+    if (b.quiet_access !== undefined) set.run('wa_quiet_access', b.quiet_access);
     if (b.quiet_group_id !== undefined) {
       set.run('wa_quiet_group_id', quietId);
       set.run('wa_quiet_group_name', quietId ? String(b.quiet_group_name || '').slice(0, 100) : '');

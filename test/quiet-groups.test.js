@@ -10,7 +10,7 @@ const { createApp, ensureAdmin } = require('../src/app');
 const { quietLead } = require('../public/waformat');
 const DISPATCH = '1203630@g.us', QUIET = '1203631@g.us', SANDBOX = '1203632@g.us';
 
-async function setup(t, { connected = true, ai } = {}) {
+async function setup(t, { connected = true, ai, access = 'selected' } = {}) {
   const db = openDb(':memory:');
   const admin = ensureAdmin(db, () => {});
   const wa = { sent:[], reacts:[], handlers:null,groups:[{id:DISPATCH,name:'Dispatch',size:4},{id:QUIET,name:'Spectrum',size:4},{id:SANDBOX,name:'Sandbox',size:2}] };
@@ -47,7 +47,7 @@ async function setup(t, { connected = true, ai } = {}) {
   };
   await a.post('/whatsapp/connect');
   if (connected) wa.handlers.onOpen({id:'15125550100@s.whatsapp.net',name:'Alerts'});
-  await a.patch('/whatsapp/settings',{group_id:DISPATCH,group_name:'Dispatch'});
+  await a.patch('/whatsapp/settings',{group_id:DISPATCH,group_name:'Dispatch',...(access==='default' ? {} : {quiet_access:access})});
   const settle = async () => { await new Promise(resolve=>setTimeout(resolve,20));await app.locals.whatsapp.drain(); };
   let n = 0;
   const say = async (text,extras={}) => {
@@ -531,4 +531,58 @@ test('v23 preserves populated v22 history and indexes, supports attributed exter
   db.close();db=openDb(file);
   assert.equal(db.prepare('SELECT external_author FROM status_history ORDER BY id DESC LIMIT 1').get().external_author,'Spectrum dispatch');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);db.close();
+});
+
+test('everyone in a Spectrum quiet group is authorized by default, including privacy-ID senders and CRM reps, only for leads shared there',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,makeUser,settle,say}=await setup(t,{access:'default'});
+  assert.equal((await a.get('/whatsapp/status')).body.quiet_access,'everyone');
+  assert.equal((await a.get('/whatsapp/partners')).body.access,'everyone');
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key='wa_quiet_access'").get(),undefined,'existing installations need no new setting or number registration');
+  const seller=await makeUser('seller','rep','15125550142');
+  const privateLead=(await seller.c.post('/referrals',{name:'Unshared Customer',phone:'5125550140'})).body;
+  await settle();
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  const lead=(await seller.c.post('/referrals',{name:'Maria Lopez',phone:'5128675309'})).body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET),sent=wa.sent.length;
+  const member={senderJid:'unknown-spectrum@lid',senderPhone:null,name:'Spectrum colleague',quotedId:post.id};
+  assert.equal(await say('on it',member),'quiet_lead_updated');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Working');
+  await say('confirmed',{...member,senderJid:'another-spectrum@lid',name:'Another Spectrum colleague'});
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Passed');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.history.at(-1).full_name,'Another Spectrum colleague');
+  assert.equal((await a.get('/whatsapp/partners')).body.participants.length,0);
+  // Being a CRM rep neither blocks their group authority nor grants app-wide status permission.
+  assert.equal(await say('Ordered',{senderPhone:'15125550142',senderJid:'15125550142@s.whatsapp.net',quotedId:post.id}),'quiet_lead_updated');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Ordered');
+  assert.equal((await seller.c.patch(`/referrals/${privateLead.id}`,{status:'Ordered'})).status,403);
+  await say(`#${privateLead.id} Ordered`,{senderPhone:'15125550142',senderJid:'15125550142@s.whatsapp.net',quotedId:null});
+  assert.equal((await a.get(`/referrals/${privateLead.id}`)).body.status,'New','group access cannot update an unshared lead');
+  assert.equal(await say('',{...member,quotedId:null,document:{filename:'Order.pdf',download:async()=>pdf(orderLines())}}),'quiet_pdf_applied','unregistered member can submit a uniquely matched PDF');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.account_number,'123456789012');
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
+  // Switching to selected-only mode revokes group authority even during a download.
+  let release;const downloading=new Promise(resolve=>{release=resolve;});
+  const processing=say('',{...member,document:{filename:'Interrupted.pdf',download:()=>downloading}});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  await a.patch('/whatsapp/settings',{quiet_access:'selected'});release(pdf(orderLines()));
+  assert.equal(await processing,'quiet_pdf_review');
+  await say('cancelled',member);assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'Ordered');
+});
+
+test('everyone mode applies to isolated Spectrum test replies and PDFs without registering participants',async t=>{
+  const {pdf,orderLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,settle,say}=await setup(t,{access:'default'});
+  await a.patch('/whatsapp/settings',{test_group_id:SANDBOX,test_group_name:'Sandbox'});
+  await a.post('/whatsapp/quiet-test');await settle();const post=wa.sent.find(m=>m.jid===SANDBOX),sent=wa.sent.length;
+  const member={chat:SANDBOX,senderJid:'new-spectrum@lid',name:'Spectrum tester',quotedId:post.id};
+  await say('on it',member);await say('confirmed',member);
+  assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Passed');
+  const lines=orderLines('[TEST] Sample Customer').map(x=>x.replace('(512) 867-5309','(202) 555-0105').replace('1010 Ogden Ave','123 Sample St'));
+  assert.equal(await say('',{...member,document:{filename:'Sample.pdf',download:async()=>pdf(lines)}}),'quiet_pdf_applied');
+  assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Ordered');
+  for(const table of ['referrals','notifications','status_history','wa_group_partners'])assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0);
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
+  assert.equal((await a.post('/whatsapp/quiet-test/simulate',{actor:'external',text:'confirmed'})).body.can_change_status,true);
+  assert.equal((await a.patch('/whatsapp/settings',{quiet_access:'anything'})).status,400);
 });

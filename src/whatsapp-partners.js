@@ -1,7 +1,7 @@
 'use strict';
 
-// These principals are created only after matching a saved number. They are scoped
-// to one posted lead, and never impersonate a CRM account or gain app access.
+// Quiet-group principals use the configured group policy or a saved number.
+// They are scoped to one posted lead and do not grant general CRM access.
 const scopes = new WeakMap();
 function actorFor(db, partner, message, id, test = false) {
   const actor = Object.freeze({ id: null, role: 'whatsapp_partner', full_name: partner.name,
@@ -12,8 +12,15 @@ function actorFor(db, partner, message, id, test = false) {
 const isPartner = actor => !!actor && scopes.has(actor);
 function canAccess(actor, ref) {
   const scope = scopes.get(actor);
-  return !!scope && scope.id === ref.id && scope.test === !!ref.quiet_test &&
-    !!scope.db.prepare('SELECT id FROM wa_group_partners WHERE id=? AND group_id=? AND enabled=1').get(scope.partnerId, scope.group);
+  if (!scope || scope.id !== ref.id || scope.test !== !!ref.quiet_test) return false;
+  if (scope.everyone) {
+    if (!scope.everyone(scope.group)) return false;
+    if (scope.simulation) return true;
+    return scope.test
+      ? !!scope.db.prepare("SELECT id FROM wa_quiet_tests WHERE id=? AND group_id=? AND message_id<>''").get(ref.id,scope.group)
+      : !!scope.db.prepare("SELECT id FROM wa_messages WHERE referral_id=? AND chat=? AND kind='lead' LIMIT 1").get(ref.id,scope.group);
+  }
+  return !!scope.db.prepare('SELECT id FROM wa_group_partners WHERE id=? AND group_id=? AND enabled=1').get(scope.partnerId, scope.group);
 }
 
 function mount(app, db, { whatsapp, requireRole, wrap, HttpError, logAudit }) {
@@ -21,6 +28,15 @@ function mount(app, db, { whatsapp, requireRole, wrap, HttpError, logAudit }) {
   db.prepare("UPDATE wa_order_documents SET status='review',detail='Processing was interrupted by a restart. Reply to the lead and resend this PDF.',updated_at=datetime('now') WHERE status='processing'").run();
   const groups = () => [...new Set([whatsapp.groupId(), whatsapp.quietGroupId(), whatsapp.testGroupId()]
     .filter(id => id && whatsapp.isQuietGroup(id)))];
+  const allowsEveryone = chat => whatsapp.quietAccess()==='everyone' && groups().includes(chat);
+  function groupActor(message, ref, user=null, simulation=false) {
+    if (!allowsEveryone(message.chat) || (!simulation && (!message.isGroup || !message.senderJid))) return null;
+    const name=String(user?.full_name || message.name || 'Spectrum participant').trim().slice(0,100) || 'Spectrum participant';
+    const actor=Object.freeze({id:user?.id || null,role:'whatsapp_partner',full_name:name,
+      username:user?.username || `Spectrum: ${name}`,whatsapp_chat:message.chat,whatsapp_message_id:message.id});
+    scopes.set(actor,{db,group:message.chat,id:ref.id,test:!!ref.quiet_test,everyone:allowsEveryone,simulation});
+    return canAccess(actor,ref) ? actor : null;
+  }
   function find(message) {
     if (!groups().includes(message.chat)) return null;
     if (message.senderPhone) {
@@ -35,7 +51,7 @@ function mount(app, db, { whatsapp, requireRole, wrap, HttpError, logAudit }) {
   }
   app.get('/api/whatsapp/partners', wrap(req => {
     requireRole(req,'admin');
-    return { groups: groups(), participants: db.prepare('SELECT id,group_id,name,phone,enabled FROM wa_group_partners ORDER BY name,id').all() };
+    return { access:whatsapp.quietAccess(),groups: groups(), participants: db.prepare('SELECT id,group_id,name,phone,enabled FROM wa_group_partners ORDER BY name,id').all() };
   }));
   app.post('/api/whatsapp/partners', wrap(req => {
     const user=requireRole(req,'admin'), body=req.body || {}, group=String(body.group_id || ''),
@@ -59,7 +75,7 @@ function mount(app, db, { whatsapp, requireRole, wrap, HttpError, logAudit }) {
     return db.prepare(`SELECT d.*,r.customer_name FROM wa_order_documents d LEFT JOIN referrals r ON r.id=d.referral_id
       ORDER BY d.id DESC LIMIT 30`).all().map(row => ({...row, fields:JSON.parse(row.fields || '{}')}));
   }));
-  return { find, actorFor:(partner,message,id,test=false)=>actorFor(db,partner,message,id,test) };
+  return { find, groupActor, allowsEveryone, actorFor:(partner,message,id,test=false)=>actorFor(db,partner,message,id,test) };
 }
 
 module.exports = { mount, isPartner, canAccess };

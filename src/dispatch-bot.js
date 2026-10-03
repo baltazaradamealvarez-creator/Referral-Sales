@@ -9,8 +9,8 @@
 //   - "bot …" talks to the assistant (src/agent.js: leads, notes, statuses, reminders, numbers);
 //     replying to its answer, or messaging the alerts number privately, continues the chat;
 //   - "help" / "ayuda" posts the instructions, in English and Spanish.
-// Only people whose WhatsApp number is saved in the app can do anything, and only what
-// they could do in the app (reps add notes; dispatch, managers and admins change status).
+// Interactive groups use saved CRM numbers and app permissions. Spectrum quiet groups
+// authorize all members by default, scoped to leads posted in that configured group.
 
 const { digitsOf } = require('./whatsapp');
 const partnersModule = require('./whatsapp-partners');
@@ -200,6 +200,11 @@ function mount(app, db, deps) {
 
   function quietActor(m, ref) {
     const user=findUser(m);
+    const group=partners.groupActor(m,ref,user);
+    if(group) {
+      // Keep normal dispatch assignment for accounts that already manage this lead.
+      return user && canViewReferral(user,ref) && canManageReferral(user,ref) ? user : group;
+    }
     if(user) return canViewReferral(user,ref) ? user : null;
     const partner=partners.find(m);
     return partner ? partners.actorFor(partner,m,ref.id,!!ref.quiet_test) : null;
@@ -217,8 +222,8 @@ function mount(app, db, deps) {
   }
   const statusAllowed=(from,to)=>!((from==='Passed' && to==='Working') || (['Ordered','Cancelled','DNQ'].includes(from) && ['Working','Passed'].includes(to)));
 
-  // A PDF is read only for a recognized, permitted account or an explicitly allowed
-  // Spectrum number. Its bytes and customer data never go to the conversational AI.
+  // Quiet-group access covers members of the configured Spectrum group by default.
+  // PDF bytes and customer data never go to the conversational AI.
   async function handleDocument(m,test=null) {
     const user=findUser(m), partner=!user && partners.find(m), filename=String(m.document.filename || 'Order.pdf').replace(/[\r\n]/g,' ').slice(0,150);
     const quoted=m.quotedId ? db.prepare('SELECT referral_id,kind FROM wa_messages WHERE id=? AND chat=?').get(m.quotedId,m.chat) : null;
@@ -241,7 +246,7 @@ function mount(app, db, deps) {
         {canViewReferral,canManageReferral,seesAll,detectStatus:()=>ordered?{status:'Ordered'}:{},approvedStatus:cfg().approvedStatus});
       else {comment(m,ref,who,note);rememberPost(ref.id,'lead_reply')(m.id,m.chat);}
     };
-    if((ref && (!actor || !canManageReferral(actor,ref))) || (!ref && !user && !partner)) {
+    if((ref && (!actor || !canManageReferral(actor,ref))) || (!ref && !user && !partner && !partners.allowsEveryone(m.chat))) {
       capture(actor,`PDF received: ${filename}${m.text ? '\n'+m.text : ''}\nComment only: this participant is not allowed to update order details.`);
       return finish('comment','Participant cannot update order details. No PDF was downloaded.');
     }
@@ -469,8 +474,9 @@ function mount(app, db, deps) {
     if (!['external','crm','partner'].includes(b.actor)) throw new HttpError(400,'Choose an external participant, trusted Spectrum participant, or your CRM account.');
     const test=whatsapp.quietTests.latest(whatsapp.testGroupId()) || {created_by:user.id,creator_team_id:user.team_id,status:'New',assigned_to:null};
     const partner=b.actor==='partner' ? db.prepare('SELECT * FROM wa_group_partners WHERE group_id=? AND enabled=1 ORDER BY id LIMIT 1').get(whatsapp.testGroupId()) : null;
-    if(b.actor==='partner' && !partner)throw new HttpError(400,'Allow a Spectrum participant for the test group first.');
-    const actor=b.actor==='crm' ? user : partner ? partners.actorFor(partner,{chat:whatsapp.testGroupId(),id:'simulation'},test.id,true) : null;
+    const group=b.actor!=='crm' ? partners.groupActor({chat:whatsapp.testGroupId(),id:'simulation',name:'Spectrum participant'},testReferral(test),null,true) : null;
+    if(b.actor==='partner' && !partner && !group)throw new HttpError(400,'Allow a Spectrum participant for the test group first.');
+    const actor=b.actor==='crm' ? user : group || (partner ? partners.actorFor(partner,{chat:whatsapp.testGroupId(),id:'simulation'},test.id,true) : null);
     const result=whatsapp.quietTests.assess(test,actor,text,
       {canViewReferral,canManageReferral,seesAll,detectStatus,approvedStatus:cfg().approvedStatus});
     return {...result,comment:text,simulation:true};
