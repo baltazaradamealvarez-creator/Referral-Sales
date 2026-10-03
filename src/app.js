@@ -58,13 +58,14 @@ function createApp(db, opts = {}) {
   let affiliates = null; // set once the affiliate routes are mounted, below
   let speed = null; // speed-to-lead watcher, mounted below
   let push = null; // phone push notifications, mounted below
+  let documents = null;
   let whatsapp = null; // WhatsApp alerts through a linked phone, mounted below
   app.disable('x-powered-by');
   app.set('trust proxy', true);
-  // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
+  // Spreadsheet and customer PDF uploads are sent as base64 in JSON.
   const smallJson = express.json({ limit: '100kb' });
   const uploadJson = express.json({ limit: '15mb' });
-  app.use((req, res, next) => (req.path === '/api/history/import' ? uploadJson : smallJson)(req, res, next));
+  app.use((req, res, next) => ((req.path === '/api/history/import' || (req.method==='POST' && /^\/api\/referrals\/\d+\/documents$/.test(req.path))) ? uploadJson : smallJson)(req, res, next));
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
@@ -870,7 +871,7 @@ function createApp(db, opts = {}) {
         response_by: (db.prepare('SELECT full_name FROM users WHERE id = ?').get(ref.first_touch_by) || {}).full_name || '' }
       : ref.status === 'New' ? { waiting_minutes: speed.businessMinutes(toMs(ref.created_at), Date.now()) } : {};
     return {
-      ...publicReferral(ref), comments, history, ...speedInfo, speed_target: speed.config().minutes,
+      ...publicReferral(ref), comments, history, documents:documents.list(u,ref), ...speedInfo, speed_target: speed.config().minutes,
       can_manage: canManageReferral(u, ref),
       can_assign: seesAll(u),
       can_edit: canManageReferral(u, ref) || (ref.created_by === u.id && ref.status === 'New'),
@@ -885,7 +886,7 @@ function createApp(db, opts = {}) {
     const ref = getReferral(refId);
     if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
     const manage = canManageReferral(u, ref);
-    if (waPartners.isPartner(u) && Object.keys(body).some(k => !['status','account_number','install_date','name','phone','email','address','city','state','zip','services','package_details','est_monthly_value'].includes(k)))
+    if (waPartners.isPartner(u) && Object.keys(body).some(k => !['status','account_number','install_date','order_number','order_reference','delivery_date','initial_payment','name','phone','email','address','city','state','zip','services','package_details','est_monthly_value'].includes(k)))
       throw new HttpError(403,'Spectrum participants may update only the linked lead status and order details.');
     const touch = "updated_at = datetime('now')";
 
@@ -964,6 +965,21 @@ function createApp(db, opts = {}) {
         const d = String(body.install_date || '');
         if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new HttpError(400, 'Install date should look like 2026-10-15.');
         db.prepare(`UPDATE referrals SET install_date = ?, ${touch} WHERE id = ?`).run(d, ref.id);
+      }
+      for(const key of ['order_number','order_reference','delivery_date','initial_payment']) {
+        if(body[key]===undefined)continue;
+        if(!manage)throw new HttpError(403,'Only a manager or dispatch can update order details.');
+        let value=body[key];
+        if(key==='initial_payment') {
+          value=value==null || value==='' ? null : Number(value);
+          if(value!=null && (!Number.isFinite(value) || value<0 || value>100000))throw new HttpError(400,'Initial payment must be a valid dollar amount.');
+        } else {
+          value=String(value || '').trim().slice(0,100);
+          if(key==='delivery_date' && value && (!/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+            !Number.isFinite(Date.parse(value+'T00:00:00Z')) || new Date(value+'T00:00:00Z').toISOString().slice(0,10)!==value))
+            throw new HttpError(400,'Delivery date must be a valid date, such as 2026-10-15.');
+        }
+        db.prepare(`UPDATE referrals SET ${key}=?, ${touch} WHERE id=?`).run(value,ref.id);
       }
       if (body.assigned_to !== undefined) {
         if (!seesAll(u)) throw new HttpError(403, 'Only dispatch or an admin can assign leads.');
@@ -1703,6 +1719,10 @@ function createApp(db, opts = {}) {
 
   // ---------- errors & SPA fallback ----------
 
+  documents=require('./customer-documents').mount(app,db,{
+    requireUser,requireRole,wrap,awrap,HttpError,getReferral,canViewReferral,canManageReferral,updateReferral,logAudit,
+  });
+  app.locals.documents=documents;
   require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
   require('./history').mount(app, db, { requireRole, wrap, HttpError, logAudit });
   require('./payments').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify });
@@ -1733,7 +1753,7 @@ function createApp(db, opts = {}) {
     });
     app.locals.dispatchBot = require('./dispatch-bot').mount(app, db, {
       whatsapp, ai: app.locals.ai, agent: app.locals.agent, coach: app.locals.coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll,
-      updateReferral, addComment, logAudit, requireRole, wrap, HttpError,
+      updateReferral, addComment, logAudit, requireRole, wrap, HttpError, documents,
     });
   }
   affiliates = require('./affiliates').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
@@ -1747,6 +1767,7 @@ function createApp(db, opts = {}) {
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err.type === 'entity.too.large') return res.status(413).json({error:'Upload is too large.'});
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad JSON' });
     console.error(err);
     res.status(500).json({ error: 'Something went wrong.' });

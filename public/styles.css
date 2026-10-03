@@ -381,6 +381,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   background: var(--border); flex-shrink: 0; margin-top: .35rem;
 }
 .timeline li b { color: var(--text); }
+.timeline li > span { min-width: 0; overflow-wrap: anywhere; }
 .mention-suggest {
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow);
   margin-top: .3rem; overflow: hidden;
@@ -1132,3 +1133,17 @@ button.chip:disabled { cursor: default; opacity: .55; }
 .wa-pdf-fields { display: grid; grid-template-columns: minmax(0, 110px) minmax(0, 1fr); gap: .45rem .8rem; }
 .wa-pdf-fields dt { color: var(--muted); }
 .wa-pdf-fields dd { margin: 0; }
+
+.customer-document { padding: .8rem 0; border-bottom: 1px solid var(--border); min-width: 0; overflow-wrap: anywhere; }
+.customer-document p { margin: .35rem 0; }
+.customer-document details { margin: .6rem 0; }
+.document-fields { display: grid; grid-template-columns: minmax(0, 120px) minmax(0, 1fr); gap: .45rem .8rem; }
+.document-fields dt { color: var(--muted); }
+.document-fields dd { margin: 0; overflow-wrap: anywhere; }
+#documentUploadForm { margin-top: 1rem; }
+#documentUploadForm .btn { margin-top: .7rem; }
+#customerDocuments input[type=file] { max-width: 100%; min-width: 0; }
+@media (max-width: 480px) {
+  .document-fields { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
+  .document-fields dd { margin-bottom: .5rem; }
+}

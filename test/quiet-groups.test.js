@@ -27,12 +27,12 @@ async function setup(t, { connected = true, ai, access = 'selected' } = {}) {
   const base = `http://127.0.0.1:${server.address().port}/api`;
   const client = () => {
     let cookie = '';
-    const call = async (method,route,body) => {
+    const call = async (method,route,body,raw=false) => {
       const res = await fetch(base + route,{method,headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},body:body === undefined ? undefined : JSON.stringify(body)});
       if (res.headers.get('set-cookie')) cookie = res.headers.get('set-cookie').split(';')[0];
-      return { status:res.status,body:await res.json() };
+      return { status:res.status,body:raw?Buffer.from(await res.arrayBuffer()):await res.json() };
     };
-    return {get:route=>call('GET',route),post:(route,body={})=>call('POST',route,body),patch:(route,body)=>call('PATCH',route,body),delete:route=>call('DELETE',route,{})};
+    return {get:route=>call('GET',route),raw:route=>call('GET',route,undefined,true),post:(route,body={})=>call('POST',route,body),patch:(route,body)=>call('PATCH',route,body),delete:route=>call('DELETE',route,{})};
   };
   const a = client();
   assert.equal((await a.post('/login',{username:admin.username,password:admin.password})).status,200);
@@ -221,7 +221,7 @@ test('v21 preserves existing comments, indexes and group mappings while allowing
     PRAGMA user_version=20;`);
   const before=db.prepare('SELECT * FROM comments').get();db.close();db=openDb(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,24);
     const after=db.prepare('SELECT * FROM comments WHERE id=7').get();
     for(const field of Object.keys(before))assert.equal(after[field],before[field],field);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='custom_comment_index'").get());
@@ -360,7 +360,7 @@ test('v22 upgrades a populated v21 database and persists isolated test replies a
     INSERT OR REPLACE INTO settings(key,value) VALUES('wa_group_id','${DISPATCH}'),('wa_new_lead_group','0');
     DROP TABLE wa_quiet_test_replies;DROP TABLE wa_quiet_tests;PRAGMA user_version=21;`);
   const before=db.prepare('SELECT * FROM referrals WHERE id=7').get();db.close();db=openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,24);
   let store=require('../src/quiet-group-test').createStore(db);
   const sample=store.create({id:SANDBOX,name:'Sandbox'},{id:1},false);store.mark(sample.id,'sent','','sample-message');
   db.prepare(`INSERT INTO wa_quiet_test_replies(test_id,chat,message_id,external_author,body,from_status,to_status)
@@ -523,7 +523,7 @@ test('v23 preserves populated v22 history and indexes, supports attributed exter
     ALTER TABLE wa_quiet_tests DROP COLUMN document_fields;
     PRAGMA user_version=22;`);
   db.close();db=openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,23);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,24);
   assert.equal(db.prepare('SELECT to_status FROM status_history WHERE id=1').get().to_status,'Working');
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='idx_history_ref'").get());
   db.prepare('INSERT INTO status_history(referral_id,user_id,from_status,to_status,external_author,whatsapp_chat,whatsapp_message_id) VALUES(1,NULL,?,?,?,?,?)')
@@ -581,8 +581,38 @@ test('everyone mode applies to isolated Spectrum test replies and PDFs without r
   const lines=orderLines('[TEST] Sample Customer').map(x=>x.replace('(512) 867-5309','(202) 555-0105').replace('1010 Ogden Ave','123 Sample St'));
   assert.equal(await say('',{...member,document:{filename:'Sample.pdf',download:async()=>pdf(lines)}}),'quiet_pdf_applied');
   assert.equal((await a.get('/whatsapp/quiet-test')).body.last_test.status,'Ordered');
-  for(const table of ['referrals','notifications','status_history','wa_group_partners'])assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0);
+  for(const table of ['referrals','notifications','status_history','wa_group_partners','customer_documents'])assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0);
+  const activity=(await a.get('/whatsapp/documents')).body[0];assert.equal(activity.has_pdf,1);
+  assert.deepEqual((await a.raw(`/whatsapp/documents/${activity.id}/pdf`)).body,pdf(lines),'test PDF is retained for admin review only');
   assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0);
   assert.equal((await a.post('/whatsapp/quiet-test/simulate',{actor:'external',text:'confirmed'})).body.can_change_status,true);
   assert.equal((await a.patch('/whatsapp/settings',{quiet_access:'anything'})).status,400);
+});
+
+test('Spectrum PDFs silently attach to the customer profile while conflicting customers remain in admin review',async t=>{
+  const {pdf,spectrumLines}=require('./fixtures/order-pdf');
+  const {db,a,wa,makeUser,settle,say}=await setup(t,{access:'default'});
+  const seller=await makeUser('seller','rep','15125550142');
+  await a.patch('/whatsapp/settings',{quiet_group_id:QUIET,quiet_group_name:'Spectrum',quiet_enabled:true});
+  const lead=(await seller.c.post('/referrals',{name:'Maria Lopez',phone:'5128675309'})).body;
+  await settle();const post=wa.sent.find(m=>m.jid===QUIET),sent=wa.sent.length,bytes=pdf(spectrumLines());
+  const member={senderJid:'new-spectrum@lid',name:'Spectrum colleague',quotedId:post.id};
+  assert.equal(await say('',{...member,document:{filename:'Confirmation.pdf',download:async()=>bytes}}),'quiet_pdf_applied');
+  const r=(await seller.c.get(`/referrals/${lead.id}`)).body;
+  assert.equal(r.status,'Ordered');assert.equal(r.order_number,'1000000000004030');assert.equal(r.delivery_date,'2026-10-06');
+  assert.equal(r.install_date,'');assert.equal(r.initial_payment,90);assert.equal(r.est_monthly_value,70);
+  assert.equal(r.documents.length,1);assert.equal(r.documents[0].source,'whatsapp');assert.equal(r.documents[0].author,'Spectrum colleague');
+  assert.equal(r.documents[0].status,'applied');assert.deepEqual((await seller.c.raw(`/referrals/${lead.id}/documents/${r.documents[0].id}`)).body,bytes);
+  let activity=(await a.get('/whatsapp/documents')).body[0];assert.equal(activity.has_pdf,1);assert.equal(activity.document_id,r.documents[0].id);
+  assert.equal(activity.pdf_data,undefined);assert.equal(db.prepare('SELECT pdf_data FROM wa_order_documents WHERE id=?').get(activity.id).pdf_data,null,'only one copy of the original is stored');
+  assert.deepEqual((await a.raw(`/whatsapp/documents/${activity.id}/pdf`)).body,bytes);
+  assert.equal((await seller.c.raw(`/whatsapp/documents/${activity.id}/pdf`)).status,403);
+  await say('',{...member,document:{filename:'Same.pdf',download:async()=>bytes}});
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents.length,1,'repeated document bytes do not duplicate attachments');
+  const wrongBytes=pdf(spectrumLines().map(line=>line==='5128675309'?'5125550199':line));
+  assert.equal(await say('',{...member,document:{filename:'OtherCustomer.pdf',download:async()=>wrongBytes}}),'quiet_pdf_review');
+  activity=(await a.get('/whatsapp/documents')).body[0];assert.equal(activity.document_id,null);assert.equal(activity.has_pdf,1);
+  assert.deepEqual((await a.raw(`/whatsapp/documents/${activity.id}/pdf`)).body,wrongBytes);
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents.length,1,'a different customer is never silently attached');
+  assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0,'PDF processing has no response or reaction in the quiet group');
 });

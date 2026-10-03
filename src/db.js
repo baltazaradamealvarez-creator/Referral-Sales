@@ -569,6 +569,24 @@ const MIGRATIONS = [
     if (!db.prepare('PRAGMA table_info(wa_quiet_tests)').all().some(c => c.name === 'document_fields'))
       db.exec("ALTER TABLE wa_quiet_tests ADD COLUMN document_fields TEXT NOT NULL DEFAULT '{}';");
   },
+  // v24: original customer PDFs live on the persistent database and in its backups.
+  (db) => {
+    const columns=new Set(db.prepare('PRAGMA table_info(referrals)').all().map(c=>c.name));
+    for(const key of ['order_number','order_reference','delivery_date'])
+      if(!columns.has(key))db.exec(`ALTER TABLE referrals ADD COLUMN ${key} TEXT NOT NULL DEFAULT '';`);
+    if(!columns.has('initial_payment'))db.exec('ALTER TABLE referrals ADD COLUMN initial_payment REAL;');
+    db.exec(`CREATE TABLE IF NOT EXISTS customer_documents (
+      id INTEGER PRIMARY KEY,referral_id INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,author TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'app',filename TEXT NOT NULL,sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,content BLOB NOT NULL,fields TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'attached',detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),UNIQUE(referral_id,sha256));
+      CREATE INDEX IF NOT EXISTS idx_customer_documents_ref ON customer_documents(referral_id,id);`);
+    const wa=new Set(db.prepare('PRAGMA table_info(wa_order_documents)').all().map(c=>c.name));
+    if(!wa.has('pdf_data'))db.exec('ALTER TABLE wa_order_documents ADD COLUMN pdf_data BLOB;');
+    if(!wa.has('document_id'))db.exec('ALTER TABLE wa_order_documents ADD COLUMN document_id INTEGER REFERENCES customer_documents(id) ON DELETE SET NULL;');
+  },
 ];
 
 

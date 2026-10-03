@@ -18,4 +18,17 @@ const orderLines=(name='Maria Lopez',extras=[])=>['Spectrum Order Confirmation',
   'Order Number: ABC12345','Customer Name: '+name,'Phone: (512) 867-5309',
   'Service Address: 1010 Ogden Ave','Dallas, TX 75211','Installation Date: 10/15/2026',
   'Services: Internet, TV','Package: Internet + TV','Monthly Total: $80.00',...extras];
-module.exports={pdf,orderLines};
+// Sanitized version of Spectrum's printed checkout layout. All customer and
+// account identifiers are fictional; the customer's block has no field labels.
+const spectrumLines=()=>['Spectrum Order Confirmation','Thanks for the order',
+  'Email: maria.lopez@gmail.com','Monthly Payment','$70.00','Delivery Date','10/6/26',
+  'Initial Payment','$90.00','Reference Number','2150000210','Order Support: 1.855.392.9910',
+  'MONTHLY HOME SERVICES','Internet','Spectrum Internet 1 Gig','Advanced WiFi Included',
+  'ONE-TIME CHARGES','Service Activation $20.00','Express Connect Kit Included',
+  'MONTHLY MOBILE SERVICES','Applicable only if Mobile Unlimited line is activated within 30 days of order',
+  '1 Unlimited Line Included','Est. Monthly Home Services $70.00','Est. Monthly Mobile Services $0.00',
+  'Est. Monthly Total','$70.00','Est. Initial Payment','$90.00','ACCOUNT DETAIL S',
+  'Account Number','8280000000004739','Work Order Number','1000000000004030',
+  'Contact Information','Maria Lopez','1010 Ogden Ave','Dallas, TX 75211','5128675309',
+  'Billing Information','Maria Lopez','1010 Ogden Ave','Dallas, TX 75211'];
+module.exports={pdf,orderLines,spectrumLines};

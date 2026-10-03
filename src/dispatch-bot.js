@@ -119,7 +119,7 @@ const T = {
 // ---------- the bot ----------
 
 function mount(app, db, deps) {
-  const { whatsapp, ai, agent, coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError } = deps;
+  const { whatsapp, ai, agent, coach, getSettings, getReferral, canViewReferral, canManageReferral, seesAll, updateReferral, addComment, logAudit, requireRole, wrap, HttpError, documents } = deps;
 
   const partners = partnersModule.mount(app,db,{whatsapp,requireRole,wrap,HttpError,logAudit});
 
@@ -234,7 +234,7 @@ function mount(app, db, deps) {
     db.prepare(`INSERT OR IGNORE INTO wa_order_documents(chat,message_id,filename,author,referral_id,test_id)
       VALUES(?,?,?,?,?,?)`).run(m.chat,m.id,filename,actor?.full_name || user?.full_name || String(m.name || 'WhatsApp participant').slice(0,100),
       ref && !test ? ref.id : null,test?.id || null);
-    let fields={};
+    let fields={},attachment=null;
     const finish=(status,detail)=>{
       db.prepare("UPDATE wa_order_documents SET status=?,detail=?,fields=?,updated_at=datetime('now') WHERE chat=? AND message_id=?")
         .run(status,detail.slice(0,500),JSON.stringify(fields),m.chat,m.id);
@@ -251,7 +251,9 @@ function mount(app, db, deps) {
       return finish('comment','Participant cannot update order details. No PDF was downloaded.');
     }
     try {
-      const result=await orderPdf.readOrder(m.document);fields=result.fields;
+      const data=documents.validate(await orderPdf.downloadPdf(m.document));
+      db.prepare('UPDATE wa_order_documents SET pdf_data=? WHERE chat=? AND message_id=?').run(data,m.chat,m.id);
+      const result=await documents.inspect(data);fields=result.fields;
       // Permission, capture and record checks happen again after an asynchronous download.
       if(test ? m.chat!==whatsapp.testGroupId() || getSettings().wa_enabled!=='1' : !whatsapp.quietCaptureEnabled(m.chat))
         return finish('review','Reply capture was turned off while processing this PDF.');
@@ -271,24 +273,36 @@ function mount(app, db, deps) {
       }
       const current=quietActor(m,ref);
       if(!current || !canManageReferral(current,ref))return finish('review','Sender permission was removed or does not cover this lead.');
-      const conflict=result.issue || orderPdf.orderPatch(fields,ref).issue;
+      const patch=orderPdf.orderPatch(fields,ref);
+      const conflict=result.issue || patch.issue;
       const duplicate=!test && fields.account_number && db.prepare("SELECT id FROM referrals WHERE replace(replace(account_number,'-',''),' ','')=? AND id<>?").get(fields.account_number,ref.id);
+      // A document naming a different customer stays in the admin review queue.
+      // Other linked PDFs, including unreadable scans, remain available on the profile.
+      if(!test && !duplicate && !/customer details conflict/i.test(patch.issue || '')) {
+        attachment=documents.save(current,ref,data,filename,result,'whatsapp').document;
+        db.prepare('UPDATE wa_order_documents SET document_id=?,pdf_data=NULL WHERE chat=? AND message_id=?').run(attachment.id,m.chat,m.id);
+      }
       if(conflict || duplicate) {
         const reason=conflict || 'This account number is already linked to another CRM lead.';
+        if(attachment)documents.outcome(attachment.id,'review',reason);
         capture(current,`PDF needs review: ${filename}\n${reason}`);
         return finish('review',reason);
       }
       const {body}=orderPdf.orderPatch(fields,ref);
       if(test) {
         db.prepare('UPDATE wa_quiet_tests SET document_fields=? WHERE id=?').run(JSON.stringify({...JSON.parse(test.document_fields || '{}'),...fields}),test.id);
-      } else updateReferral(current,ref.id,body);
+      } else {
+        updateReferral(current,ref.id,body);
+        if(attachment)documents.outcome(attachment.id,'applied','Order details saved and customer marked Ordered.');
+      }
       finish('applied',test ? 'Order details saved on the isolated test lead only.' : 'Lead marked Ordered and order details saved.');
       const summary=['PDF processed: '+filename,...Object.entries(fields).filter(([,v])=>v!=='' && v!=null).map(([k,v])=>`${k.replace(/_/g,' ')}: ${v}`),'Status: Ordered'].join('\n');
       try{capture(current,summary,true);}catch{console.error('Order PDF comment could not be saved.');}
       logAudit({user:current,ip:'whatsapp'},'whatsapp.order_pdf',test?'whatsapp_test':'referral',ref.id,`${filename} · ${m.chat} · Ordered`);
       return 'quiet_pdf_applied';
     } catch(error) {
-      const safe=error.status===409 ? 'Order customer details match another existing record. Review before applying this PDF.' : /^(?:PDF |Password-protected PDF|The attachment|No readable)/.test(error.message) ? error.message.slice(0,250) : 'PDF could not be processed. Review it in the CRM.';
+      const safe=error.status===409 ? 'Order customer details match another existing record. Review before applying this PDF.' : /^(?:PDF |Password-protected PDF|The attachment|The PDF|No readable)/.test(error.message) ? error.message.slice(0,250) : 'PDF could not be processed. Review it in the CRM.';
+      if(attachment)documents.outcome(attachment.id,'review',safe);
       // Failure is visible in Settings, and as an attributed comment when linked.
       try{capture(ref ? quietActor(m,ref) : null,`PDF needs review: ${filename}\n${safe}`);}catch{}
       return finish('review',safe);

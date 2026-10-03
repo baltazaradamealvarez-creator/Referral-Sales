@@ -1007,6 +1007,58 @@
 
   // ---------- referral detail ----------
 
+  const DOCUMENT_LABELS={name:'Customer',phone:'Phone',email:'Email',address:'Address',city:'City',state:'State',zip:'ZIP',account_number:'Spectrum account',order_number:'Work order',order_reference:'Order reference',install_date:'Installation date',delivery_date:'Kit delivery date',services:'Services',package_details:'Package',est_monthly_value:'Monthly total',initial_payment:'Initial payment',mobile_activation_pending:'Mobile activation needed',mobile_offer:'Mobile offer'};
+  function documentFields(fields) {
+    return Object.entries(fields).filter(([,v])=>v!=='' && v!=null).map(([key,value])=>{
+      let display=value;
+      if(['est_monthly_value','initial_payment'].includes(key))display='$'+Number(value).toFixed(2);
+      if(['install_date','delivery_date'].includes(key))display=usDate(value);
+      if(key==='mobile_activation_pending')display=value ? 'Yes — activation still required' : 'No';
+      return `<dt>${esc(DOCUMENT_LABELS[key] || key.replace(/_/g,' '))}</dt><dd>${esc(display)}</dd>`;
+    }).join('');
+  }
+  function customerDocuments(r) {
+    return `<section class="card" id="customerDocuments"><h2>Documents</h2>
+      <p class="small muted">Keep Spectrum confirmations and other PDFs with this customer. WhatsApp order PDFs appear here automatically.</p>
+      <div id="customerDocumentList">${r.documents?.length ? r.documents.map(d=>`<article class="customer-document"><b>${esc(d.filename)}</b>
+        <p class="small muted">${esc(d.author)} · ${d.source==='whatsapp' ? 'WhatsApp' : 'Web upload'} · ${when(d.created_at)} · ${Math.max(1,Math.round(d.size_bytes/1024))} KB</p>
+        <p class="small document-state ${d.status==='review'?'err-text':''}"><b>${esc({attached:'Attached',applied:'Order details saved',review:'Needs review'}[d.status] || d.status)}</b> · ${esc(d.detail)}</p>
+        <div class="row"><a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}?view=1" target="_blank" rel="noopener" aria-label="Open ${esc(d.filename)}">Open PDF</a>
+          <a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}" aria-label="Download ${esc(d.filename)}">Download</a>
+          ${d.can_apply ? `<button type="button" class="btn small" data-apply-document="${d.id}">Apply order details</button>` : ''}
+          ${d.can_delete ? `<button type="button" class="btn small" data-delete-document="${d.id}" aria-label="Remove ${esc(d.filename)}">Remove</button>` : ''}</div>
+        ${Object.keys(d.fields || {}).length ? `<details><summary class="small">Extracted order details</summary><dl class="document-fields small">${documentFields(d.fields)}</dl></details>` : ''}</article>`).join('') : '<p class="small muted">No PDFs attached yet.</p>'}</div>
+      <form id="documentUploadForm"><div class="field"><label for="customerPdf">Attach a PDF (up to 5 MB)</label><input type="file" id="customerPdf" accept="application/pdf,.pdf" required></div>
+        ${r.can_manage ? '<label class="check"><input type="checkbox" id="documentApply" checked> Save order details and mark Ordered</label>' : '<p class="small muted">Dispatch or your manager can apply the extracted order details.</p>'}
+        <button class="btn primary" id="attachCustomerPdf">Attach PDF</button><p class="small" id="documentUploadState" role="status" aria-live="polite"></p></form>
+    </section>`;
+  }
+  function bindCustomerDocuments(r) {
+    const form=document.getElementById('documentUploadForm'),feedback=document.getElementById('documentUploadState');
+    form.onsubmit=async event=>{
+      event.preventDefault();const file=document.getElementById('customerPdf').files[0],button=document.getElementById('attachCustomerPdf');
+      if(!file || file.size>5*1024*1024 || !/\.pdf$/i.test(file.name)){feedback.textContent='Choose a PDF up to 5 MB.';return;}
+      button.disabled=true;button.textContent='Attaching PDF…';feedback.textContent='Reading the PDF and saving it to this customer…';
+      try {
+        const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('The file could not be read.'));reader.readAsDataURL(file);});
+        const result=await api(`/referrals/${r.id}/documents`,{method:'POST',body:{filename:file.name,data,apply:!!document.getElementById('documentApply')?.checked}});
+        toast(result.document.status==='applied' ? 'PDF attached and order details saved' : result.document.status==='review' ? 'PDF attached — order details need review' : result.duplicate ? 'This PDF is already attached' : 'PDF attached');
+        await renderReferral(r.id);
+      } catch(error){feedback.textContent=error.message;button.disabled=false;button.textContent='Attach PDF';}
+    };
+    document.querySelectorAll('[data-apply-document]').forEach(button=>{button.onclick=async()=>{
+      button.disabled=true;button.textContent='Applying…';
+      try{const result=await api(`/referrals/${r.id}/documents/${button.dataset.applyDocument}/apply`,{method:'POST',body:{}});toast(result.document.status==='applied' ? 'Order details saved' : result.document.detail);await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;button.textContent='Apply order details';}
+    };});
+    document.querySelectorAll('[data-delete-document]').forEach(button=>{button.onclick=async()=>{
+      if(!confirm('Remove this PDF from the customer? Saved customer and order details will remain.'))return;
+      button.disabled=true;
+      try{await api(`/referrals/${r.id}/documents/${button.dataset.deleteDocument}`,{method:'DELETE',body:{}});toast('PDF removed');await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;}
+    };});
+  }
+
   async function renderReferral(id) {
     let r;
     try {
@@ -1233,6 +1285,7 @@
                     <span class="field-label">Account #</span>
                     ${fv(r.account_number ? esc(r.account_number) : '')}
                   </div>
+                  ${[['order_number','Work Order #'],['order_reference','Order Reference'],['delivery_date','Kit Delivery Date'],['est_monthly_value','Monthly Total'],['initial_payment','Initial Payment']].filter(([key])=>r[key]!=null && r[key]!=='' && (key!=='est_monthly_value' || r[key]>0)).map(([key,label])=>`<div class="field-row"><span class="field-label">${label}</span>${fv(key==='delivery_date'?esc(dayDate(r[key])):['initial_payment','est_monthly_value'].includes(key)?'$'+Number(r[key]).toFixed(2):esc(r[key]))}</div>`).join('')}
                   ${r.commission != null ? `<div class="field-row">
                     <span class="field-label">Commission</span>
                     <span class="field-value">$${Number(r.commission).toFixed(2)}</span>
@@ -1264,6 +1317,8 @@
               ${r.raw_text ? `<details class="raw" style="margin-top:.5rem"><summary class="small muted" style="cursor:pointer">View original entry text</summary><pre style="margin:.5rem 0 0;padding:.7rem;background:var(--surface-2);border-radius:8px;font-size:.82rem;overflow-x:auto">${esc(r.raw_text)}</pre></details>` : ''}
             `}
           </div>
+
+          ${customerDocuments(r)}
 
           ${r.can_manage ? `
           <div class="card">
@@ -1303,7 +1358,7 @@
 
           <div class="card">
             <h2>Activity Timeline</h2>
-            <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${personLink(h.user_id,h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
+            <ul class="timeline">${r.history.map((h) => `<li><span>${fullDate(h.created_at)} — ${personLink(h.user_id,h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</span></li>`).join('')}</ul>
           </div>
           <div class="card">
             <h2>Comments</h2>
@@ -1320,6 +1375,7 @@
         </div>
       </div><section class="card" id="energyOptions" style="margin-top:1rem"></section>`);
 
+    bindCustomerDocuments(r);
     // Section collapse toggles
     window.EnergyOptions?.bind({root:document.getElementById('energyOptions'),ref:r,api,esc,toast});
     document.querySelectorAll('[data-toggle-section]').forEach((hdr) => {
@@ -1645,7 +1701,7 @@
         <h3 class="wa-h3">Order PDF activity</h3>
         <p class="small muted">Text-based PDFs up to 5 MB and 20 pages are read inside the app. Scans, password protection, missing account numbers and conflicting customer details need review. Existing customer details are preserved. Unquoted documents must match one permitted lead posted in the same group.</p>
         <button type="button" class="btn small" id="waRefreshDocuments">Refresh PDF activity</button>
-        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div><p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${Object.entries(d.fields).filter(([,v])=>v!=='' && v!=null).map(([k,v])=>`<dt>${esc(k.replace(/_/g,' '))}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
+        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div>${d.has_pdf ? `<p class="small"><a href="/api/whatsapp/documents/${d.id}/pdf?view=1" target="_blank" rel="noopener">Open PDF</a> · <a href="/api/whatsapp/documents/${d.id}/pdf">Download PDF</a></p>` : ''}<p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${documentFields(d.fields)}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
       box.querySelector('#waQuietAccess').onchange=async e=>{
         const select=e.target;select.disabled=true;
         try{await api('/whatsapp/settings',{method:'PATCH',body:{quiet_access:select.value}});toast(select.value==='everyone' ? 'Everyone in the Spectrum quiet group can update posted leads' : 'Quiet group access limited to selected numbers');await drawWaLink();}

@@ -126,7 +126,7 @@ test('v20 repairs only missing, unambiguous historical fields and preserves lead
     INSERT OR REPLACE INTO settings(key,value) VALUES('wa_new_lead_group','0'); PRAGMA user_version=19;`);
   const before = db.prepare('SELECT * FROM referrals ORDER BY id').all();
   db.close();db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 23);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 24);
   const rows = db.prepare('SELECT * FROM referrals ORDER BY id').all();
   const locality = id => Object.fromEntries(['city','state','zip'].map(field => [field, rows[id - 1][field]]));
   assert.deepEqual(locality(1), { city: 'Austin', state: 'TX', zip: '78701-1234' });

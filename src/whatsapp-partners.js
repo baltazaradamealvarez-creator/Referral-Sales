@@ -72,7 +72,8 @@ function mount(app, db, { whatsapp, requireRole, wrap, HttpError, logAudit }) {
   }));
   app.get('/api/whatsapp/documents', wrap(req => {
     requireRole(req,'admin');
-    return db.prepare(`SELECT d.*,r.customer_name FROM wa_order_documents d LEFT JOIN referrals r ON r.id=d.referral_id
+    return db.prepare(`SELECT d.id,d.chat,d.message_id,d.filename,d.author,d.referral_id,d.test_id,d.status,d.detail,d.fields,d.created_at,d.updated_at,d.document_id,
+      CASE WHEN d.pdf_data IS NOT NULL OR d.document_id IS NOT NULL THEN 1 ELSE 0 END AS has_pdf,r.customer_name FROM wa_order_documents d LEFT JOIN referrals r ON r.id=d.referral_id
       ORDER BY d.id DESC LIMIT 30`).all().map(row => ({...row, fields:JSON.parse(row.fields || '{}')}));
   }));
   return { find, groupActor, allowsEveryone, actorFor:(partner,message,id,test=false)=>actorFor(db,partner,message,id,test) };

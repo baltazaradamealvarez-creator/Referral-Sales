@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {extractText,parseOrder,orderPatch,MAX_BYTES}=require('../src/whatsapp-order-pdf');
-const {pdf,orderLines}=require('./fixtures/order-pdf');
+const {pdf,orderLines,spectrumLines}=require('./fixtures/order-pdf');
 const {detectStatus}=require('../src/dispatch-bot');
 
 test('local PDF reader extracts an actual order, account, installation, services and monthly value',async()=>{
@@ -27,6 +27,21 @@ test('PDF parsing refuses guesses, masked accounts, conflicting accounts, quotes
   assert.match(parseOrder('').issue,/Scanned PDFs/);
   const missingDate=parseOrder(orderLines().map(x=>x.replace('10/15/2026','02/30/2026')).join('\n'));
   assert.equal(missingDate.fields.install_date,undefined);
+});
+test('Spectrum checkout uses the customer contact block, separate delivery and initial payment, and conditional mobile offer',async()=>{
+  const result=parseOrder(await extractText(pdf(spectrumLines())));
+  assert.equal(result.issue,'');
+  assert.deepEqual(result.fields,{
+    account_number:'8280000000004739',order_number:'1000000000004030',order_reference:'2150000210',
+    email:'maria.lopez@gmail.com',est_monthly_value:70,initial_payment:90,delivery_date:'2026-10-06',
+    name:'Maria Lopez',phone:'5128675309',address:'1010 Ogden Ave, Dallas, TX 75211',
+    city:'Dallas',state:'TX',zip:'75211',mobile_activation_pending:true,mobile_offer:'1 Unlimited Line',
+    services:'Internet',package_details:'Spectrum Internet 1 Gig; Advanced WiFi included',
+  });
+  const patch=orderPatch(result.fields,{customer_name:'Maria Lopez',phone:'5128675309',status:'Passed'});
+  assert.equal(patch.body.install_date,undefined,'a delivery date is not an installation date');
+  assert.equal(patch.body.order_number,'1000000000004030');assert.equal(patch.body.initial_payment,90);
+  assert.equal(patch.body.services,'Internet','the mobile offer has not been activated');
 });
 test('PDF reader rejects corrupt or oversized files and order patches preserve existing customer data',async()=>{
   await assert.rejects(extractText(Buffer.from('not a PDF')),/valid PDF/);
