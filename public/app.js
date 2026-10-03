@@ -3,6 +3,10 @@
 (() => {
   const $app = document.getElementById('app');
   const state = { me: null, menuOpen: false };
+  document.querySelector('.skip-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    (document.getElementById('mainContent') || document.querySelector('.login input'))?.focus();
+  });
   const STATUSES = ['New', 'Working', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
   const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
@@ -61,6 +65,7 @@
   const pill = (s) => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
   const svcTags = (s) => (s ? s.split(',').map((x) => `<span class="tag">${esc(x.trim())}</span>`).join('') : '');
   const leadName = (r) => r.customer_name || 'No name';
+  const scoreTextColor = (score) => Number(score) >= 60 ? 'var(--ok)' : Number(score) >= 35 ? 'var(--warn)' : 'var(--danger)';
   const role = () => state.me && state.me.role;
   const isAdmin = () => role() === 'admin';
   const isManager = () => role() === 'manager';
@@ -156,7 +161,7 @@
 
   function subTabsHtml() {
     if (!inHub()) return '';
-    return `<nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}">${l}</a>`).join('')}</nav>`;
+    return `<nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}" ${hubActive(h) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
   }
 
   // The phone tab bar shows these four; the rest go under "More".
@@ -208,18 +213,49 @@
 
   function modal(html, { wide } = {}) {
     closeModal();
+    const previousFocus = document.activeElement;
     const wrap = document.createElement('div');
     wrap.className = 'modal-back';
-    wrap.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
+    wrap.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true" tabindex="-1">${html}</div>`;
+    const dialog = wrap.querySelector('.modal');
+    const heading = dialog.querySelector('h1, h2, h3');
+    if (heading) { heading.id ||= 'dialogHeading'; dialog.setAttribute('aria-labelledby', heading.id); }
+    else dialog.setAttribute('aria-label', 'Dialog');
+    wrap._previousFocus = previousFocus;
     wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) closeModal(); });
+    wrap.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const items = [...dialog.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+        .filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length);
+      const first = items[0], last = items[items.length - 1];
+      if (!first) { e.preventDefault(); dialog.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === dialog)) { e.preventDefault(); first.focus(); }
+    });
     document.body.appendChild(wrap);
+    $app.inert = true;
+    document.body.classList.add('has-modal');
     requestAnimationFrame(() => wrap.classList.add('open'));
     const first = wrap.querySelector('input, select, textarea, button:not([data-close])');
-    if (first) first.focus();
-    return wrap.querySelector('.modal');
+    (first || dialog).focus();
+    return dialog;
   }
-  function closeModal() { document.querySelectorAll('.modal-back').forEach((m) => m.remove()); }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeMenus(); } });
+  function closeModal() {
+    const wraps = [...document.querySelectorAll('.modal-back')];
+    if (!wraps.length) return;
+    const previousFocus = wraps[0]._previousFocus;
+    wraps.forEach((m) => m.remove());
+    $app.inert = false;
+    document.body.classList.remove('has-modal');
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const active = document.activeElement;
+    const trigger = active?.closest('#moreSheet') ? document.querySelector('[data-more]')
+      : active?.closest('#menuPop') ? document.getElementById('menuBtn') : null;
+    closeModal(); closeMenus(); trigger?.focus();
+  });
 
   // ---------- tooltips for charts (any element with data-tip) ----------
 
@@ -253,6 +289,7 @@
 
   function closeMenus() {
     document.querySelectorAll('.menu-pop.open, .sheet.open, .search-results.open').forEach((m) => m.classList.remove('open'));
+    document.querySelectorAll('#menuBtn, [data-more]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
     document.querySelector('.topbar')?.classList.remove('searching');
   }
   document.addEventListener('click', (e) => {
@@ -268,7 +305,7 @@
     $app.innerHTML = `
       <header class="topbar"><div class="topbar-inner ${opts.wide ? 'wide' : ''}">
         <a class="brand" href="#/home" aria-label="E&amp;O Sales home">${markSvg()}<span class="brand-text">${wordmark(esc(me.team_name || (seesAll() ? 'All teams' : 'Spectrum Referrals')))}</span></a>
-        <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
+        <nav class="nav" aria-label="Main navigation">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="lbl">${l}</span></a>`).join('')}</nav>
         <div class="search">
           <button class="icon-btn search-toggle" id="searchToggle" aria-label="Search">🔍</button>
           <input id="gsearch" type="search" placeholder="Search customers…  /" autocomplete="off" aria-label="Search customers">
@@ -277,7 +314,7 @@
         <div class="top-actions">
           <a class="icon-btn" id="bellBtn" href="#/notifications" title="Notifications" aria-label="Notifications"></a>
           <div class="menu">
-            <button class="icon-btn" id="menuBtn" aria-label="Account" aria-haspopup="true">👤</button>
+            <button class="icon-btn" id="menuBtn" aria-label="Account" aria-expanded="false" aria-controls="menuPop">👤</button>
             <div class="menu-pop" id="menuPop">
               <div class="who"><b>${esc(me.full_name)}</b><div class="small muted">@${esc(me.username)} · ${roleLabel(me.role)}</div></div>
               <a href="#/account">My account</a>
@@ -290,17 +327,22 @@
         </div>
       </div></header>
       <div class="offline-bar" role="status">📶 You're offline. New leads are saved on this phone and sent when you're back.</div>
-      <main class="${opts.wide ? 'wide' : ''}">${subTabsHtml()}${content}</main>
+      <main id="mainContent" class="${opts.wide ? 'wide' : ''}" tabindex="-1">${subTabsHtml()}${content}</main>
       <nav class="tabbar" aria-label="Main">
-        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
-        <button data-more class="${more.some(([h, , key]) => isActive(h, key)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
+        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
+        <button data-more aria-expanded="false" aria-controls="moreSheet" class="${more.some(([h, , key]) => isActive(h, key)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
       </nav>
-      <div class="sheet" id="moreSheet">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}"><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
-        <a href="#/help"><span class="ti">❓</span><span>Help</span></a></div>`;
+      <nav class="sheet" id="moreSheet" aria-label="More pages">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
+        <a href="#/help"><span class="ti">❓</span><span>Help</span></a></nav>`;
     badges();
+    // Keep the selected tab visible without scrolling the page away from its heading.
+    for (const nav of document.querySelectorAll('.subtabs, .nav')) {
+      const active = nav.querySelector('[aria-current="page"]');
+      if (active) nav.scrollLeft += active.getBoundingClientRect().left - nav.getBoundingClientRect().left - 8;
+    }
 
     const pop = document.getElementById('menuPop');
-    document.getElementById('menuBtn').onclick = () => { const open = !pop.classList.contains('open'); closeMenus(); pop.classList.toggle('open', open); };
+    document.getElementById('menuBtn').onclick = (e) => { const open = !pop.classList.contains('open'); closeMenus(); pop.classList.toggle('open', open); e.currentTarget.setAttribute('aria-expanded', String(open)); };
     pop.querySelectorAll('[data-theme-set]').forEach((b) => {
       b.onclick = () => { setTheme(b.dataset.themeSet); pop.querySelectorAll('[data-theme-set]').forEach((x) => x.classList.toggle('on', x === b)); };
     });
@@ -310,7 +352,7 @@
       renderLogin();
     };
     const sheet = document.getElementById('moreSheet');
-    document.querySelector('[data-more]').onclick = () => { const open = !sheet.classList.contains('open'); closeMenus(); sheet.classList.toggle('open', open); };
+    document.querySelector('[data-more]').onclick = (e) => { const open = !sheet.classList.contains('open'); closeMenus(); sheet.classList.toggle('open', open); e.currentTarget.setAttribute('aria-expanded', String(open)); };
     setupSearch();
   }
 
@@ -526,9 +568,9 @@
               <div class="full"><label for="f_notes">Notes</label><textarea id="f_notes" rows="3"></textarea></div>
             </div>
           </div>
-          <div id="quickMsg"></div>
+          <div id="quickMsg" role="status" aria-live="polite"></div>
           <button class="btn primary big" id="sendBtn" style="margin-top:.6rem">Send referral</button>
-          <div class="row between" style="margin-top:.6rem"><button type="button" class="link-btn small" id="fixBtn">Something wrong? Fix the details</button><span class="small muted hide-sm">Ctrl + Enter to send</span></div>
+          <div class="row between" style="margin-top:.6rem"><button type="button" class="link-btn small" id="fixBtn" aria-expanded="false" aria-controls="fixWrap">Review or edit details</button><span class="small muted hide-sm">Ctrl + Enter to send</span></div>
         </form>
         <div class="card">
           <div class="row between"><h2 style="margin:0">My latest referrals</h2><a href="#/referrals?scope=mine" class="small">See all</a></div>
@@ -563,6 +605,7 @@
       const fix = q.checks.email.fix;
       meter.hidden = false;
       meter.style.setProperty('--sc', q.color);
+      meter.style.setProperty('--sc-text', scoreTextColor(q.score));
       meter.innerHTML = `<div class="sm-top"><span class="sm-label">Lead quality</span><b class="sm-pct">${q.score}%</b><span class="sm-band">${q.band}</span></div>
         <div class="sm-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${q.score}" aria-label="Lead quality"><span style="width:${q.score}%"></span></div>
         ${q.fakes.length ? `<ul class="sm-fakes">${q.fakes.map((x) => `<li>⛔ ${esc(x.msg)}</li>`).join('')}</ul>` : ''}
@@ -625,7 +668,13 @@
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); document.getElementById('quickForm').requestSubmit(); }
     });
     for (const k of fields) f[k].addEventListener('input', () => { touched.add(k); drawChips(); });
-    document.getElementById('fixBtn').onclick = () => { fixWrap.hidden = !fixWrap.hidden; if (!fixWrap.hidden) f.name.focus(); };
+    const setDetailsOpen = (open) => {
+      fixWrap.hidden = !open;
+      const toggle = document.getElementById('fixBtn');
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.textContent = open ? 'Hide details' : 'Review or edit details';
+    };
+    document.getElementById('fixBtn').onclick = () => { setDetailsOpen(fixWrap.hidden); if (!fixWrap.hidden) f.name.focus(); };
     const tplBtn = document.getElementById('tplBtn');
     if (tplBtn) tplBtn.onclick = () => {
       if (ta.value.trim() && !confirm('Replace what you typed with the template?')) return;
@@ -641,7 +690,10 @@
     document.getElementById('quickForm').onsubmit = async (e) => {
       e.preventDefault();
       const btn = document.getElementById('sendBtn');
+      if (btn.disabled) return;
       btn.disabled = true;
+      btn.textContent = 'Sending referral…';
+      btn.setAttribute('aria-busy', 'true');
       msg.innerHTML = '';
       try {
         const body = { text: ta.value, services: [...svc] };
@@ -654,7 +706,7 @@
         bindWhatsapp(msg, ref);
         ta.value = '';
         for (const k of fields) f[k].value = '';
-        touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
+        touched.clear(); parsed = {}; setDetailsOpen(false); svc.clear(); svcTouched = false;
         if (credit) credit.value = '';
         drawChips(); drawServices();
         loadRecent();
@@ -670,7 +722,7 @@
           msg.innerHTML = '<div class="alert warn">📶 No signal. The lead is <b>saved on this phone</b> and will send by itself when you\'re back online.</div>';
           ta.value = '';
           for (const k of fields) f[k].value = '';
-          touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
+          touched.clear(); parsed = {}; setDetailsOpen(false); svc.clear(); svcTouched = false;
           drawChips(); drawServices(); drawOutbox();
           return;
         }
@@ -678,6 +730,8 @@
         msg.innerHTML = `<div class="alert ${cls}">${err.status === 409 ? '⛔ ' : ''}${esc(err.message)}</div>`;
       } finally {
         btn.disabled = false;
+        btn.textContent = 'Send referral';
+        btn.setAttribute('aria-busy', 'false');
       }
     };
     drawOutbox();
@@ -702,12 +756,12 @@
     if (score == null || !window.LeadScore) return '';
     const s = Number(score);
     const band = s >= 80 ? 'Strong' : s >= 60 ? 'Good' : s >= 35 ? 'Fair' : 'Weak';
-    return `<span class="score-badge${big ? ' big' : ''}" style="--sc:${LeadScore.scoreColor(s)}" title="Lead quality: ${band} (${s}%)">${s}%</span>`;
+    return `<span class="score-badge${big ? ' big' : ''}" style="--sc:${LeadScore.scoreColor(s)};--sc-text:${scoreTextColor(s)}" title="Lead quality: ${band} (${s}%)">${s}%</span>`;
   }
 
   function leadItem(r) {
     const sub = [r.phone, r.email, r.address].filter(Boolean).join(' · ');
-    return `<li data-id="${r.id}"><div class="who"><b>${esc(leadName(r))}</b><span>${esc(sub)}</span></div>
+    return `<li data-id="${r.id}"><div class="who"><b><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b><span>${esc(sub)}</span></div>
       <div style="text-align:right;flex-shrink:0">${scoreBadge(r.lead_score)} ${pill(r.status)}<div class="small muted">${when(r.created_at)}</div></div></li>`;
   }
   function bindLeadItems(root) {
@@ -730,6 +784,7 @@
     const [ppl, teams] = await Promise.all([people(), seesAll() ? api('/teams') : Promise.resolve([])]);
     const scopes = scopesFor();
     const title = scope === 'assigned' ? 'My queue' : worksLeads() ? 'Customers' : 'My referrals';
+    const filtersOpen = ['status', 'service', 'user_id', 'team_id', 'assigned_to'].some((k) => params[k]);
 
     shell(`
       <div class="card">
@@ -740,19 +795,20 @@
             <a class="btn small" id="csvBtn" href="#">⬇ Export CSV</a>
           </div>
         </div>
-        <div class="filters">
-          <input class="q" id="q" placeholder="Search name, phone, email, address, notes, account #" value="${esc(params.q || '')}">
-          <select id="st"><option value="">All statuses</option>${STATUSES.map((s) => `<option ${params.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-          <select id="svc"><option value="">All services</option>${SERVICES.map((s) => `<option ${params.service === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-          ${worksLeads() ? `<select id="usr"><option value="">All reps</option>${ppl.credit.filter((u) => !params.team_id || String(u.team_id) === params.team_id).map((u) => `<option value="${u.id}" ${params.user_id === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
-          ${seesAll() ? `<select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
-          ${seesAll() && scope === 'all' ? `<select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
+        <div class="filters customer-filters ${filtersOpen ? '' : 'collapsed'}" id="customerFilters">
+          <div class="filter-field q"><label for="q">Search customers</label><div class="filter-search"><input id="q" type="search" placeholder="Name, phone, email, address…" aria-label="Search customers by name, phone, email, address, notes or account number" value="${esc(params.q || '')}"><button type="button" class="btn filter-toggle" id="filtersToggle" aria-expanded="${filtersOpen}" aria-controls="customerFilters">Filters</button></div></div>
+          <div class="filter-field"><label for="st">Status</label><select id="st"><option value="">All statuses</option>${STATUSES.map((s) => `<option ${params.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+          <div class="filter-field"><label for="svc">Service</label><select id="svc"><option value="">All services</option>${SERVICES.map((s) => `<option ${params.service === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+          ${worksLeads() ? `<div class="filter-field"><label for="usr">Opportunity owner</label><select id="usr"><option value="">All reps</option>${ppl.credit.filter((u) => !params.team_id || String(u.team_id) === params.team_id).map((u) => `<option value="${u.id}" ${params.user_id === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select></div>` : ''}
+          ${seesAll() ? `<div class="filter-field"><label for="tm">Team</label><select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>` : ''}
+          ${seesAll() && scope === 'all' ? `<div class="filter-field"><label for="asg">Dispatcher</label><select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select></div>` : ''}
         </div>
+        <div class="filter-summary"><span id="filterSummary" class="small muted"></span><button type="button" class="link-btn small" id="clearFilters" hidden>Clear filters</button></div>
         <div class="table-wrap"><table class="rtable leads-table">
           <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Opportunity owner</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
           <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table></div>
-        <p class="small muted" id="count"></p>
+        <p class="small muted" id="count" role="status" aria-live="polite"></p>
       </div>`);
 
     const setParam = (k, v) => {
@@ -769,6 +825,16 @@
     const qEl = document.getElementById('q');
     qEl.oninput = debounce(() => load(), 250);
     qEl.onkeydown = (e) => { if (e.key === 'Enter') setParam('q', qEl.value); };
+    const filterBox = document.getElementById('customerFilters');
+    document.getElementById('filtersToggle').onclick = (e) => {
+      filterBox.classList.toggle('collapsed');
+      e.currentTarget.setAttribute('aria-expanded', String(!filterBox.classList.contains('collapsed')));
+    };
+    const resetFilters = () => {
+      const next = '#/referrals?scope=' + scope;
+      if (location.hash === next) renderReferrals(); else location.hash = next;
+    };
+    document.getElementById('clearFilters').onclick = resetFilters;
 
     const currentParams = () => {
       const p = new URLSearchParams({ scope });
@@ -778,21 +844,40 @@
     };
     document.getElementById('csvBtn').onclick = (e) => { e.preventDefault(); location.href = '/api/referrals.csv?' + currentParams().toString(); };
 
+    let loadId = 0;
     async function load() {
-      const rows = await api('/referrals?' + currentParams().toString());
+      const request = ++loadId;
       const tbody = document.getElementById('rows');
       if (!tbody) return;
+      const searchParams = currentParams();
+      const activeFilters = [...searchParams.keys()].filter((k) => k !== 'scope').length;
+      document.getElementById('clearFilters').hidden = !activeFilters;
+      document.getElementById('filterSummary').textContent = activeFilters ? `${activeFilters} active filter${activeFilters === 1 ? '' : 's'}` : '';
+      tbody.setAttribute('aria-busy', 'true');
+      let rows;
+      try { rows = await api('/referrals?' + searchParams.toString()); }
+      catch (err) {
+        if (!tbody.isConnected || request !== loadId) return;
+        tbody.setAttribute('aria-busy', 'false');
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="7"><div class="empty-state"><h2>Customers could not be loaded</h2><p>${esc(err.message)}</p><button type="button" class="btn" id="retryCustomers">Try again</button></div></td></tr>`;
+        document.getElementById('count').textContent = '';
+        document.getElementById('retryCustomers').onclick = load;
+        return;
+      }
+      if (!tbody.isConnected || request !== loadId) return;
+      tbody.setAttribute('aria-busy', 'false');
       tbody.innerHTML = rows.length ? rows.map((r) => `
         <tr class="click" data-id="${r.id}">
-          <td class="c-main"><b>${esc(leadName(r))}</b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
+          <td class="c-main"><b><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
           <td class="c-contact" data-label="Contact">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
           ${worksLeads() ? `<td class="small" data-label="Opportunity owner">${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
           ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
           <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}</td>
           <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
-        </tr>`).join('') : '<tr><td colspan="7" class="muted">No referrals match.</td></tr>';
+        </tr>`).join('') : `<tr class="empty-row"><td colspan="7"><div class="empty-state"><h2>${activeFilters ? 'No customers match these filters' : 'No customers here yet'}</h2><p>${activeFilters ? 'Try another search or clear your filters.' : 'New referrals will appear here as they are entered.'}</p>${activeFilters ? '<button type="button" class="btn" id="emptyClearFilters">Clear filters</button>' : '<a class="btn primary" href="#/new">New referral</a>'}</div></td></tr>`;
       document.getElementById('count').textContent = `${rows.length}${rows.length === 500 ? '+' : ''} referral${rows.length === 1 ? '' : 's'}`;
+      document.getElementById('emptyClearFilters')?.addEventListener('click', resetFilters);
       bindLeadItems(tbody);
     }
     load();
@@ -815,13 +900,13 @@
         </div>
       </div>
       <div class="board-filters">
-        <input id="q" placeholder="Search…" value="${esc(params.q || '')}">
-        ${seesAll() ? `<select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+        <input id="q" type="search" aria-label="Search board customers" placeholder="Search customers…" value="${esc(params.q || '')}">
+        ${seesAll() ? `<select id="tm" aria-label="Filter board by team"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
         <select id="closed" title="How far back to show DNQ / Ordered / Cancelled">
           ${[['7', 'Closed: last 7 days'], ['30', 'Closed: last 30 days'], ['90', 'Closed: last 90 days'], ['0', 'Closed: all time']].map(([v, l]) => `<option value="${v}" ${closed === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
       </div>
-      ${worksLeads() ? '<p class="small muted" style="margin:.2rem 0 .8rem">Drag a card to another column to change its status.</p>' : ''}
+      <p class="small muted board-help" style="margin:.2rem 0 .8rem"><span class="hide-sm">${worksLeads() ? 'Drag a card to another column, or open the customer to change its status.' : 'Open a customer to see their details.'}</span><span class="show-sm">Swipe across to see each status. Tap a customer to open their details.</span></p>
       <div class="board" id="board">${STATUSES.map((s) => `
         <section class="col" data-status="${s}">
           <header><span class="pill ${s}">${s}</span><span class="n muted small" data-n="${s}"></span></header>
@@ -845,7 +930,7 @@
     const card = (r) => {
       const draggable = canMoveCard(r);
       return `<article class="kcard" data-id="${r.id}" ${draggable ? 'draggable="true"' : ''}>
-        <div class="row between" style="flex-wrap:nowrap"><b class="kname">${esc(leadName(r))}</b><span class="small muted" style="white-space:nowrap">${scoreBadge(r.lead_score)} ${when(r.created_at)}</span></div>
+        <div class="row between" style="flex-wrap:nowrap"><b class="kname"><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b><span class="small muted" style="white-space:nowrap">${scoreBadge(r.lead_score)} ${when(r.created_at)}</span></div>
         ${r.phone ? `<div class="small">${esc(r.phone)}</div>` : ''}
         ${r.address ? `<div class="small muted kaddr">${esc(r.address)}</div>` : ''}
         ${r.services ? `<div>${svcTags(r.services)}</div>` : ''}
@@ -977,7 +1062,7 @@
             <div class="hl-label">Est. Monthly</div>
           </div>
           <div class="highlight-tile">
-            <div class="hl-val" style="color:${r.lead_score != null && window.LeadScore ? LeadScore.scoreColor(r.lead_score) : 'inherit'}">${r.lead_score != null ? `${r.lead_score}%` : '—'}</div>
+            <div class="hl-val" style="color:${r.lead_score != null ? scoreTextColor(r.lead_score) : 'inherit'}">${r.lead_score != null ? `${r.lead_score}%` : '—'}</div>
             <div class="hl-label">Lead quality</div>
           </div>
           <div class="highlight-tile">
@@ -1196,7 +1281,7 @@
           <div class="card">
             <h2>Dispatch Assignment</h2>
             <div class="row">
-              <select id="assignSel" style="flex:1;width:auto;min-width:0"><option value="">Unassigned</option>${ppl.dispatchers.map((d) => `<option value="${d.id}" ${r.assigned_to === d.id ? 'selected' : ''}>${esc(d.full_name)}${d.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select>
+              <select id="assignSel" aria-label="Assigned dispatcher" style="flex:1;width:auto;min-width:0"><option value="">Unassigned</option>${ppl.dispatchers.map((d) => `<option value="${d.id}" ${r.assigned_to === d.id ? 'selected' : ''}>${esc(d.full_name)}${d.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select>
               ${r.assigned_to !== state.me.id ? '<button class="btn primary" id="takeBtn">Take it</button>' : ''}
             </div>
           </div>` : ''}
@@ -1227,7 +1312,7 @@
               <div class="comment"><div class="meta"><b>${personLink(c.user_id,c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}${c.external ? ' · external participant' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
             </div>
             <form id="commentForm" style="margin-top:1rem">
-              <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
+              <textarea id="commentBody" rows="3" aria-label="Add a comment or mention a teammate" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
               <div id="mentionBox"></div>
               <button class="btn primary" style="margin-top:.5rem">Post comment</button>
             </form>
@@ -1447,9 +1532,9 @@
   }
 
   function countTable(rows, firstCol, nameOf, attrs = () => '') {
-    return `<div class="table-wrap"><table>
+    return `<div class="table-wrap"><table class="rtable sales-table">
       <thead><tr><th>${firstCol}</th>${STATUSES.map((s) => `<th class="num">${s}</th>`).join('')}<th class="num">Total</th></tr></thead>
-      <tbody>${rows.map((u) => `<tr ${attrs(u)}><td>${nameOf(u)}</td>${STATUSES.map((s) => `<td class="num">${u[s]}</td>`).join('')}<td class="num"><b>${u.total}</b></td></tr>`).join('') || `<tr><td colspan="${STATUSES.length + 2}" class="muted">Nothing yet.</td></tr>`}</tbody>
+      <tbody>${rows.map((u) => `<tr ${attrs(u)}><td>${nameOf(u)}</td>${STATUSES.map((s) => `<td class="num" data-label="${s}">${u[s]}</td>`).join('')}<td class="num" data-label="Total"><b>${u.total}</b></td></tr>`).join('') || `<tr class="empty-row"><td colspan="${STATUSES.length + 2}" class="muted">No sales in this period.</td></tr>`}</tbody>
     </table></div>`;
   }
   const repName = (u) => `<b>${personLink(u.id,u.full_name)}</b>${u.role !== 'rep' ? ` <span class="small muted">${roleLabel(u.role)}</span>` : ''}`;
@@ -1472,7 +1557,7 @@
       ${s.team ? `<div class="card"><h2>Team: ${esc(s.team.name)}</h2>${statTiles(s.team.totals)}<h2 style="margin-top:1.2rem">By rep</h2>
         ${countTable(s.team.users, 'Rep', repName, (u) => (worksLeads() ? `class="click" data-user="${u.id}"` : ''))}</div>` : ''}
       ${s.teams ? `<div class="card"><h2>All teams</h2>${statTiles(s.all)}
-        <div style="margin-top:1rem">${countTable(s.teams, 'Team', (t) => `<b>${esc(t.name)}</b>`, (t) => `class="click" data-team="${t.id}"`)}</div>
+        <div style="margin-top:1rem">${countTable(s.teams, 'Team', (t) => `<b><a class="record-link" href="#/sales?${esc(new URLSearchParams({ ...params, period, team_id: t.id }).toString())}">${esc(t.name)}</a></b>`, (t) => `class="click" data-team="${t.id}"`)}</div>
         <p class="small muted">Click a team to see its reps.</p></div>` : ''}
       ${s.selectedTeam ? `<div class="card"><h2>${esc(s.selectedTeam.name)} — by rep</h2>${countTable(s.selectedTeam.users, 'Rep', repName, (u) => `class="click" data-user="${u.id}"`)}</div>` : ''}
       ${s.dispatchers ? `<div class="card"><div class="row between"><h2>Dispatch</h2>${s.unassigned ? `<a class="small" href="#/referrals?scope=unassigned">${s.unassigned} open lead${s.unassigned === 1 ? '' : 's'} unassigned</a>` : ''}</div>
@@ -1784,7 +1869,7 @@
       if(!card.isConnected)return;
       card.innerHTML=`<div class="row between"><h2 style="margin:0">Seller coach</h2><span class="wa-state ${s.enabled?'ok':''}">${s.enabled?'On':'Off'}</span></div>
         <p class="small muted">Supportive private WhatsApp check-ins for sellers and managers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
-        <section class="coach-manual" aria-labelledby="coachManualHeading">
+        <section class="coach-manual" id="manualCoaching" tabindex="-1" aria-labelledby="coachManualHeading">
           <h3 id="coachManualHeading" style="margin-top:0">Send a manual check-in</h3>
           <p class="small muted">Choose a seller or manager, review their message, then send it on WhatsApp.</p>
           <div class="field"><label for="coachSeller">Who would you like to check in with?</label><select id="coachSeller"><option value="">Choose a seller or manager</option>${sellers.map((u)=>`<option value="${u.id}">${esc(u.full_name)}${u.role==='manager'?' (Manager)':''}${u.blocked?' — unavailable':''}</option>`).join('')}</select></div>
@@ -1885,16 +1970,16 @@
           ${info.ai ? '' : `<div class="alert warn small" style="margin-top:.6rem">The AI assistant is off.${isAdmin() ? ' Switch it on in <a href="#/team?tab=settings">Admin → Settings</a> (it needs <code>ANTHROPIC_API_KEY</code> in Render).' : ' Ask an admin to switch it on.'} Reminders work without it.</div>`}
           <div class="chat-log" id="chatLog">${state.chat.length ? state.chat.map((m) => `<div class="bubble ${m.role}">${m.role === 'assistant' ? waText(m.content) : esc(m.content)}</div>`).join('') : `<p class="muted small">Ask about leads, numbers or reminders — in English or Spanish. It acts as you, with your permissions. Also on WhatsApp: start a message in the dispatch group with <b>bot</b>, or message the alerts number privately.</p>
             <div class="chips">${ideas.map((t) => `<button type="button" class="chip" data-idea="${esc(t)}">${esc(t)}</button>`).join('')}</div>`}</div>
-          <form id="chatForm" class="chat-form"><textarea id="chatIn" rows="2" placeholder="${es ? 'Escribe tu pregunta…' : 'Ask anything…'}" ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Send</button></form>
+          <form id="chatForm" class="chat-form"><textarea id="chatIn" rows="2" aria-label="${es ? 'Pregunta para el asistente' : 'Question for the assistant'}" placeholder="${es ? 'Escribe tu pregunta…' : 'Ask anything…'}" ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Send</button></form>
         </div>
         <div class="card">
           <h2 style="margin-top:0">⏰ Reminders</h2>
           <form id="remForm" class="rem-form">
-            <input id="remText" placeholder="Call back Maria about the TV package" maxlength="300" required>
+            <label for="remText">What do you need to do?</label><input id="remText" placeholder="Call back Maria about the TV package" maxlength="300" required>
             <div class="row" style="flex-wrap:wrap;gap:.5rem">
-              <input id="remAt" type="datetime-local" required style="flex:1;min-width:190px">
-              <select id="remFor">${forOpts}</select>
-              <select id="remRepeat"><option value="">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select>
+              <div class="rem-when"><label for="remAt">When</label><input id="remAt" type="datetime-local" required></div>
+              <div class="rem-choice"><label for="remFor">For</label><select id="remFor">${forOpts}</select></div>
+              <div class="rem-choice"><label for="remRepeat">Repeat</label><select id="remRepeat"><option value="">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select></div>
               <button class="btn primary">Add</button>
             </div>
           </form>
@@ -1933,7 +2018,7 @@
     };
     document.getElementById('chatForm').onsubmit = (e) => { e.preventDefault(); send(input.value); };
     input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.value); } };
-    document.querySelectorAll('[data-idea]').forEach((b) => { b.onclick = () => send(b.dataset.idea); });
+    document.querySelectorAll('[data-idea]').forEach((b) => { b.disabled = !info.ai; b.onclick = () => send(b.dataset.idea); });
     const clear = document.getElementById('chatClear');
     if (clear) clear.onclick = () => { state.chat = []; lsSet(`eo-chat-${state.me.id}`, []); renderAssistant(); };
     document.getElementById('remForm').onsubmit = async (e) => {
@@ -2042,14 +2127,25 @@
         <div class="card">
           <h2>Teams</h2>
           <ul class="lead-list">${teams.map((t) => `<li style="cursor:default"><div class="who"><b>${esc(t.name)}</b><span>${t.members} active member${t.members === 1 ? '' : 's'}</span></div><button class="btn small" data-rename="${t.id}" data-name="${esc(t.name)}">Rename</button></li>`).join('') || '<li class="muted">No teams yet — add one below.</li>'}</ul>
-          <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
+          <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" aria-label="New team name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
         </div>` : `
         <div class="card"><h2>Tips</h2><p class="muted small">Add each rep's email so they get a welcome email, alerts, and can reset their own password with an emailed code.<br><br>If someone is locked out, hit <b>Reset password</b>. You can email them the new temporary password or read it to them.<br><br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
       </div>` : ''}
       ${isAdmin() && tab === 'settings' ? `
+      <section class="card settings-overview">
+        <h1>Settings</h1><p class="muted">Manage lead routing, team support and connected services. Save changes within each section.</p>
+        <div class="settings-actions" aria-label="Settings shortcuts">
+          <button type="button" class="btn" data-settings-jump="manualCoaching" data-settings-fallback="coachCard">Send a manual check-in</button>
+          <button type="button" class="btn" data-settings-jump="waTestHeading" data-settings-fallback="waLinkCard">Test a WhatsApp group</button>
+          <a class="btn" href="#/account">My notification preferences</a>
+        </div>
+        <nav class="settings-links" aria-label="Jump to a settings section">
+          ${[['settingsForm','Lead routing'],['emailForm','Email & backups'],['waLinkCard','WhatsApp groups'],['aiCard','Assistant'],['coachCard','Coaching'],['energySettings','Energy options'],['waForm','Message template'],['speedForm','Speed to lead']].map(([id,label])=>`<button type="button" class="settings-link" data-settings-jump="${id}">${label}</button>`).join('')}
+        </nav>
+      </section>
       <div class="grid-2">
         <form class="card" id="settingsForm">
-          <h2>Settings</h2>
+          <h2>Lead routing &amp; entry</h2>
           <label class="check"><input type="checkbox" name="auto_assign" ${settings.auto_assign === '1' ? 'checked' : ''}> Automatically assign new leads to dispatch</label>
           <p class="small muted" style="margin:.2rem 0 1rem">Each new lead goes to the active dispatcher with the fewest open leads. Off: leads wait in <b>Unassigned</b> until someone takes them.</p>
           <label class="check"><input type="checkbox" name="new_lead_alert" ${settings.new_lead_alert !== '0' ? 'checked' : ''}> Alert every dispatcher the moment a new lead comes in</label>
@@ -2083,7 +2179,7 @@
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
           ${WaFormat.FIELDS.map((k) => `<code>{${k}}</code>`).join(' ')}</p>
         <div class="grid-2" style="gap:1rem">
-          <div><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
+          <div><label for="waTpl">Message template</label><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
             <div class="field"><label for="waNum">Dispatch WhatsApp number <span class="muted small">(optional — Open WhatsApp goes straight to this chat)</span></label><input id="waNum" inputmode="tel" value="${esc(settings.whatsapp_number)}" placeholder="1 512 555 0142"></div></div>
           <div><label class="small">Preview</label><pre class="wa-preview" id="waPreview"></pre></div>
         </div>
@@ -2098,7 +2194,7 @@
           <div class="field"><label for="sp_esc">Alert admins after (minutes)</label><input id="sp_esc" name="escalate" type="number" min="2" max="2880" value="${speedCfg.escalate}"></div>
           <div class="field"><label for="sp_from">Working hours</label>
             <div class="row" style="flex-wrap:nowrap;gap:.4rem"><select id="sp_from">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${+speedCfg.hours.split('-')[0] === h ? 'selected' : ''}>${new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select>
-            <span class="muted">to</span><select id="sp_to">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${+speedCfg.hours.split('-')[1] === h ? 'selected' : ''}>${h === 24 ? 'midnight' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select></div></div>
+            <span class="muted">to</span><select id="sp_to" aria-label="Working hours end">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${+speedCfg.hours.split('-')[1] === h ? 'selected' : ''}>${h === 24 ? 'midnight' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select></div></div>
           <div class="field"><label for="sp_tz">Time zone</label><select id="sp_tz">${[['America/New_York', 'Eastern'], ['America/Chicago', 'Central'], ['America/Denver', 'Mountain'], ['America/Phoenix', 'Arizona'], ['America/Los_Angeles', 'Pacific'], ['America/Anchorage', 'Alaska'], ['Pacific/Honolulu', 'Hawaii'], ['America/Puerto_Rico', 'Atlantic (Puerto Rico)']].map(([z, l]) => `<option value="${z}" ${speedCfg.tz === z ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         </div>
         <label class="check" style="margin-top:.6rem"><input type="checkbox" name="auto_reassign" ${speedCfg.autoReassign ? 'checked' : ''}> When admins are alerted, hand the lead to the least-busy other dispatcher</label>
@@ -2118,9 +2214,9 @@
               <td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
                 <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
                 <div class="small">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div></td>
-              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
+              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" aria-label="Role for ${esc(u.full_name)}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
                 ${isAdmin() && ['rep', 'dispatch'].includes(u.role) ? `<label class="check small pay-toggle"><input type="checkbox" data-pay="${u.id}" ${u.payments_enabled ? 'checked' : ''}> Payments tab</label>` : ''}</td>
-              ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
+              ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" aria-label="Team for ${esc(u.full_name)}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
               <td data-label="Last active">${ago(u.last_seen_at || u.last_login_at)}<div class="small muted">${u.login_count} sign-in${u.login_count === 1 ? '' : 's'}${u.failed_7d ? ` · <span class="warn-text">${u.failed_7d} failed</span>` : ''}</div></td>
               <td data-label="Password changed">${u.password_changed_at ? `${ago(u.password_changed_at)}${pwOld ? ' <span class="tag">90+ days</span>' : ''}` : '<span class="muted">never</span>'}</td>
               <td data-label="Referrals" class="num"><a href="#/referrals?scope=${isAdmin() ? 'all' : 'team'}&user_id=${u.id}">${u.referral_count}</a>${u.role === 'dispatch' || u.open_assigned ? `<div class="small muted">${u.open_assigned} in queue</div>` : ''}</td>
@@ -2212,6 +2308,15 @@
         const email = await askModal({ title: 'Email address', label: 'Email', type: 'email', value: b.dataset.current, hint: 'Used for alerts, the welcome email and password-reset codes. Leave empty to remove.' });
         if (email === null) return;
         try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
+      };
+    });
+    document.querySelectorAll('[data-settings-jump]').forEach((button) => {
+      button.onclick = () => {
+        const target = document.getElementById(button.dataset.settingsJump) || document.getElementById(button.dataset.settingsFallback);
+        if (!target) return;
+        target.setAttribute('tabindex', '-1');
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+        target.focus({ preventScroll: true });
       };
     });
     if (document.getElementById('waLinkCard')) drawWaLink();
@@ -2376,9 +2481,9 @@
       ${waNudge()}
       <div class="dash-filters">
         <div class="seg" id="periodSeg">${PERIODS.map(([k, l]) => `<button data-k="${k}" class="${period === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-        ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" value="${esc(range.to || '')}"></span>` : ''}
-        ${seesAll() ? `<select id="dTeam"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
-        ${worksLeads() ? `<select id="dUser"><option value="">${isManager() ? 'Whole team' : 'Everyone'}</option>${ppl.credit.filter((p) => !params.team_id || String(p.team_id) === params.team_id).map((p) => `<option value="${p.id}" ${params.user_id === String(p.id) ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>` : ''}
+        ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" aria-label="Period start" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" aria-label="Period end" value="${esc(range.to || '')}"></span>` : ''}
+        ${seesAll() ? `<select id="dTeam" aria-label="Dashboard team"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+        ${worksLeads() ? `<select id="dUser" aria-label="Dashboard opportunity owner"><option value="">${isManager() ? 'Whole team' : 'Everyone'}</option>${ppl.credit.filter((p) => !params.team_id || String(p.team_id) === params.team_id).map((p) => `<option value="${p.id}" ${params.user_id === String(p.id) ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>` : ''}
       </div>
       ${editing ? `<div class="card edit-bar"><b>Customize your dashboard.</b> <span class="muted small">Use ↑ ↓ to reorder and ✕ to remove. Add widgets below. Your layout is saved to your account.</span>
         <div class="row" style="margin-top:.6rem"><button class="btn small" id="resetLayout">Reset to default</button></div></div>` : ''}
@@ -2811,7 +2916,7 @@
       <div class="card"><div class="row between"><h2 style="margin:0">Affiliate earnings by person</h2><span class="small muted">“Mark paid” after you've sent the money.</span></div>
         <div class="table-wrap" style="margin-top:.6rem"><table class="rtable"><thead><tr><th>Person</th><th>Invited by</th><th class="num">Recruits</th><th class="num">Owed</th><th class="num">All-time</th><th></th></tr></thead><tbody>
         ${adm.members.map((m) => `<tr class="${m.active ? '' : 'inactive'}"><td data-label="Person"><b>${esc(m.full_name)}</b><div class="small muted">${roleLabel(m.role)}${m.last_paid ? ` · last paid ${when(m.last_paid)}` : ''}</div></td>
-          <td data-label="Invited by"><select data-sponsor="${m.id}" style="width:auto;max-width:180px"><option value="">— nobody —</option>${adm.members.filter((x) => x.id !== m.id).map((x) => `<option value="${x.id}" ${m.sponsor_id === x.id ? 'selected' : ''}>${esc(x.full_name)}</option>`).join('')}</select></td>
+          <td data-label="Invited by"><select data-sponsor="${m.id}" aria-label="Invited by for ${esc(m.full_name)}" style="width:auto;max-width:180px"><option value="">— nobody —</option>${adm.members.filter((x) => x.id !== m.id).map((x) => `<option value="${x.id}" ${m.sponsor_id === x.id ? 'selected' : ''}>${esc(x.full_name)}</option>`).join('')}</select></td>
           <td data-label="Recruits" class="num">${m.recruits}</td><td data-label="Owed" class="num"><b class="${m.owed < 0 ? 'warn-text' : ''}">${usd(m.owed)}</b></td><td data-label="All-time" class="num">${usd(m.lifetime)}</td>
           <td class="actions">${m.owed > 0 ? `<button class="btn small" data-paid="${m.id}" data-name="${esc(m.full_name)}" data-amt="${m.owed}">Mark paid</button>${m.has_payout_details ? '' : '<div class="small warn-text">no payout details</div>'}` : ''}</td></tr>`).join('')}
         </tbody></table></div></div>
@@ -3598,9 +3703,9 @@
         ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
         <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
       </form>
-      <form class="card" id="notificationPrefsForm">
+      <form class="card narrow" id="notificationPrefsForm">
         <h2>Notification preferences</h2><p class="small muted">All events stay in your in-app bell. Choose email and phone push alerts by event. WhatsApp is available for urgent owner events only; its number and master switch are above.</p>
-        <div class="table-wrap"><table class="preferences-table"><thead><tr><th>Event</th><th>Email</th><th>Phone push</th><th>WhatsApp</th></tr></thead><tbody>${Object.entries({ordered:'Lead ordered',owner_mention:'Owner @mentioned',lead_updates:'Other status changes',assignments:'Assignments / entered for you',comments:'Comments / other mentions',new_leads:'New leads',reminders:'Reminders',escalations:'Waiting-lead alerts',coaching_review:'Coaching approvals',general:'Other alerts'}).map(([event,label])=>`<tr><td>${label}</td>${['email','push','whatsapp'].map((channel)=>`<td>${channel!=='whatsapp'||['ordered','owner_mention'].includes(event)?`<label class="pref-choice"><input type="checkbox" data-pref-event="${event}" data-pref-channel="${channel}" aria-label="${label} ${channel}" ${me.notification_preferences?.events?.[event]?.[channel]?'checked':''}></label>`:'<span class="muted" aria-label="Not sent on WhatsApp">—</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <div class="table-wrap"><table class="preferences-table"><thead><tr><th scope="col">Event</th><th scope="col">Email</th><th scope="col">Phone push</th><th scope="col">WhatsApp</th></tr></thead><tbody>${Object.entries({ordered:'Lead ordered',owner_mention:'Owner @mentioned',lead_updates:'Other status changes',assignments:'Assignments / entered for you',comments:'Comments / other mentions',new_leads:'New leads',reminders:'Reminders',escalations:'Waiting-lead alerts',coaching_review:'Coaching approvals',general:'Other alerts'}).map(([event,label])=>`<tr><th scope="row">${label}</th>${['email','push','whatsapp'].map((channel)=>{const channelLabel={email:'Email',push:'Phone push',whatsapp:'WhatsApp'}[channel];return `<td data-label="${channelLabel}">${channel!=='whatsapp'||['ordered','owner_mention'].includes(event)?`<label class="pref-choice"><input type="checkbox" data-pref-event="${event}" data-pref-channel="${channel}" aria-label="${label}: ${channelLabel}" ${me.notification_preferences?.events?.[event]?.[channel]?'checked':''}></label>`:'<span class="pref-unavailable muted" aria-label="Not sent on WhatsApp">—</span>'}</td>`;}).join('')}</tr>`).join('')}</tbody></table></div>
         <label class="check" style="margin-top:1rem"><input id="automaticCoaching" type="checkbox" ${me.notification_preferences?.automatic_coaching?'checked':''}> Opt in to automatic WhatsApp coaching check-ins</label><p class="small muted">Off by default. Manual check-ins and replies to questions you send still work. STOP / ALTO also pauses coaching.</p>
         <p id="prefsState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save notification preferences</button>
       </form>
@@ -3735,8 +3840,8 @@
       <div class="card" style="margin-bottom: 1.2rem;">
         <div class="row between">
           <div>
-            <h1 style="margin:0">Analytics &amp; Intelligence</h1>
-            <p class="muted small" style="margin:.2rem 0 0">Salesforce-inspired reporting engine, custom builder, and automated schedule deliveries.</p>
+            <h1 style="margin:0">Analytics &amp; reports</h1>
+            <p class="muted small" style="margin:.2rem 0 0">Track sales performance, build reports and schedule updates.</p>
           </div>
           <div class="seg" id="analyticsTabSeg">
             <button data-tab="overview" class="${activeTab === 'overview' ? 'on' : ''}">📊 Overview</button>
