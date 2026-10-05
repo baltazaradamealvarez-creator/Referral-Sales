@@ -161,7 +161,7 @@
 
   function subTabsHtml() {
     if (!inHub()) return '';
-    return `<nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}" ${hubActive(h) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+    return `<div class="hub-navigation"><nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}" ${hubActive(h) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav><div class="hub-picker"><label for="hubSection">${isAdmin() ? 'Admin' : 'Account'} section</label><select id="hubSection">${hubTabs().map(([h,l])=>`<option value="${h}" ${hubActive(h)?'selected':''}>${l}</option>`).join('')}</select></div></div>`;
   }
 
   // The phone tab bar shows these four; the rest go under "More".
@@ -296,7 +296,13 @@
     if (!e.target.closest('.menu') && !e.target.closest('.search') && !e.target.closest('.sheet') && !e.target.closest('[data-more]')) closeMenus();
   });
 
+  // Section shortcuts move focus without submitting or hiding an existing form.
+  function sectionLinks(items,label='On this page') {
+    return `<nav class="section-nav" aria-label="${esc(label)}"><span class="section-nav-label">${esc(label)}</span>${items.filter(Boolean).map(([id,name])=>`<button type="button" data-section-jump="${id}" aria-controls="${id}">${esc(name)}</button>`).join('')}</nav>`;
+  }
+  let shellResizeObserver=null;
   function shell(content, opts = {}) {
+    shellResizeObserver?.disconnect();
     const me = state.me;
     const links = navLinks();
     const theme = getTheme();
@@ -334,6 +340,17 @@
       </nav>
       <nav class="sheet" id="moreSheet" aria-label="More pages">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
         <a href="#/help"><span class="ti">❓</span><span>Help</span></a></nav>`;
+    const header=document.querySelector('.topbar');
+    const measureHeader=()=>document.documentElement.style.setProperty('--header-height',header.getBoundingClientRect().height+'px');
+    measureHeader();
+    if(window.ResizeObserver){shellResizeObserver=new ResizeObserver(measureHeader);shellResizeObserver.observe(header);}
+    const hubSection=document.getElementById('hubSection');
+    if(hubSection)hubSection.onchange=()=>{location.hash=hubSection.value;};
+    document.querySelectorAll('[data-section-jump]').forEach(button=>{button.onclick=()=>{
+      const target=document.getElementById(button.dataset.sectionJump);if(!target)return;
+      target.setAttribute('tabindex','-1');target.focus({preventScroll:true});
+      target.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    };});
     badges();
     // Keep the selected tab visible without scrolling the page away from its heading.
     for (const nav of document.querySelectorAll('.subtabs, .nav')) {
@@ -779,6 +796,7 @@
   const defaultScope = () => (seesAll() ? 'all' : isManager() ? 'team' : 'mine');
 
   async function renderReferrals() {
+    state.customerListRoute = location.hash;
     const params = query();
     const scope = params.scope || defaultScope();
     const [ppl, teams] = await Promise.all([people(), seesAll() ? api('/teams') : Promise.resolve([])]);
@@ -1085,10 +1103,10 @@
     const PRIORITIES = ['Low', 'Standard', 'High', 'Urgent'];
 
     shell(`
-      <p><a href="javascript:history.back()">← Back to list</a></p>
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${esc(state.customerListRoute || '#/referrals')}">Customers</a><span aria-hidden="true">/</span><span class="crumb-active">${esc(leadName(r))}</span></nav>
 
       <!-- Record Header Card -->
-      <div class="card" style="margin-bottom:1rem">
+      <div class="card customer-hero" style="margin-bottom:1rem">
         <div class="record-header">
           <div class="record-avatar">${initials(r.customer_name)}</div>
           <div class="record-title-block">
@@ -1139,10 +1157,11 @@
         <p id="recordActionState" class="small" role="status" aria-live="polite"></p>
       </div>
 
-      <div class="grid-2">
+      ${sectionLinks([['customerOverview','Overview'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerStatus','Status & order'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
+      <div class="grid-2 customer-layout">
         <!-- LEFT COLUMN: Detail Sections -->
         <div class="stack">
-          <div class="card">
+          <div class="card" id="customerOverview">
             ${editing ? `
               <form id="editForm">
                 <h2 style="margin-bottom:.8rem">Edit Record</h2>
@@ -1321,7 +1340,7 @@
           ${customerDocuments(r)}
 
           ${r.can_manage ? `
-          <div class="card">
+          <div class="card" id="customerStatus">
             <h2>Update Status</h2>
             <div class="seg" id="statusSeg" style="margin-bottom:.9rem">${STATUSES.map((s) => `<button data-s="${s}" class="${r.status === s ? 'on' : ''}">${s}</button>`).join('')}</div>
             <form id="acctForm" class="fix-grid" style="margin:0">
@@ -1344,7 +1363,7 @@
 
         <!-- RIGHT COLUMN: Activity Sidebar -->
         <div class="activity-sidebar">
-          <div class="card">
+          <div class="card" id="customerReminders">
             <h2>📞 Call-back reminder</h2>
             ${r.follow_up_at && !r.follow_up_sent ? `<p style="margin-top:0">Reminder set for <b>${esc(fullDate(r.follow_up_at))}</b>${r.follow_up_note ? ` — ${esc(r.follow_up_note)}` : ''}</p>` : '<p class="small muted" style="margin-top:0">Get a notification when it\'s time to call this customer back.</p>'}
             <div class="row fu-quick">${[['1h', 'In 1 hour'], ['t10', 'Tomorrow 10am'], ['t17', 'Tomorrow 5pm']].map(([k, l]) => `<button type="button" class="btn small" data-fu="${k}">${l}</button>`).join('')}</div>
@@ -1356,11 +1375,11 @@
             </form>
           </div>
 
-          <div class="card">
+          <div class="card" id="customerActivity">
             <h2>Activity Timeline</h2>
             <ul class="timeline">${r.history.map((h) => `<li><span>${fullDate(h.created_at)} — ${personLink(h.user_id,h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</span></li>`).join('')}</ul>
           </div>
-          <div class="card">
+          <div class="card" id="customerComments">
             <h2>Comments</h2>
             <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone. Use <b>@owner</b> or the owner’s username for an urgent WhatsApp alert, if they enabled it.</p>
             <div id="comments">${r.comments.length ? r.comments.map((c) => `
@@ -1379,7 +1398,14 @@
     // Section collapse toggles
     window.EnergyOptions?.bind({root:document.getElementById('energyOptions'),ref:r,api,esc,toast});
     document.querySelectorAll('[data-toggle-section]').forEach((hdr) => {
-      hdr.onclick = () => hdr.closest('.record-section').classList.toggle('collapsed');
+      const section=hdr.closest('.record-section'),fields=section.querySelector('.record-fields');
+      const control=document.createElement('button');control.type='button';control.className='section-toggle';
+      const heading=hdr.querySelector('h3'),chevron=hdr.querySelector('.section-chevron');
+      control.innerHTML=`<span>${esc(heading.textContent)}</span>`;control.append(chevron);
+      heading.replaceChildren(control);hdr.replaceChildren(heading);
+      fields.id='record-fields-'+section.dataset.section;
+      control.setAttribute('aria-controls',fields.id);control.setAttribute('aria-expanded','true');
+      control.onclick=()=>{const collapsed=section.classList.toggle('collapsed');control.setAttribute('aria-expanded',String(!collapsed));};
     });
 
     const editBtn = document.getElementById('editBtn');
@@ -2152,6 +2178,7 @@
     const shown = users.filter((u) => (filter === 'all' ? true : filter === 'inactive' ? !u.active : u.active));
 
     shell(`
+      ${tab==='users'?`<header class="page-heading"><div><p class="eyebrow">People</p><h1>${isAdmin()?'Users & teams':'My team'}</h1><p class="muted">Find a teammate, open their profile or manage access.</p></div><button type="button" class="btn primary" data-section-jump="addUser" aria-controls="addUser">Add ${isAdmin()?'a user':'a rep'}</button></header>`:''}
       ${flash ? `<div class="card flash">
         <div class="alert ok" style="margin-bottom:.6rem">${esc(flash.title)}</div>
         ${flash.emailed ? `<p style="margin:0">✉ We emailed the sign-in details to <b>${esc(flash.emailed)}</b>.</p>`
@@ -2298,9 +2325,10 @@
         <div style="margin-top:.9rem"><button class="btn primary">Save</button></div>
       </form>` : ''}
       ${tab === 'users' ? `
-      <div class="card">
+      <div class="card" id="peopleDirectory">
         <div class="row between"><h2 style="margin:0">${isAdmin() ? 'All users' : 'Team members'}</h2>
           <div class="seg" id="showSeg">${[['active', 'Active'], ['inactive', 'Deactivated'], ['all', 'All']].map(([k, l]) => `<button data-k="${k}" class="${filter === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="directory-search"><label for="peopleSearch">Find a person</label><input id="peopleSearch" type="search" placeholder="Search name, username, team or role…" autocomplete="off"><p id="peopleSearchCount" class="small muted" role="status" aria-live="polite"></p></div>
         <div class="table-wrap" style="margin-top:.6rem"><table class="rtable users-table">
           <thead><tr><th>Name</th><th>Role</th>${isAdmin() ? '<th>Team</th>' : ''}<th>Last active</th><th>Password changed</th><th class="num">Referrals</th><th class="num">Ordered</th><th></th></tr></thead>
           <tbody>${shown.map((u) => {
@@ -2309,8 +2337,8 @@
             const pwOld = !u.must_change_password && daysSince(u.password_changed_at) > 90;
             return `<tr class="${u.active ? '' : 'inactive'}">
               <td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
-                <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
-                <div class="small">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div></td>
+                <div class="small user-contact">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
+                <div class="small user-contact">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div><div class="user-mobile-summary small muted">${roleLabel(u.role)}${u.team_name?' · '+esc(u.team_name):''}<br>${u.referral_count} referrals · ${u.ordered_count} ordered</div><button type="button" class="user-row-toggle" data-user-details aria-expanded="false">Details & actions <span aria-hidden="true">⌄</span></button></td>
               <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" aria-label="Role for ${esc(u.full_name)}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
                 ${isAdmin() && ['rep', 'dispatch'].includes(u.role) ? `<label class="check small pay-toggle"><input type="checkbox" data-pay="${u.id}" ${u.payments_enabled ? 'checked' : ''}> Payments tab</label>` : ''}</td>
               ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" aria-label="Team for ${esc(u.full_name)}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
@@ -2326,6 +2354,24 @@
         </table></div>
       </div>` : ''}`);
 
+    const directory=document.getElementById('peopleDirectory');
+    if(directory){
+      const heading=document.querySelector('.page-heading'),flashCard=document.querySelector('.flash');
+      (flashCard || heading).after(directory);
+      const rows=[...directory.querySelectorAll('tbody tr')],search=document.getElementById('peopleSearch'),count=document.getElementById('peopleSearchCount');
+      const searchable=shown.map(u=>[u.full_name,u.username,u.team_name,roleLabel(u.role),u.email,u.whatsapp].filter(Boolean).join(' ').toLocaleLowerCase());
+      rows.forEach((row,index)=>{
+        const toggle=row.querySelector('[data-user-details]');if(!toggle)return;
+        const controls=[...row.querySelectorAll('td:not(:first-child), .user-contact')];
+        controls.forEach((control,n)=>{control.id=`person-${shown[index].id}-detail-${n}`;});
+        toggle.setAttribute('aria-controls',controls.map(c=>c.id).join(' '));
+        toggle.onclick=()=>{const open=row.classList.toggle('user-expanded');toggle.setAttribute('aria-expanded',String(open));toggle.innerHTML=open?'Hide details <span aria-hidden="true">⌃</span>':'Details & actions <span aria-hidden="true">⌄</span>';};
+      });
+      const filterPeople=()=>{const term=search.value.trim().toLocaleLowerCase();let visible=0;
+        rows.forEach((row,index)=>{const match=index<shown.length && (!term || searchable[index].includes(term));row.hidden=!match;if(match)visible++;});
+        count.textContent=visible?`${visible} ${visible===1?'person':'people'} shown`:'No people match. Try another name or change the status filter.';
+      };search.oninput=filterPeople;filterPeople();
+    }
     document.querySelectorAll('#showSeg button').forEach((b) => { b.onclick = () => { location.hash = `#/team?show=${b.dataset.k}`; }; });
     const copy = document.getElementById('copyPw');
     if (copy) copy.onclick = () => { navigator.clipboard?.writeText(flash.password); toast('Copied'); };
@@ -3781,10 +3827,12 @@
 
   async function renderPerson(id) {
     const data=await api(`/people/${id}`),p=data.person;
-    shell(`<div class="card profile-hero"><div class="profile-avatar" aria-hidden="true">${esc(p.full_name.split(/\s+/).map((n)=>n[0]).slice(0,2).join('').toUpperCase())}</div><div><h1 style="margin:0">${esc(p.full_name)}</h1><p class="muted">@${esc(p.username)} · ${roleLabel(p.role)}${p.team_name?' · '+esc(p.team_name):''}${p.active?'':' · Inactive'}</p>${p.id===state.me.id?'<a href="#/account">My account and preferences</a>':''}</div></div>
-      <p class="small muted">This wall shows only opportunities and activity you have permission to see.</p>
-      <div class="stats"><div class="stat"><div class="n">${data.summary.opportunities}</div><div class="l">Opportunities owned</div></div><div class="stat"><div class="n">${data.summary.open}</div><div class="l">Open</div></div><div class="stat"><div class="n">${data.summary.ordered}</div><div class="l">Ordered</div></div></div>
-      <div class="grid-2" style="margin-top:1rem"><div class="card"><h2>Activity wall</h2><ul class="timeline">${data.activity.map((a)=>`<li><span class="small muted">${esc(fullDate(a.created_at))}</span><p><a href="#/r/${a.referral_id}">${esc(a.customer_name)}</a> ${a.kind==='status'?a.from_status?`changed ${pill(a.from_status)} → ${pill(a.to_status)}`:'opportunity entered':`<span style="white-space:pre-wrap">${esc(a.body)}</span>`}</p></li>`).join('')||'<li class="muted">No visible activity yet.</li>'}</ul></div><div class="card"><h2>Owned opportunities</h2><div class="stack">${data.leads.map((r)=>`<div class="row between"><a href="#/r/${r.id}">${esc(r.name)}</a>${pill(r.status)}</div>`).join('')||'<p class="muted">No visible opportunities yet.</p>'}</div></div></div>`);
+    shell(`<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${managesUsers()?'#/team':'#/referrals'}">${managesUsers()?'People':'Customers'}</a><span aria-hidden="true">/</span><span class="crumb-active">${esc(p.full_name)}</span></nav>
+      <div class="card profile-hero"><div class="profile-avatar" aria-hidden="true">${esc(p.full_name.split(/\s+/).map(n=>n[0]).slice(0,2).join('').toUpperCase())}</div><div class="profile-identity"><p class="eyebrow">Team profile</p><h1>${esc(p.full_name)}</h1><p class="muted profile-handle">@${esc(p.username)}</p><div class="row"><span class="profile-chip">${roleLabel(p.role)}</span>${p.team_name?`<span class="profile-chip">${esc(p.team_name)}</span>`:''}${p.active?'':'<span class="profile-chip">Inactive</span>'}</div></div>${p.id===state.me.id?'<a class="btn small profile-account" href="#/account">Account & preferences</a>':''}</div>
+      <div class="stats profile-stats"><div class="stat"><div class="n">${data.summary.opportunities}</div><div class="l">Opportunities owned</div></div><div class="stat"><div class="n">${data.summary.open}</div><div class="l">Open opportunities</div></div><div class="stat"><div class="n">${data.summary.ordered}</div><div class="l">Ordered</div></div></div>
+      ${sectionLinks([['personActivity','Activity wall'],['personOpportunities','Owned opportunities']],'Profile sections')}
+      <div class="grid-2 profile-layout"><section class="card" id="personActivity"><h2>Activity wall</h2><p class="small muted">Activity on opportunities you can view.</p><ol class="person-feed">${data.activity.map(a=>`<li><div class="feed-marker" aria-hidden="true">${a.kind==='status'?'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 17 17 5M5 5h12v12"/></svg>':'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v12H9l-4 4V4Z"/></svg>'}</div><div class="feed-content"><p class="small muted">${esc(fullDate(a.created_at))}</p><a class="feed-customer" href="#/r/${a.referral_id}">${esc(a.customer_name)}</a><div class="feed-detail">${a.kind==='status'?a.from_status?`<span class="small muted">Status updated</span><div class="row">${pill(a.from_status)}<span aria-label="to">→</span>${pill(a.to_status)}</div>`:'<p class="small muted">Opportunity entered</p>':`<p class="feed-note">${esc(a.body)}</p>`}</div></div></li>`).join('')||'<li class="muted">No visible activity yet.</li>'}</ol></section>
+      <section class="card" id="personOpportunities"><h2>Owned opportunities</h2><p class="small muted">Open a customer to see details and follow up.</p><div class="opportunity-list">${data.leads.map(r=>`<a class="opportunity-row" href="#/r/${r.id}"><span><b>${esc(r.name)}</b><span class="small muted">Customer #${r.id}</span></span>${pill(r.status)}<span aria-hidden="true" class="opportunity-arrow">›</span></a>`).join('')||'<p class="muted">No visible opportunities yet.</p>'}</div></section></div>`);
   }
 
   async function renderAccount() {
