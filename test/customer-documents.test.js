@@ -139,3 +139,45 @@ test('v24 migration preserves existing orders and document bytes survive a reope
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
   } finally {db?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('managers explicitly confirm mismatched customer PDFs; sellers cannot and contact data stays intact',async t=>{
+  const {db,a,manager,rep,customer}=await setup(t),lead=await customer('Richard Williams','5125550133');
+  const route=`/referrals/${lead.id}/documents`;
+  const saved=await manager.c.post(route,upload(pdf(orderLines()),true));
+  const doc=saved.body.document;assert.equal(doc.status,'review');assert.equal(doc.can_confirm,true);
+  assert.deepEqual(doc.conflicts.map(c=>c.key),['phone','name']);assert.equal(doc.conflicts[0].saved,lead.phone);
+  const applyRoute=route+'/'+doc.id+'/apply';
+  assert.equal((await rep.c.post(applyRoute,{confirm_customer:true})).status,403);
+  assert.equal((await a.post(applyRoute,{confirm_customer:'yes'})).status,400);
+  assert.equal((await manager.c.post(applyRoute)).body.document.status,'review');
+  const accepted=await manager.c.post(applyRoute,{confirm_customer:true});assert.equal(accepted.body.document.status,'applied');
+  const r=(await a.get(`/referrals/${lead.id}`)).body;assert.equal(r.status,'Ordered');assert.equal(r.customer_name,'Richard Williams');assert.equal(r.phone,lead.phone);assert.equal(r.account_number,'123456789012');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM audit_logs WHERE action='document.confirm_customer'").get().n,1);
+});
+
+test('customer confirmation never bypasses conflicting accounts, duplicate accounts or quote checks',async t=>{
+  const {a,manager,customer}=await setup(t),lead=await customer('Richard Williams','5125550133');
+  const other=await customer('Another Customer','5125550134');
+  await a.patch(`/referrals/${other.id}`,{account_number:'123456789012'});
+  const route=`/referrals/${lead.id}/documents`;
+  let doc=(await manager.c.post(route,upload(pdf(orderLines()),true))).body.document;
+  let result=await manager.c.post(route+'/'+doc.id+'/apply',{confirm_customer:true});assert.equal(result.body.document.status,'review');assert.match(result.body.document.detail,/another customer/);
+  await a.patch(`/referrals/${other.id}`,{account_number:''});await a.patch(`/referrals/${lead.id}`,{account_number:'999999999999'});
+  result=await manager.c.post(route+'/'+doc.id+'/apply',{confirm_customer:true});assert.match(result.body.document.detail,/Account number conflicts/);
+  await a.patch(`/referrals/${lead.id}`,{account_number:''});
+  doc=(await manager.c.post(route,upload(pdf(orderLines('Maria Lopez',['Quote only'])),true))).body.document;
+  result=await manager.c.post(route+'/'+doc.id+'/apply',{confirm_customer:true});assert.match(result.body.document.detail,/quote/);
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.status,'New');
+});
+
+test('admins can recover retained PDFs from old WhatsApp review entries without applying order data',async t=>{
+  const {db,a,manager,customer}=await setup(t),lead=await customer('Richard Williams','5125550133'),bytes=pdf(orderLines());
+  db.prepare(`INSERT INTO wa_order_documents(chat,message_id,filename,author,referral_id,status,pdf_data) VALUES('quiet','old-pdf','Old.pdf','Spectrum participant',?,'review',?)`).run(lead.id,bytes);
+  const route='/whatsapp/documents/1/attach';assert.equal((await manager.c.post(route)).status,403);
+  const recovered=await a.post(route);assert.equal(recovered.status,200,JSON.stringify(recovered.body));
+  let r=(await a.get(`/referrals/${lead.id}`)).body;assert.equal(r.documents.length,1);assert.equal(r.documents[0].status,'review');assert.equal(r.status,'New');
+  assert.deepEqual((await a.get(`/referrals/${lead.id}/documents/${r.documents[0].id}`)).bytes,bytes);
+  assert.equal((await a.post(route)).body.document_id,recovered.body.document_id);
+  assert.equal(db.prepare('SELECT pdf_data FROM wa_order_documents WHERE id=1').get().pdf_data,null);
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents.length,1);
+});

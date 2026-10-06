@@ -33,7 +33,8 @@ function mount(app,db,{requireUser,requireRole,wrap,awrap,HttpError,getReferral,
   function view(user,ref,doc) {
     const {content,sha256,...row}=doc;
     const fields=JSON.parse(row.fields || '{}');
-    return {...row,fields,can_delete:deleteAllowed(user,ref,doc),
+    const conflicts=pdf.customerConflicts(fields,ref);
+    return {...row,fields,conflicts,can_confirm:canManageReferral(user,ref) && doc.status==='review' && !!fields.account_number && conflicts.length>0 && !pdf.orderPatch(fields,ref,{confirmCustomer:true}).issue,can_delete:deleteAllowed(user,ref,doc),
       can_apply:canManageReferral(user,ref) && !!fields.account_number && doc.status!=='applied'};
   }
   function list(user,ref) {
@@ -54,15 +55,15 @@ function mount(app,db,{requireUser,requireRole,wrap,awrap,HttpError,getReferral,
   function outcome(id,status,detail) {
     db.prepare('UPDATE customer_documents SET status=?,detail=? WHERE id=?').run(status,String(detail).slice(0,500),id);
   }
-  function apply(user,ref,doc,result) {
+  function apply(user,ref,doc,result,confirmCustomer=false) {
     if(!canViewReferral(user,ref) || !canManageReferral(user,ref))throw new HttpError(403,'Only dispatch, a manager or an admin can apply order details.');
     const duplicate=result.fields.account_number && db.prepare("SELECT id FROM referrals WHERE replace(replace(account_number,'-',''),' ','')=? AND id<>?").get(result.fields.account_number,ref.id);
-    const patch=pdf.orderPatch(result.fields,ref), issue=result.issue || patch.issue || (duplicate?'This account number is already linked to another customer.':'');
+    const patch=pdf.orderPatch(result.fields,ref,{confirmCustomer}), issue=result.issue || patch.issue || (duplicate?'This account number is already linked to another customer.':'');
     if(issue){outcome(doc.id,'review',issue);return get(doc.id);}
     try {
       updateReferral(user,ref.id,patch.body);
       outcome(doc.id,'applied','Order details saved and customer marked Ordered.');
-      logAudit({user,ip:'app'},'document.apply','referral',ref.id,doc.filename);
+      logAudit({user,ip:'app'},confirmCustomer?'document.confirm_customer':'document.apply','referral',ref.id,doc.filename);
     } catch(error) {
       outcome(doc.id,'review',error.status===409?'Order details match another existing customer. Review before applying.':error.status?error.message:'Order details could not be saved.');
     }
@@ -99,18 +100,35 @@ function mount(app,db,{requireUser,requireRole,wrap,awrap,HttpError,getReferral,
     const {doc}=accessible(req);sendPdf(res,doc.content,doc.filename,req.query.view==='1');
   }));
   app.post('/api/referrals/:id/documents/:documentId/apply',awrap(async req=>{
+    if(req.body?.confirm_customer!==undefined && typeof req.body.confirm_customer!=='boolean')throw new HttpError(400,'Confirm the customer explicitly.');
     let {user,ref,doc}=accessible(req);
     if(!canManageReferral(user,ref))throw new HttpError(403,'Only dispatch, a manager or an admin can apply order details.');
     const result=await inspect(doc.content);
     user=fresh(user);ref=getReferral(ref.id);doc=get(doc.id);
     if(!doc || !canViewReferral(user,ref))throw new HttpError(404,'PDF not found.');
-    return {document:view(user,ref,apply(user,ref,doc,result))};
+    return {document:view(user,ref,apply(user,ref,doc,result,req.body?.confirm_customer===true))};
   }));
   app.delete('/api/referrals/:id/documents/:documentId',wrap(req=>{
     const {user,ref,doc}=accessible(req);
     if(!deleteAllowed(user,ref,doc))throw new HttpError(403,'Only the uploader, dispatch or a manager can remove this PDF.');
     db.prepare('DELETE FROM customer_documents WHERE id=?').run(doc.id);
     logAudit(req,'document.delete','referral',ref.id,doc.filename);return {ok:true};
+  }));
+  app.post('/api/whatsapp/documents/:documentId/attach',awrap(async req=>{
+    let user=requireRole(req,'admin');
+    let row=db.prepare('SELECT * FROM wa_order_documents WHERE id=?').get(req.params.documentId);
+    if(!row || row.test_id || !row.referral_id)throw new HttpError(400,'This PDF needs a linked customer first.');
+    if(row.document_id)return {referral_id:row.referral_id,document_id:row.document_id};
+    if(!row.pdf_data)throw new HttpError(404,'Original PDF is unavailable. Upload it on the customer profile.');
+    const result=await inspect(row.pdf_data);
+    user=fresh(user);if(user.role!=='admin')throw new HttpError(403,'Only an admin can recover a WhatsApp PDF.');
+    row=db.prepare('SELECT * FROM wa_order_documents WHERE id=?').get(req.params.documentId);
+    if(!row || !row.pdf_data || !row.referral_id || row.test_id)throw new HttpError(409,'PDF activity changed. Refresh and try again.');
+    const ref=getReferral(row.referral_id),saved=save(user,ref,row.pdf_data,row.filename,result,'whatsapp').document;
+    if(saved.status!=='applied')outcome(saved.id,'review',result.issue || pdf.orderPatch(result.fields,ref).issue || 'Original PDF recovered. Review before applying order details.');
+    db.prepare('UPDATE wa_order_documents SET document_id=?,pdf_data=NULL WHERE id=?').run(saved.id,row.id);
+    logAudit({user,ip:'app'},'document.recover','referral',ref.id,row.filename);
+    return {referral_id:ref.id,document_id:saved.id};
   }));
   app.get('/api/whatsapp/documents/:documentId/pdf',wrap((req,res)=>{
     requireRole(req,'admin');

@@ -276,12 +276,16 @@ function mount(app, db, deps) {
       const patch=orderPdf.orderPatch(fields,ref);
       const conflict=result.issue || patch.issue;
       const duplicate=!test && fields.account_number && db.prepare("SELECT id FROM referrals WHERE replace(replace(account_number,'-',''),' ','')=? AND id<>?").get(fields.account_number,ref.id);
-      // A document naming a different customer stays in the admin review queue.
-      // Other linked PDFs, including unreadable scans, remain available on the profile.
-      if(!test && !duplicate && !/customer details conflict/i.test(patch.issue || '')) {
+      // A direct reply explicitly associates the file with this lead. Preserve
+      // its original for review even when order fields cannot be applied.
+      // Unquoted uncertain matches stay in admin review.
+      if(!test && (quoted?.referral_id===ref.id || (!duplicate && !patch.issue))) {
         attachment=documents.save(current,ref,data,filename,result,'whatsapp').document;
         db.prepare('UPDATE wa_order_documents SET document_id=?,pdf_data=NULL WHERE chat=? AND message_id=?').run(attachment.id,m.chat,m.id);
       }
+      if(attachment?.status==='applied' && ref.status==='Ordered' && !result.issue && !duplicate &&
+        fields.account_number===String(ref.account_number).replace(/[\s-]/g,''))
+        return finish('applied','This PDF is already saved on the confirmed order.');
       if(conflict || duplicate) {
         const reason=conflict || 'This account number is already linked to another CRM lead.';
         if(attachment)documents.outcome(attachment.id,'review',reason);

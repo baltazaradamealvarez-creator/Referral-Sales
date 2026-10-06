@@ -1043,8 +1043,9 @@
         <p class="small document-state ${d.status==='review'?'err-text':''}"><b>${esc({attached:'Attached',applied:'Order details saved',review:'Needs review'}[d.status] || d.status)}</b> · ${esc(d.detail)}</p>
         <div class="row"><a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}?view=1" target="_blank" rel="noopener" aria-label="Open ${esc(d.filename)}">Open PDF</a>
           <a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}" aria-label="Download ${esc(d.filename)}">Download</a>
-          ${d.can_apply ? `<button type="button" class="btn small" data-apply-document="${d.id}">Apply order details</button>` : ''}
+          ${d.can_apply && !d.can_confirm ? `<button type="button" class="btn small" data-apply-document="${d.id}">Apply order details</button>` : ''}${d.can_confirm ? `<button type="button" class="btn small" data-confirm-document="${d.id}">Confirm this customer’s order</button>` : ''}
           ${d.can_delete ? `<button type="button" class="btn small" data-delete-document="${d.id}" aria-label="Remove ${esc(d.filename)}">Remove</button>` : ''}</div>
+        ${d.status!=='applied' && d.conflicts?.length ? `<div class="document-comparison"><h3>Customer differences</h3>${d.conflicts.map(c=>`<div><b>${esc(DOCUMENT_LABELS[c.key] || c.key)}</b><p><span class="muted">CRM:</span> ${esc(c.saved)}</p><p><span class="muted">PDF:</span> ${esc(c.incoming)}</p></div>`).join('')}<p class="small muted">Review the original PDF. A manager can confirm it belongs to this customer; saved contact details will be preserved.</p></div>`:''}
         ${Object.keys(d.fields || {}).length ? `<details><summary class="small">Extracted order details</summary><dl class="document-fields small">${documentFields(d.fields)}</dl></details>` : ''}</article>`).join('') : '<p class="small muted">No PDFs attached yet.</p>'}</div>
       <form id="documentUploadForm"><div class="field"><label for="customerPdf">Attach a PDF (up to 5 MB)</label><input type="file" id="customerPdf" accept="application/pdf,.pdf" required></div>
         ${r.can_manage ? '<label class="check"><input type="checkbox" id="documentApply" checked> Save order details and mark Ordered</label>' : '<p class="small muted">Dispatch or your manager can apply the extracted order details.</p>'}
@@ -1068,6 +1069,12 @@
       button.disabled=true;button.textContent='Applying…';
       try{const result=await api(`/referrals/${r.id}/documents/${button.dataset.applyDocument}/apply`,{method:'POST',body:{}});toast(result.document.status==='applied' ? 'Order details saved' : result.document.detail);await renderReferral(r.id);}
       catch(error){feedback.textContent=error.message;button.disabled=false;button.textContent='Apply order details';}
+    };});
+    document.querySelectorAll('[data-confirm-document]').forEach(button=>{button.onclick=async()=>{
+      if(!confirm(`Have you reviewed the differences and confirmed this PDF belongs to ${r.customer_name}? This will save the order details and mark Ordered. Existing contact details will be preserved.`))return;
+      button.disabled=true;
+      try{const result=await api(`/referrals/${r.id}/documents/${button.dataset.confirmDocument}/apply`,{method:'POST',body:{confirm_customer:true}});toast(result.document.status==='applied'?'Order confirmed and saved':result.document.detail);await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;}
     };});
     document.querySelectorAll('[data-delete-document]').forEach(button=>{button.onclick=async()=>{
       if(!confirm('Remove this PDF from the customer? Saved customer and order details will remain.'))return;
@@ -1727,7 +1734,7 @@
         <h3 class="wa-h3">Order PDF activity</h3>
         <p class="small muted">Text-based PDFs up to 5 MB and 20 pages are read inside the app. Scans, password protection, missing account numbers and conflicting customer details need review. Existing customer details are preserved. Unquoted documents must match one permitted lead posted in the same group.</p>
         <button type="button" class="btn small" id="waRefreshDocuments">Refresh PDF activity</button>
-        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div>${d.has_pdf ? `<p class="small"><a href="/api/whatsapp/documents/${d.id}/pdf?view=1" target="_blank" rel="noopener">Open PDF</a> · <a href="/api/whatsapp/documents/${d.id}/pdf">Download PDF</a></p>` : ''}<p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${documentFields(d.fields)}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
+        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div>${d.has_pdf ? `<p class="small"><a href="/api/whatsapp/documents/${d.id}/pdf?view=1" target="_blank" rel="noopener">Open PDF</a> · <a href="/api/whatsapp/documents/${d.id}/pdf">Download PDF</a></p>` : ''}<p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${d.has_pdf && !d.document_id && d.referral_id && !d.test_id ? `<button type="button" class="btn small" data-recover-document="${d.id}">Attach for review</button>`:''}${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${documentFields(d.fields)}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
       box.querySelector('#waQuietAccess').onchange=async e=>{
         const select=e.target;select.disabled=true;
         try{await api('/whatsapp/settings',{method:'PATCH',body:{quiet_access:select.value}});toast(select.value==='everyone' ? 'Everyone in the Spectrum quiet group can update posted leads' : 'Quiet group access limited to selected numbers');await drawWaLink();}
@@ -1743,6 +1750,11 @@
         button.disabled=true;
         try{await api('/whatsapp/partners/'+button.dataset.revokePartner,{method:'DELETE'});toast('Update access removed');await drawQuietAutomation(s);}
         catch(err){toast(err.message);button.disabled=false;}
+      };});
+      box.querySelectorAll('[data-recover-document]').forEach(button=>{button.onclick=async()=>{
+        button.disabled=true;
+        try{const result=await api(`/whatsapp/documents/${button.dataset.recoverDocument}/attach`,{method:'POST',body:{}});toast('PDF attached for review');location.hash=`#/r/${result.referral_id}`;}
+        catch(error){toast(error.message);button.disabled=false;}
       };});
       box.querySelector('#waRefreshDocuments').onclick=()=>drawQuietAutomation(s);
     } catch(err) {if(document.getElementById('waQuietAutomation')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}

@@ -164,23 +164,27 @@ function sameAddress(fields,ref) {
   return !!a.street && a.street===b.street && !(a.zip && zip && a.zip!==zip);
 }
 function identityMatches(fields,ref) {
-  const phone=fields.phone && normalizePhone(ref.phone)===fields.phone,
+  const phone=fields.phone && [ref.phone,ref.alt_phone].some(value=>normalizePhone(value)===normalizePhone(fields.phone)),
     email=fields.email && normalizeEmail(ref.email)===fields.email,
     address=fields.address && sameAddress(fields,ref),
     name=fields.name && norm(ref.customer_name)===norm(fields.name);
   return !!(phone || email || address || name);
 }
-function orderPatch(fields,ref) {
+function customerConflicts(fields,ref) {
+  const conflicts=[];
+  const add=(key,saved,incoming)=>conflicts.push({key,saved,incoming});
+  if(fields.phone && ref.phone && ![ref.phone,ref.alt_phone].some(value=>normalizePhone(value)===normalizePhone(fields.phone)))add('phone',ref.phone,fields.phone);
+  if(fields.email && ref.email && normalizeEmail(fields.email)!==normalizeEmail(ref.email))add('email',ref.email,fields.email);
+  if(fields.address && ref.address && !sameAddress(fields,ref))add('address',ref.address,fields.address);
+  if(fields.name && ref.customer_name && norm(fields.name)!==norm(ref.customer_name) && !identityMatches({...fields,name:undefined,address:undefined},ref))add('name',ref.customer_name,fields.name);
+  return conflicts;
+}
+function orderPatch(fields,ref,{confirmCustomer=false}={}) {
   if(ref.archived_at)return {issue:'This lead is archived. Review before applying an order.'};
   if(['DNQ','Cancelled'].includes(ref.status))return {issue:'This lead is closed without an order. Review before reopening it.'};
   if(ref.account_number && norm(ref.account_number)!==norm(fields.account_number))return {issue:'Account number conflicts with the saved CRM account.'};
-  // A matching phone/email permits a name spelling difference, but a different
-  // labeled phone or email is never silently attached to a quoted customer.
-  if((fields.phone && ref.phone && fields.phone!==normalizePhone(ref.phone)) ||
-     (fields.email && ref.email && fields.email!==normalizeEmail(ref.email)) ||
-     (fields.address && ref.address && !sameAddress(fields,ref)) ||
-     (fields.name && ref.customer_name && norm(fields.name)!==norm(ref.customer_name) && !identityMatches({...fields,name:undefined,address:undefined},ref)))
-    return {issue:'PDF customer details conflict with this lead.'};
+  const conflicts=customerConflicts(fields,ref);
+  if(conflicts.length && !confirmCustomer)return {issue:'PDF customer details conflict with this lead: '+conflicts.map(c=>c.key).join(', ')+'. Compare the PDF with the saved customer details.',conflicts};
   const body={status:'Ordered',account_number:fields.account_number};
   for(const key of ['order_number','order_reference','delivery_date','initial_payment'])
     if(fields[key]!=null && fields[key]!=='' && (ref[key]==null || ref[key]===''))body[key]=fields[key];
@@ -193,4 +197,4 @@ function orderPatch(fields,ref) {
   return {body};
 }
 
-module.exports={MAX_BYTES,extractText,parseOrder,readOrder,downloadPdf,identityMatches,orderPatch};
+module.exports={MAX_BYTES,extractText,parseOrder,readOrder,downloadPdf,identityMatches,customerConflicts,orderPatch};

@@ -1273,3 +1273,7 @@ input, select, textarea { min-width: 0; }
   /* Keep form fields readable and prevent automatic zoom when typing on iPhone. */
   input:not([type=checkbox]):not([type=radio]), select:not([multiple]), textarea:not([hidden]) { font-size: 16px; }
 }
+
+.document-comparison { margin: .8rem 0; padding: .8rem; background: var(--warn-soft); border-radius: 8px; overflow-wrap: anywhere; }
+.document-comparison h3 { font-size: .9rem; }
+.document-comparison > div { padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .85rem; }

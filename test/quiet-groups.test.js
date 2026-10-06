@@ -589,7 +589,7 @@ test('everyone mode applies to isolated Spectrum test replies and PDFs without r
   assert.equal((await a.patch('/whatsapp/settings',{quiet_access:'anything'})).status,400);
 });
 
-test('Spectrum PDFs silently attach to the customer profile while conflicting customers remain in admin review',async t=>{
+test('Spectrum PDFs silently attach to the customer profile and direct-reply conflicts remain attached for review',async t=>{
   const {pdf,spectrumLines}=require('./fixtures/order-pdf');
   const {db,a,wa,makeUser,settle,say}=await setup(t,{access:'default'});
   const seller=await makeUser('seller','rep','15125550142');
@@ -611,8 +611,11 @@ test('Spectrum PDFs silently attach to the customer profile while conflicting cu
   assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents.length,1,'repeated document bytes do not duplicate attachments');
   const wrongBytes=pdf(spectrumLines().map(line=>line==='5128675309'?'5125550199':line));
   assert.equal(await say('',{...member,document:{filename:'OtherCustomer.pdf',download:async()=>wrongBytes}}),'quiet_pdf_review');
-  activity=(await a.get('/whatsapp/documents')).body[0];assert.equal(activity.document_id,null);assert.equal(activity.has_pdf,1);
+  activity=(await a.get('/whatsapp/documents')).body[0];assert.ok(activity.document_id);assert.equal(activity.has_pdf,1);
   assert.deepEqual((await a.raw(`/whatsapp/documents/${activity.id}/pdf`)).body,wrongBytes);
-  assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents.length,1,'a different customer is never silently attached');
+  const reviewed=(await a.get(`/referrals/${lead.id}`)).body;assert.equal(reviewed.documents.length,2,'a direct reply keeps the original attached for review');assert.equal(reviewed.documents[0].status,'review');assert.equal(reviewed.documents[0].conflicts[0].key,'phone');assert.equal(reviewed.phone,r.phone,'conflicting PDF cannot replace the customer phone');
+  const confirmed=await a.post(`/referrals/${lead.id}/documents/${activity.document_id}/apply`,{confirm_customer:true});assert.equal(confirmed.body.document.status,'applied');
+  assert.equal(await say('',{...member,document:{filename:'OtherCustomer.pdf',download:async()=>wrongBytes}}),'quiet_pdf_applied');
+  assert.equal((await a.get(`/referrals/${lead.id}`)).body.documents[0].status,'applied','resending an already confirmed PDF cannot reopen its customer conflict');
   assert.equal(wa.sent.length,sent);assert.equal(wa.reacts.length,0,'PDF processing has no response or reaction in the quiet group');
 });

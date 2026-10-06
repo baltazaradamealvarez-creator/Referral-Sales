@@ -66,3 +66,14 @@ test('common dispatch phrases describe stages without guessing questions, future
     'will be confirmed tomorrow','appointment confirmed','address confirmed','waiting for account to be confirmed'])
     assert.deepEqual(detectStatus(phrase),{},phrase);
 });
+
+test('PDF matching accepts saved alternate phones and normalized formatting, and explains actual differences',()=>{
+  const {customerConflicts}=require('../src/whatsapp-order-pdf');
+  const fields=parseOrder(orderLines().join('\n')).fields;
+  const ref={customer_name:'MARIA LOPEZ',phone:'5125550142',alt_phone:'+1 (512) 867-5309',address:'1010 Ogden Avenue, Dallas TX 75211-1234',status:'Working'};
+  assert.deepEqual(customerConflicts(fields,ref),[]);assert.equal(orderPatch(fields,ref).body.status,'Ordered');
+  const changed={...fields,email:'new@gmail.com',address:'1011 Ogden Ave, Dallas TX 75211'};
+  const conflicts=customerConflicts(changed,{...ref,email:'old@gmail.com'});
+  assert.deepEqual(conflicts.map(c=>c.key),['email','address']);assert.equal(conflicts[0].incoming,'new@gmail.com');
+  assert.match(orderPatch(changed,{...ref,email:'old@gmail.com'}).issue,/email, address/);
+});
