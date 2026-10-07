@@ -22,8 +22,30 @@
   --s-ordered: #1e7d3a;
   --s-cancelled: #b3261e;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
-  --radius: 12px;
+  --radius: 16px;
   color-scheme: light;
+}
+
+/* Shared surface and control tokens. Solid surfaces remain the fallback. */
+:root {
+  --glass-panel: var(--surface);
+  --glass-chrome: var(--surface);
+  --glass-popover: var(--surface);
+  --control-fill: var(--surface);
+  --control-border: var(--border);
+  --glass-edge: rgb(255 255 255 / 14%);
+  --glass-sheen: linear-gradient(155deg, rgb(255 255 255 / 12%), rgb(255 255 255 / 0%) 60%);
+  --control-shadow: 0 1px 2px rgb(16 24 40 / 4%), inset 0 1px 0 var(--glass-edge);
+  --panel-shadow: 0 4px 20px rgb(16 24 40 / 4%), 0 1px 3px rgb(16 24 40 / 3%);
+}
+@supports (color: color-mix(in srgb, white, transparent)) {
+  :root {
+    --glass-panel: color-mix(in srgb, var(--surface) 95%, transparent);
+    --glass-chrome: color-mix(in srgb, var(--surface) 86%, transparent);
+    --glass-popover: color-mix(in srgb, var(--surface) 87%, transparent);
+    --control-fill: color-mix(in srgb, var(--surface) 88%, transparent);
+    --control-border: color-mix(in srgb, var(--border) 86%, var(--surface));
+  }
 }
 .coach-draft { padding: 1rem 0; border-top: 1px solid var(--border); min-width: 0; }
 .coach-draft p { overflow-wrap: anywhere; }
@@ -86,7 +108,7 @@ html, body { margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 a { color: var(--brand); text-decoration: none; }
@@ -1331,3 +1353,200 @@ input, select, textarea { min-width: 0; }
 .document-comparison { margin: .8rem 0; padding: .8rem; background: var(--warn-soft); border-radius: 8px; overflow-wrap: anywhere; }
 .document-comparison h3 { font-size: .9rem; }
 .document-comparison > div { padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+
+/* Consistent glass controls and restrained depth across the workspace. */
+body {
+  background-image: radial-gradient(ellipse at 10% 0%, color-mix(in srgb, var(--brand) 7%, transparent), transparent 55%),
+    radial-gradient(ellipse at 95% 10%, color-mix(in srgb, var(--s-working) 4%, transparent), transparent 45%);
+  background-attachment: fixed;
+}
+.card, .report-config-panel, .report-preview-panel {
+  background-color: var(--glass-panel);
+  border-color: var(--control-border);
+  box-shadow: var(--panel-shadow), inset 0 1px 0 var(--glass-edge);
+}
+.topbar, .tabbar, .section-nav {
+  background: var(--glass-chrome);
+  border-color: var(--control-border);
+  box-shadow: 0 1px 10px rgb(16 24 40 / 3%), inset 0 1px 0 var(--glass-edge);
+}
+.menu-pop, .search-results, .sheet, .modal, .addr-suggest {
+  background-color: var(--glass-popover);
+  background-image: var(--glass-sheen);
+  border-color: var(--control-border);
+  box-shadow: 0 18px 48px rgb(8 20 40 / 14%), inset 0 1px 0 var(--glass-edge);
+}
+@supports ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
+  .topbar, .tabbar, .section-nav, .menu-pop, .search-results, .sheet, .modal {
+    -webkit-backdrop-filter: blur(16px) saturate(135%);
+    backdrop-filter: blur(16px) saturate(135%);
+  }
+}
+input:not(:where([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])),
+select, textarea {
+  border-radius: 12px;
+  border-color: var(--control-border);
+  background-color: var(--control-fill);
+  box-shadow: var(--control-shadow);
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+select:not([multiple]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-inline-end: 2.6rem;
+  background-image: url('/brand/chevron-down.svg'), var(--glass-sheen);
+  background-position: right .9rem center, center;
+  background-size: 16px 16px, 100% 100%;
+  background-repeat: no-repeat;
+  min-height: 44px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+select option, select optgroup { background-color: var(--surface); color: var(--text); }
+.dash-filters select, .sf-filter-controls select { padding-inline-end: 2.6rem; }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: .85; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):enabled:hover,
+select:enabled:hover, textarea:enabled:hover {
+  border-color: color-mix(in srgb, var(--brand) 35%, var(--border));
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--brand);
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--brand) 10%, transparent), var(--control-shadow);
+}
+select:disabled, input:disabled, textarea:disabled {
+  cursor: not-allowed;
+  opacity: .65;
+  background-color: var(--surface-2);
+  box-shadow: none;
+}
+input[type="file"]::file-selector-button {
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: .45rem .7rem;
+  margin-inline-end: .7rem;
+  font: inherit;
+  cursor: pointer;
+}
+.btn {
+  border-radius: 12px;
+  background-color: var(--control-fill);
+  background-image: var(--glass-sheen);
+  border-color: var(--control-border);
+  box-shadow: var(--control-shadow);
+}
+.btn.small { border-radius: 10px; }
+.btn.primary {
+  background-color: var(--brand);
+  background-image: linear-gradient(160deg, color-mix(in srgb, var(--brand) 88%, white), var(--brand));
+  border-color: var(--brand);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--brand) 18%, transparent), inset 0 1px 0 rgb(255 255 255 / 18%);
+}
+.btn:not(:disabled):active { box-shadow: inset 0 1px 3px rgb(16 24 40 / 12%); }
+.seg, .analytics-nav {
+  border: 1px solid var(--control-border);
+  background-color: var(--surface-2);
+  border-radius: 13px;
+  box-shadow: inset 0 1px 2px rgb(16 24 40 / 3%);
+}
+.seg button.on, .analytics-nav button.active {
+  background-image: var(--glass-sheen);
+  box-shadow: 0 2px 5px rgb(16 24 40 / 6%), inset 0 1px 0 var(--glass-edge);
+}
+.nav a, .subtabs a, .section-nav button, .settings-link { border-radius: 10px; }
+.menu-pop a, .menu-pop button, .sheet a { border-radius: 10px; }
+.kcard { border-radius: 13px; border-color: var(--control-border); box-shadow: var(--control-shadow); }
+.kcard:hover { box-shadow: 0 4px 12px rgb(16 24 40 / 7%); }
+
+/* A browser-owned, styleable picker on supporting desktops. Mobile and older browsers
+   retain their native select behavior and accessibility, with the closed-control finish. */
+@supports (appearance: base-select) {
+  @media (hover: hover) and (pointer: fine) and (min-width: 900px) {
+    select:not([multiple]), select:not([multiple])::picker(select) { appearance: base-select; }
+    select:not([multiple]) {
+      background-image: var(--glass-sheen);
+      background-position: center;
+      background-size: 100% 100%;
+      padding-inline-end: .8rem;
+      align-items: center;
+      gap: .5rem;
+    }
+    select:not([multiple]) > .select-value {
+      display: flex;
+      flex: 1;
+      align-items: center;
+      min-width: 0;
+      border: 0;
+      padding: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+    }
+    select:not([multiple]) selectedcontent {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    select:not([multiple])::picker-icon {
+      content: '';
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      background: url('/brand/chevron-down.svg') center / 16px 16px no-repeat;
+      transition: transform .16s ease;
+    }
+    select:not([multiple]):open::picker-icon { transform: rotate(180deg); }
+    select:not([multiple]):open { border-color: var(--brand); }
+    select:not([multiple])::picker(select) {
+      background: var(--glass-popover);
+      background-image: var(--glass-sheen);
+      border: 1px solid var(--control-border);
+      border-radius: 16px;
+      padding: .4rem;
+      margin-block-start: .45rem;
+      box-shadow: 0 16px 40px rgb(8 20 40 / 16%), inset 0 1px 0 var(--glass-edge);
+      max-height: min(360px, 55dvh);
+      overflow-y: auto;
+      -webkit-backdrop-filter: blur(16px) saturate(130%);
+      backdrop-filter: blur(16px) saturate(130%);
+    }
+    select:not([multiple]) option {
+      background: transparent;
+      min-height: 42px;
+      padding: .6rem .75rem;
+      border-radius: 10px;
+      font: inherit;
+      white-space: normal;
+      gap: .65rem;
+    }
+    select:not([multiple]) option:is(:hover,:focus) { background: var(--surface-2); outline: none; }
+    select:not([multiple]) option:checked { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+    select:not([multiple]) option:disabled { color: var(--muted); opacity: .65; }
+    select:not([multiple]) option::checkmark { color: var(--brand); margin-inline-start: auto; order: 2; }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  input, select, textarea, select::picker-icon { transition: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root { --glass-panel: var(--surface); --glass-chrome: var(--surface); --glass-popover: var(--surface); --control-fill: var(--surface); }
+  .topbar, .tabbar, .section-nav, .menu-pop, .search-results, .sheet, .modal, select::picker(select) { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (forced-colors: active) {
+  body { background-image: none; }
+  select:not([multiple]) { appearance: auto; -webkit-appearance: auto; background-image: none; }
+  select:not([multiple])::picker(select) { appearance: auto; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid Highlight; box-shadow: none; }
+  .btn.primary { background-image: none; }
+  select::picker-icon { transform: none; }
+}
+@media print {
+  body { background-image: none; }
+  .card { background: white; box-shadow: none; }
+}

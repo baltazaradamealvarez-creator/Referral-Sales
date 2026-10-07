@@ -35,7 +35,7 @@ window.EnergyOptions = {
     };
     root.querySelector('#energyMeterForm').onsubmit = async (e) => {
       e.preventDefault();
-      const btn = e.target.querySelector('button');
+      const btn = e.target.querySelector('button:not(.select-value)');
       btn.disabled = true;
       const current = ++request;
       activeJob = null;

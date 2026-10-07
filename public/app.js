@@ -225,7 +225,7 @@
     wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) closeModal(); });
     wrap.addEventListener('keydown', (e) => {
       if (e.key !== 'Tab') return;
-      const items = [...dialog.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+      const items = [...dialog.querySelectorAll('a[href], button:not(.select-value), input, select, textarea, [tabindex]')]
         .filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length);
       const first = items[0], last = items[items.length - 1];
       if (!first) { e.preventDefault(); dialog.focus(); }
@@ -236,7 +236,7 @@
     $app.inert = true;
     document.body.classList.add('has-modal');
     requestAnimationFrame(() => wrap.classList.add('open'));
-    const first = wrap.querySelector('input, select, textarea, button:not([data-close])');
+    const first = wrap.querySelector('input, select, textarea, button:not([data-close]):not(.select-value)');
     (first || dialog).focus();
     return dialog;
   }
@@ -2048,7 +2048,7 @@
       const cfg=await api('/energy/settings');if(!card.isConnected)return;
       card.innerHTML=`<h2>Energy options · ComparePower</h2><p class="small muted">Optional Texas energy checks on any customer record. Plans and meter lookups need no API key. Checkout attribution credits the opportunity owner’s tracking ID, with the default below when theirs is blank.</p>
         <form id="energySettingsForm"><div class="grid-2"><div class="field"><label for="energyAfid">Organization refid (cp_afid)</label><input id="energyAfid" maxlength="80" value="${esc(cfg.afid)}"></div><div class="field"><label for="energyAfuid">Default team tracking ID (cp_afuid)</label><input id="energyAfuid" maxlength="80" value="${esc(cfg.default_afuid)}"></div></div><button class="btn primary">Save energy settings</button><p class="small" role="status" id="energySettingsState"></p></form>`;
-      card.querySelector('form').onsubmit=async(e)=>{e.preventDefault();const btn=e.target.querySelector('button'),feedback=card.querySelector('#energySettingsState');btn.disabled=true;
+      card.querySelector('form').onsubmit=async(e)=>{e.preventDefault();const btn=e.target.querySelector('button:not(.select-value)'),feedback=card.querySelector('#energySettingsState');btn.disabled=true;
         try{await api('/energy/settings',{method:'PATCH',body:{afid:card.querySelector('#energyAfid').value,default_afuid:card.querySelector('#energyAfuid').value}});feedback.textContent='Energy attribution saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}};
     }catch(err){if(card.isConnected)card.innerHTML=`<h2>Energy options</h2><p class="alert err">${esc(err.message)}</p><button class="btn" id="energySettingsRetry">Retry</button>`;card.querySelector('#energySettingsRetry')?.addEventListener('click',drawEnergySettings);}
   }
@@ -3399,7 +3399,7 @@
     };
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const btn = form.querySelector('button');
+      const btn = form.querySelector('button:not(.select-value)');
       btn.disabled = true;
       try {
         const emails = document.getElementById('iv_emails').value;
@@ -3944,7 +3944,7 @@
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
     drawPushCard();
     document.getElementById('notificationPrefsForm').onsubmit=async(e)=>{
-      e.preventDefault();const btn=e.target.querySelector('button'),feedback=document.getElementById('prefsState');btn.disabled=true;feedback.textContent='Saving preferences…';
+      e.preventDefault();const btn=e.target.querySelector('button:not(.select-value)'),feedback=document.getElementById('prefsState');btn.disabled=true;feedback.textContent='Saving preferences…';
       const prefs={events:{},automatic_coaching:document.getElementById('automaticCoaching').checked};
       e.target.querySelectorAll('[data-pref-event]').forEach((el)=>{(prefs.events[el.dataset.prefEvent]||={})[el.dataset.prefChannel]=el.checked;});
       try{await api('/me/notification-preferences',{method:'PATCH',body:prefs});await refreshMe();feedback.textContent='Notification preferences saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}
