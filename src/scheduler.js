@@ -2,6 +2,8 @@
 
 const mail = require('./email');
 const { extractStateFromAddress, normalizeState } = require('./normalize');
+const { STAGE_CTES } = require('./lead-stages');
+const { FIELDS, DEFAULT_COLUMNS, field, validateConfig } = require('./report-fields');
 
 // Resolves relative date filters at execution time
 function resolveRelativeDates(preset, refDateStr) {
@@ -90,112 +92,73 @@ function computeNextRun(cadence, deliveryTime = '08:00', dayOfWeek = 1, dayOfMon
 }
 
 // Executes a report definition safely against the database with strict permission scoping
-function executeReportQuery(db, user, config) {
-  const dataSource = config.data_source || 'referrals';
-  const where = [];
-  const params = [];
-
-  // Scoping based on user role
-  if (dataSource === 'referrals') {
-    if (user.role === 'rep') {
-      where.push('(r.created_by = ? OR r.assigned_to = ?)');
-      params.push(user.id, user.id);
-    } else if (user.role === 'manager') {
-      where.push('r.team_id = ?');
-      params.push(user.team_id ?? -1);
-    }
+function executeReportQuery(db, user, config = {}) {
+  validateConfig(config);
+  const where = [], params = [];
+  if (user.role === 'rep') {
+    where.push('(r.created_by = ? OR r.assigned_to = ?)'); params.push(user.id, user.id);
+  } else if (user.role === 'manager') {
+    where.push('r.team_id = ?'); params.push(user.team_id ?? -1);
+  } else if (!['admin','dispatch'].includes(user.role)) {
+    where.push('0 = 1');
   }
-
-  // Handle date filters & relative dates
-  const dateField = config.date_field || 'created_at';
-  let fromDate = config.from || null;
-  let toDate = config.to || null;
-
+  const dateField = field(config.date_field || 'created_at').sql;
+  let fromDate = config.from || null, toDate = config.to || null;
   if (config.relative_date) {
     const resolved = resolveRelativeDates(config.relative_date);
-    fromDate = resolved.from || fromDate;
-    toDate = resolved.to || toDate;
+    fromDate = resolved.from || fromDate; toDate = resolved.to || toDate;
   }
-
-  if (fromDate) {
-    where.push(`r.${dateField} >= ?`);
-    params.push(fromDate);
-  }
-  if (toDate) {
-    where.push(`r.${dateField} < date(?, '+1 day')`);
-    params.push(toDate);
-  }
-
-  // Field filters
-  if (config.filters && Array.isArray(config.filters)) {
-    for (const f of config.filters) {
-      if (!f.field || !f.value) continue;
-      const val = f.value;
-
-      if (f.field === 'status') {
-        if (Array.isArray(val) && val.length) {
-          where.push(`r.status IN (${val.map(() => '?').join(',')})`);
-          params.push(...val);
-        } else if (typeof val === 'string') {
-          where.push('r.status = ?');
-          params.push(val);
-        }
-      } else if (f.field === 'team_id' && (user.role === 'admin' || user.role === 'dispatch')) {
-        if (Array.isArray(val) && val.length) {
-          where.push(`r.team_id IN (${val.map(() => '?').join(',')})`);
-          params.push(...val);
-        } else if (val) {
-          where.push('r.team_id = ?');
-          params.push(Number(val));
-        }
-      } else if (f.field === 'created_by') {
-        where.push('r.created_by = ?');
-        params.push(Number(val));
-      } else if (f.field === 'state') {
-        const norm = normalizeState(val);
-        if (norm) {
-          where.push('upper(trim(r.state)) IN (?, ?)');
-          params.push(norm.code, norm.name.toUpperCase());
-        }
-      } else if (f.field === 'service') {
-        where.push("(', ' || r.services || ',') LIKE ?");
-        params.push(`%, ${val},%`);
-      }
+  if (fromDate) { where.push(`${dateField} >= ?`); params.push(fromDate); }
+  if (toDate) { where.push(`${dateField} < date(?, '+1 day')`); params.push(toDate); }
+  const filters = [];
+  for (const f of config.filters || []) {
+    const key = f.field === 'service' ? 'services' : f.field;
+    const def = field(key), sql = def.sql;
+    const op = f.op || (Array.isArray(f.value) ? 'in' : f.field === 'service' ? 'contains' : 'eq');
+    const value = def.type === 'number' ? Number(f.value) : f.value;
+    if (op === 'empty' || op === 'not_empty') {
+      filters.push(`(${sql} IS ${op === 'empty' ? '' : 'NOT '}NULL ${op === 'empty' ? 'OR' : 'AND'} ${sql} ${op === 'empty' ? '=' : '<>'} '')`);
+    } else if (op === 'in') {
+      filters.push(`${sql} IN (${f.value.map(()=>'?').join(',')})`);
+      params.push(...f.value.map(v=>def.type === 'number' ? Number(v) : v));
+    } else if (key === 'state' && ['eq','ne'].includes(op) && normalizeState(value)) {
+      const state = normalizeState(value);
+      filters.push(`upper(trim(${sql})) ${op === 'ne' ? 'NOT ' : ''}IN (?,?)`); params.push(state.code,state.name.toUpperCase());
+    } else if (op === 'contains' || op === 'not_contains') {
+      filters.push(`${sql} ${op === 'not_contains' ? 'NOT ' : ''}LIKE ? ESCAPE '\\'`);
+      params.push('%' + String(value).replace(/[\\%_]/g, ch=>'\\' + ch) + '%');
+    } else {
+      const operators = {eq:'=',ne:'<>',gt:'>',gte:'>=',lt:'<',lte:'<='};
+      filters.push(`${sql} ${operators[op]} ?`); params.push(value);
     }
   }
-
-  const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-  const sql = `
-    SELECT r.id, r.created_at, r.customer_name, r.phone, r.email, r.address, r.city, r.state, r.zip,
-      r.services, r.status, r.account_number, r.install_date, r.notes,
-      u.full_name AS created_by_name, t.name AS team_name,
-      a.full_name AS assigned_name
-    FROM referrals r
-    JOIN users u ON u.id = r.created_by
-    LEFT JOIN teams t ON t.id = r.team_id
-    LEFT JOIN users a ON a.id = r.assigned_to
-    ${whereClause}
-    ORDER BY r.created_at DESC LIMIT 10000
-  `;
-
-  const rows = db.prepare(sql).all(...params);
-
-  // Derive normalized state for each row
+  if (filters.length) where.push('(' + filters.join(config.filter_logic === 'any' ? ' OR ' : ' AND ') + ')');
+  const sort = field(config.sort_by || 'created_at').sql;
+  const rows = db.prepare(`WITH ${STAGE_CTES}
+    SELECT ${FIELDS.map(f=>`${f.sql} AS ${f.key}`).join(', ')}
+    FROM referrals r JOIN users u ON u.id = r.created_by
+    LEFT JOIN teams t ON t.id = r.team_id LEFT JOIN users a ON a.id = r.assigned_to
+    LEFT JOIN users e ON e.id = r.entered_by LEFT JOIN users f ON f.id = r.first_touch_by
+    LEFT JOIN stage_facts st ON st.referral_id = r.id
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY ${sort} ${config.sort_direction === 'asc' ? 'ASC' : 'DESC'}, r.id DESC LIMIT 10001
+  `).all(...params);
+  rows.truncated = rows.length > 10000;
+  if (rows.truncated) rows.pop();
   for (const r of rows) {
     const st = normalizeState(r.state) || extractStateFromAddress(r.address);
-    r.state = st ? st.code : 'N/A';
-    r.state_name = st ? st.name : 'Unknown';
+    r.state = st ? st.code : 'N/A'; r.state_name = st ? st.name : 'Unknown';
+    for (const f of FIELDS.filter(f=>f.group === 'Stage timers' && f.type === 'number')) {
+      if (r[f.key] != null) r[f.key] = Math.round(r[f.key] * 100) / 100;
+    }
   }
-
   return rows;
 }
 
 // Generates CSV format for report rows
 function generateCSV(rows, columns) {
-  const cols = columns && columns.length
-    ? columns
-    : ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'];
+  const cols = columns && columns.length ? columns : DEFAULT_COLUMNS;
+  cols.forEach(field);
 
   const header = cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(',');
 
@@ -210,48 +173,15 @@ function generateCSV(rows, columns) {
 }
 
 // Generates HTML format for email body preview
-function generateHTMLTable(rows, title, periodLabel) {
-  const cols = ['id', 'created_at', 'customer_name', 'status', 'services', 'created_by_name', 'team_name'];
-  let html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; color: #1e293b;">
-      <h2 style="color: #0f172a; margin-bottom: 4px;">${title}</h2>
-      <p style="color: #64748b; font-size: 14px; margin-top: 0;">Period: ${periodLabel || 'Current Snapshot'}</p>
-      <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px;">
-        <thead>
-          <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
-            <th style="padding: 8px 12px;">ID</th>
-            <th style="padding: 8px 12px;">Date</th>
-            <th style="padding: 8px 12px;">Customer</th>
-            <th style="padding: 8px 12px;">Status</th>
-            <th style="padding: 8px 12px;">Services</th>
-            <th style="padding: 8px 12px;">Rep</th>
-            <th style="padding: 8px 12px;">Team</th>
-          </tr>
-        </thead>
-        <tbody>
-  `;
-
-  for (const r of rows.slice(0, 50)) {
-    html += `
-      <tr style="border-bottom: 1px solid #e2e8f0;">
-        <td style="padding: 8px 12px;">#${r.id}</td>
-        <td style="padding: 8px 12px;">${(r.created_at || '').slice(0, 10)}</td>
-        <td style="padding: 8px 12px; font-weight: 500;">${r.customer_name || ''}</td>
-        <td style="padding: 8px 12px;"><span style="background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 9999px; font-weight: 600;">${r.status}</span></td>
-        <td style="padding: 8px 12px;">${r.services || '-'}</td>
-        <td style="padding: 8px 12px;">${r.created_by_name || ''}</td>
-        <td style="padding: 8px 12px;">${r.team_name || '-'}</td>
-      </tr>
-    `;
-  }
-
-  html += `
-        </tbody>
-      </table>
-      ${rows.length > 50 ? `<p style="color: #64748b; font-size: 12px;">Showing top 50 of ${rows.length} total records.</p>` : ''}
-    </div>
-  `;
-  return html;
+function generateHTMLTable(rows, title, periodLabel, columns) {
+  const cols = columns?.length ? columns : ['id','created_at','customer_name','status','services','created_by_name','team_name'];
+  cols.forEach(field);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return `<div style="font-family:Arial,sans-serif;color:#1e293b;overflow:auto">
+    <h2>${esc(title)}</h2><p>Period: ${esc(periodLabel || 'Current snapshot')}</p>
+    <table style="border-collapse:collapse;font-size:13px"><thead><tr>${cols.map(c=>`<th style="padding:8px;text-align:left">${esc(field(c).label)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.slice(0,50).map(r=>`<tr>${cols.map(c=>`<td style="padding:8px;border-top:1px solid #e2e8f0">${esc(r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>
+    ${rows.length > 50 ? `<p>Showing 50 of ${rows.length} records. All selected records are in the CSV attachment.</p>` : ''}</div>`;
 }
 
 // Executes a single scheduled report
@@ -310,7 +240,7 @@ async function runScheduledReport(db, scheduleId) {
   }
 
   // Format delivery content
-  const html = generateHTMLTable(rows, schedule.report_name, periodLabel);
+  const html = generateHTMLTable(rows, schedule.report_name, periodLabel, config.columns);
   const csv = generateCSV(rows, config.columns);
 
   const settingsRow = db.prepare("SELECT key, value FROM settings WHERE key IN ('email_from_name', 'email_reply_to')").all();

@@ -14,6 +14,8 @@ const { scoreLead } = require('../public/leadscore');
 const waFormat = require('../public/waformat');
 const notificationPrefs = require('./notification-preferences');
 const waPartners = require('./whatsapp-partners');
+const { stageTiming } = require('./lead-stages');
+const reportFields = require('./report-fields');
 const { normalizeEmail, normalizePhone, formatPhone, formatWhatsapp, addressKey, parseLeadText, parseDob, parseAddressLocation, normalizeState, normalizeZip } = require('./normalize');
 
 const DUPLICATE_MESSAGE = 'This lead is a duplicate and cannot be entered.';
@@ -819,6 +821,9 @@ function createApp(db, opts = {}) {
     return db.prepare(`
       SELECT r.*, u.full_name AS created_by_name, t.name AS team_name,
         a.full_name AS assigned_name, e.full_name AS entered_by_name,
+        CASE WHEN EXISTS (SELECT 1 FROM status_history h WHERE h.referral_id=r.id)
+          THEN (SELECT CASE WHEN h.to_status=r.status THEN h.created_at END FROM status_history h WHERE h.referral_id=r.id ORDER BY h.id DESC LIMIT 1)
+          WHEN r.status='New' THEN r.created_at END AS current_stage_started_at,
         (SELECT COUNT(*) FROM comments c WHERE c.referral_id = r.id) AS comment_count
       FROM referrals r
       JOIN users u ON u.id = r.created_by
@@ -871,7 +876,7 @@ function createApp(db, opts = {}) {
         response_by: (db.prepare('SELECT full_name FROM users WHERE id = ?').get(ref.first_touch_by) || {}).full_name || '' }
       : ref.status === 'New' ? { waiting_minutes: speed.businessMinutes(toMs(ref.created_at), Date.now()) } : {};
     return {
-      ...publicReferral(ref), comments, history, documents:documents.list(u,ref), ...speedInfo, speed_target: speed.config().minutes,
+      ...publicReferral(ref), comments, history, stage_timing:stageTiming(db,ref), documents:documents.list(u,ref), ...speedInfo, speed_target: speed.config().minutes,
       can_manage: canManageReferral(u, ref),
       can_assign: seesAll(u),
       can_edit: canManageReferral(u, ref) || (ref.created_by === u.id && ref.status === 'New'),
@@ -1193,7 +1198,8 @@ function createApp(db, opts = {}) {
       { id: 'rolling_30d', name: 'Rolling 30 Days' },
       { id: 'rolling_90d', name: 'Rolling 90 Days' },
     ];
-    return { states, teams, reps, dispatchers, services: SERVICES, statuses: STATUSES, date_presets: datePresets };
+    return { states, teams, reps, dispatchers, services: SERVICES, statuses: STATUSES, date_presets: datePresets,
+      report_fields:reportFields.FIELDS.map(({sql,...field})=>field) };
   }));
 
   app.get('/api/saved-filters', wrap((req) => {
@@ -1240,6 +1246,8 @@ function createApp(db, opts = {}) {
     if (!name) throw new HttpError(400, 'Report name is required.');
     const description = String(req.body.description || '').slice(0, 500);
     const dataSource = String(req.body.data_source || 'referrals');
+    reportFields.validateConfig(req.body.config || {});
+    reportFields.validateConfig({ data_source:dataSource });
     const isPublic = req.body.is_public ? 1 : 0;
     const config = JSON.stringify(req.body.config || {});
 
@@ -1284,7 +1292,7 @@ function createApp(db, opts = {}) {
     }
     if (b.description !== undefined) updates.description = String(b.description).slice(0, 500);
     if (b.is_public !== undefined) updates.is_public = b.is_public ? 1 : 0;
-    if (b.config !== undefined) updates.config = JSON.stringify(b.config);
+    if (b.config !== undefined) updates.config = JSON.stringify(reportFields.validateConfig(b.config));
     updates.updated_at = "datetime('now')";
 
     const keys = Object.keys(updates);
@@ -1330,23 +1338,38 @@ function createApp(db, opts = {}) {
     const primaryGroup = config?.group_by || null;
     const secondaryGroup = config?.secondary_group_by || null;
     const calcField = config?.calc_field || null;
+    const calculate = records => {
+      if (!calcField) return null;
+      const values = records.filter(r=>r[calcField] != null && (!calcField.endsWith('_minutes') || !r.history_incomplete)).map(r=>Number(r[calcField]));
+      const operation = config.calc_function || 'sum';
+      let value = null;
+      if (values.length) {
+        const sum = values.reduce((total,n)=>total+n,0);
+        value = operation === 'avg' ? sum/values.length : operation === 'min' ? Math.min(...values) : operation === 'max' ? Math.max(...values) : sum;
+        value = Math.round(value*100)/100;
+      }
+      return { field:calcField, operation, value, sample_count:values.length };
+    };
 
     let summary = null;
+    const groupedRows = new Map();
+    const groupLabel = value => value == null || value === '' ? 'Unassigned' : String(value);
     if (primaryGroup) {
       const groupsMap = new Map();
       for (const row of rows) {
-        const key = String(row[primaryGroup] || 'Unassigned');
-        const secKey = secondaryGroup ? String(row[secondaryGroup] || 'Unassigned') : null;
+        const key = groupLabel(row[primaryGroup]);
+        const secKey = secondaryGroup ? groupLabel(row[secondaryGroup]) : null;
+        if (!groupedRows.has(key)) groupedRows.set(key,[]);
+        groupedRows.get(key).push(row);
 
         if (!groupsMap.has(key)) {
-          groupsMap.set(key, { name: key, count: 0, ordered: 0, dnq: 0, cancelled: 0, total_val: 0, sub: new Map() });
+          groupsMap.set(key, { name: key, count: 0, ordered: 0, dnq: 0, cancelled: 0, sub: new Map() });
         }
         const grp = groupsMap.get(key);
         grp.count++;
         if (row.status === 'Ordered') grp.ordered++;
         if (row.status === 'DNQ') grp.dnq++;
         if (row.status === 'Cancelled') grp.cancelled++;
-        if (calcField && Number(row[calcField])) grp.total_val += Number(row[calcField]);
 
         if (secKey) {
           if (!grp.sub.has(secKey)) {
@@ -1380,7 +1403,19 @@ function createApp(db, opts = {}) {
       conversion_rate: rows.length ? Math.round((rows.filter((r) => r.status === 'Ordered').length / rows.length) * 1000) / 10 : 0,
     };
 
-    return { report_name: reportName, total_records: rows.length, totals, summary, rows: rows.slice(0, 1000) };
+    const avg = (records,key) => {
+      const measured = records.filter(r=>r[key] != null && !r.history_incomplete);
+      return measured.length ? Math.round(measured.reduce((n,r)=>n+r[key],0)/measured.length*100)/100 : null;
+    };
+    totals.avg_open_minutes = avg(rows,'total_open_minutes');
+    totals.incomplete_history_count = rows.filter(r=>r.history_incomplete).length;
+    totals.metric = calculate(rows);
+    if (summary) for (const group of summary) {
+      const members = groupedRows.get(group.group);
+      group.avg_open_minutes = avg(members,'total_open_minutes');
+      group.metric = calculate(members);
+    }
+    return { report_name: reportName, total_records: rows.length, query_truncated:!!rows.truncated, preview_limit:1000, totals, summary, rows: rows.slice(0, 1000) };
   }));
 
   app.get('/api/reports/:id/export', (req, res, next) => {
@@ -1402,6 +1437,17 @@ function createApp(db, opts = {}) {
     } catch (e) {
       next(e);
     }
+  });
+
+  app.post('/api/reports/export', (req, res, next) => {
+    try {
+      const u = requireUser(req), config = req.body.config || {};
+      const rows = executeReportQuery(db,u,config);
+      logAudit(req,'export_report','report',null,'Exported report with current columns and filters');
+      res.set('Content-Type','text/csv; charset=utf-8');
+      res.set('Content-Disposition','attachment; filename="opportunity_report.csv"');
+      res.send('\uFEFF' + generateCSV(rows,config.columns));
+    } catch (error) { next(error); }
   });
 
   // ---------- scheduled reporting APIs ----------
@@ -1766,7 +1812,7 @@ function createApp(db, opts = {}) {
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
-    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError || err instanceof reportFields.ReportConfigError) return res.status(err.status).json({ error: err.message });
     if (err.type === 'entity.too.large') return res.status(413).json({error:'Upload is too large.'});
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad JSON' });
     console.error(err);

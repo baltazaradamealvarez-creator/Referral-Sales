@@ -301,7 +301,13 @@
     return `<nav class="section-nav" aria-label="${esc(label)}"><span class="section-nav-label">${esc(label)}</span>${items.filter(Boolean).map(([id,name])=>`<button type="button" data-section-jump="${id}" aria-controls="${id}">${esc(name)}</button>`).join('')}</nav>`;
   }
   let shellResizeObserver=null;
+  let stageTimer=null;
+  let reportMediaCleanup=null;
+  window.addEventListener('hashchange',()=>clearInterval(stageTimer));
   function shell(content, opts = {}) {
+    clearInterval(stageTimer);
+    reportMediaCleanup?.();
+    reportMediaCleanup=null;
     shellResizeObserver?.disconnect();
     const me = state.me;
     const links = navLinks();
@@ -891,10 +897,11 @@
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
           ${worksLeads() ? `<td class="small" data-label="Opportunity owner">${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
           ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
-          <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}</td>
+          <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}${['New','Working','Passed'].includes(r.status)?`<div class="small muted">${stageAge(r)}</div>`:''}</td>
           <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
         </tr>`).join('') : `<tr class="empty-row"><td colspan="7"><div class="empty-state"><h2>${activeFilters ? 'No customers match these filters' : 'No customers here yet'}</h2><p>${activeFilters ? 'Try another search or clear your filters.' : 'New referrals will appear here as they are entered.'}</p>${activeFilters ? '<button type="button" class="btn" id="emptyClearFilters">Clear filters</button>' : '<a class="btn primary" href="#/new">New referral</a>'}</div></td></tr>`;
       document.getElementById('count').textContent = `${rows.length}${rows.length === 500 ? '+' : ''} referral${rows.length === 1 ? '' : 's'}`;
+      bindStageAges();
       document.getElementById('emptyClearFilters')?.addEventListener('click', resetFilters);
       bindLeadItems(tbody);
     }
@@ -953,6 +960,7 @@
         ${r.address ? `<div class="small muted kaddr">${esc(r.address)}</div>` : ''}
         ${r.services ? `<div>${svcTags(r.services)}</div>` : ''}
         <div class="kmeta small">
+          ${['New','Working','Passed'].includes(r.status)?`<span class="stage-age">${stageAge(r)}</span>`:''}
           <span>👤 ${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? ` · ${esc(r.team_name)}` : ''}</span>
           ${r.install_date ? `<span>📅 ${esc(dayDate(r.install_date))}</span>` : ''}
           ${r.comment_count ? `<span>💬 ${r.comment_count}</span>` : ''}
@@ -986,6 +994,7 @@
           } catch (err) { toast(err.message); }
         };
       });
+      bindStageAges();
     }
 
     document.querySelectorAll('.col').forEach((col) => {
@@ -1003,6 +1012,8 @@
         draw();
         try {
           await api('/referrals/' + id, { method: 'PATCH', body: { status: to } });
+          r.current_stage_started_at = new Date().toISOString().replace('T',' ').slice(0,19);
+          draw();
           toast(`${leadName(r)} → ${to}`);
         } catch (err) {
           r.status = from;
@@ -1082,6 +1093,46 @@
       try{await api(`/referrals/${r.id}/documents/${button.dataset.deleteDocument}`,{method:'DELETE',body:{}});toast('PDF removed');await renderReferral(r.id);}
       catch(error){feedback.textContent=error.message;button.disabled=false;}
     };});
+  }
+
+  function stageAge(r) {
+    return r.current_stage_started_at?`<span data-stage-age="${esc(r.current_stage_started_at)}" title="Elapsed time in ${esc(r.status)}">⏱ ${stageDuration((Date.now()-parseDate(r.current_stage_started_at).getTime())/60000)} in stage</span>`:'Time unknown';
+  }
+  function bindStageAges() {
+    clearInterval(stageTimer);
+    stageTimer=setInterval(()=>document.querySelectorAll('[data-stage-age]').forEach(el=>{
+      el.textContent=`⏱ ${stageDuration((Date.now()-parseDate(el.dataset.stageAge).getTime())/60000)} in stage`;
+    }),60000);
+  }
+  function stageDuration(minutes) {
+    if (minutes == null) return 'Unknown';
+    const m = Math.max(0,Math.floor(minutes + 0.00001));
+    if (!m) return minutes > 0 ? '<1m' : '0m';
+    const days=Math.floor(m/1440), hours=Math.floor(m%1440/60), mins=m%60;
+    return [days && `${days}d`,hours && `${hours}h`,mins && `${mins}m`].filter(Boolean).join(' ');
+  }
+  function customerStages(r) {
+    const t=r.stage_timing;
+    if (!t) return '';
+    return `<section class="card stage-card" id="customerStages">
+      <div class="stage-heading"><div><h2>Time in each stage</h2><p class="small muted">Elapsed time · repeat visits are added together</p></div>
+      <div class="stage-current"><span class="small muted">${t.running?'Current stage':'Current status'} · ${esc(t.current_stage)}</span><strong data-current-stage-clock>${t.running?stageDuration(t.current_minutes):t.current_started_at?'Closed':'Unknown'}</strong><span class="small muted">${t.current_started_at?`Since ${esc(fullDate(t.current_started_at))}`:'No recorded entry time'}</span></div></div>
+      <div class="stage-grid">${t.stages.map((s,i)=>`<div class="stage-tile ${s.current?'active':''}"><div class="row between">${pill(s.status)}${s.current?'<span class="small">Current</span>':''}</div><strong data-stage-value="${i}">${s.visits?stageDuration(s.minutes):'—'}</strong><span class="small muted">${s.visits?`${s.visits} ${s.visits===1?'visit':'visits'}`:'No recorded visit'}</span></div>`).join('')}</div>
+      ${t.partial?'<p class="alert warn small">Earlier stage history is incomplete. These timers show recorded visits only; the missing time is unknown.</p>':''}
+      <details class="stage-visits"><summary>See stage visits and timestamps</summary><ol>${t.stages.flatMap(s=>s.intervals.map(v=>({...v,status:s.status}))).sort((a,b)=>a.entered_at.localeCompare(b.entered_at)).map(v=>`<li><b>${esc(v.status)}</b><span>${esc(fullDate(v.entered_at))} → ${v.exited_at?esc(fullDate(v.exited_at)):t.running&&v.status===t.current_stage?'Now':'Closed'} · ${stageDuration(v.minutes)}</span></li>`).join('')||'<li>No recorded stage changes yet.</li>'}</ol></details>
+      <p class="small muted">Open stages update every minute. Closed records stop their active clock. The first-response timer still uses working hours.</p></section>`;
+  }
+  function bindStageClock(r) {
+    const t=r.stage_timing;
+    if (!t?.running) return;
+    const snapshot=Date.now();
+    stageTimer=setInterval(()=>{
+      const current=document.querySelector('[data-current-stage-clock]');
+      if (!current) {clearInterval(stageTimer);return;}
+      const delta=(Date.now()-snapshot)/60000;
+      current.textContent=stageDuration(t.current_minutes+delta);
+      t.stages.forEach((s,i)=>{if(s.current)document.querySelector(`[data-stage-value="${i}"]`).textContent=stageDuration(s.minutes+delta);});
+    },60000);
   }
 
   async function renderReferral(id) {
@@ -1164,7 +1215,8 @@
         <p id="recordActionState" class="small" role="status" aria-live="polite"></p>
       </div>
 
-      ${sectionLinks([['customerOverview','Overview'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerStatus','Status & order'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
+      ${sectionLinks([['customerOverview','Overview'],['customerStages','Stage timers'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerStatus','Status & order'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
+      ${customerStages(r)}
       <div class="grid-2 customer-layout">
         <!-- LEFT COLUMN: Detail Sections -->
         <div class="stack">
@@ -1401,6 +1453,7 @@
         </div>
       </div><section class="card" id="energyOptions" style="margin-top:1rem"></section>`);
 
+    bindStageClock(r);
     bindCustomerDocuments(r);
     // Section collapse toggles
     window.EnergyOptions?.bind({root:document.getElementById('energyOptions'),ref:r,api,esc,toast});
@@ -4160,212 +4213,127 @@
   }
 
   async function renderReportBuilder(container, opts, reportId) {
-    let report = null;
-    let config = {
-      group_by: query().group_by || 'state',
-      secondary_group_by: '',
-      relative_date: query().relative_date || 'this_month',
-      columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
-      filters: [],
-    };
-
-    if (reportId && Number(reportId) > 0) {
-      try {
-        report = await api(`/reports/${reportId}`);
-        config = report.config || config;
-      } catch (err) { toast(err.message); }
+    let report=null;
+    let config={group_by:query().group_by || 'state',relative_date:query().relative_date || 'this_month',filters:[],columns:['customer_name','status','created_by_name','team_name','current_stage_minutes','new_minutes','working_minutes','passed_minutes']};
+    if (reportId && Number(reportId)>0) {
+      try {report=await api(`/reports/${reportId}`);config={...config,...report.config};}
+      catch(error){container.innerHTML=`<div class="alert err">${esc(error.message)}</div>`;return;}
     }
-
-    container.innerHTML = `
-      <div class="report-builder-layout">
-        <form class="report-config-panel" id="reportBuilderForm">
-          <h2>Report Configuration</h2>
-          <div class="field">
-            <label for="rb_name">Report Name</label>
-            <input id="rb_name" value="${esc(report ? report.name : 'Untitled Sales Report')}" required>
-          </div>
-          <div class="field">
-            <label for="rb_desc">Description</label>
-            <input id="rb_desc" value="${esc(report ? report.description : '')}" placeholder="Optional purpose notes">
-          </div>
-          <div class="field">
-            <label for="rb_group">Primary Grouping</label>
-            <select id="rb_group">
-              <option value="">None (Flat List)</option>
-              <option value="state" ${config.group_by === 'state' ? 'selected' : ''}>State / Territory</option>
-              <option value="status" ${config.group_by === 'status' ? 'selected' : ''}>Status</option>
-              <option value="created_by_name" ${config.group_by === 'created_by_name' ? 'selected' : ''}>Sales Representative</option>
-              <option value="team_name" ${config.group_by === 'team_name' ? 'selected' : ''}>Team</option>
-              <option value="services" ${config.group_by === 'services' ? 'selected' : ''}>Service Type</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="rb_sec_group">Secondary Grouping</label>
-            <select id="rb_sec_group">
-              <option value="">None</option>
-              <option value="status" ${config.secondary_group_by === 'status' ? 'selected' : ''}>Status</option>
-              <option value="state" ${config.secondary_group_by === 'state' ? 'selected' : ''}>State</option>
-              <option value="services" ${config.secondary_group_by === 'services' ? 'selected' : ''}>Service Type</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="rb_rel_date">Date Range Preset</label>
-            <select id="rb_rel_date">
-              <option value="">All Time</option>
-              ${opts.date_presets.map((p) => `<option value="${p.id}" ${config.relative_date === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
-            </select>
-          </div>
-          <label class="check" style="margin-top:.8rem;">
-            <input type="checkbox" id="rb_public" ${report && report.is_public ? 'checked' : ''}> Make report visible to team (Public)
-          </label>
-          <div class="row" style="margin-top:1.2rem">
-            <button type="submit" class="btn primary">Run &amp; Update Preview</button>
-            <button type="button" class="btn" id="saveReportBtn">Save Report</button>
-          </div>
-        </form>
-        <div class="report-preview-panel">
-          <div class="row between" style="margin-bottom:1rem">
-            <div>
-              <h2 id="prevTitle" style="margin:0">${esc(report ? report.name : 'Report Preview')}</h2>
-              <span class="small muted" id="prevSubtitle">Run query to view matrix output</span>
-            </div>
-            <div class="row">
-              <button class="btn small" id="exportReportCsv">⬇ Export CSV</button>
-              ${report ? `<button class="btn small primary" id="scheduleReportBtn">📅 Schedule Delivery</button>` : ''}
-            </div>
-          </div>
-          <div id="reportPreviewResults">
-            <p class="muted">Click "Run &amp; Update Preview" to execute custom aggregation query.</p>
-          </div>
-        </div>
-      </div>
-    `;
-
-    const form = document.getElementById('reportBuilderForm');
-    const prevResults = document.getElementById('reportPreviewResults');
-
-    const runPreview = async () => {
-      const cfg = {
-        group_by: document.getElementById('rb_group').value,
-        secondary_group_by: document.getElementById('rb_sec_group').value,
-        relative_date: document.getElementById('rb_rel_date').value,
-        columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
-      };
-
+    const fields=opts.report_fields || [];
+    if (!container.isConnected) return;
+    const byKey=new Map(fields.map(f=>[f.key,f]));
+    let columns=[...(config.columns || [])].filter(key=>byKey.has(key));
+    let filters=(config.filters || []).map(f=>({...f,field:f.field==='service'?'services':f.field,op:f.op || (Array.isArray(f.value)?'in':f.field==='service'?'contains':'eq')}));
+    const fieldOptions=(chosen,predicate=()=>true)=>fields.filter(predicate).map(f=>`<option value="${f.key}" ${chosen===f.key?'selected':''}>${esc(f.label)}</option>`).join('');
+    const mobileBuilder=window.matchMedia('(max-width: 960px)').matches;
+    container.innerHTML=`<div class="report-builder-layout">
+      <details class="report-config-disclosure" id="rb_disclosure" ${mobileBuilder?'':'open'}><summary>Configure report · fields and filters</summary>
+      <form class="report-config-panel" id="reportBuilderForm">
+        <h2>Build your report</h2><p class="small muted">Customer, opportunity, owner, order, and activity fields in one view.</p>
+        <div class="field"><label for="rb_name">Report name</label><input id="rb_name" required maxlength="150" value="${esc(report?.name || 'Opportunity stage report')}"></div>
+        <details class="report-section"><summary>Description &amp; sharing</summary><div class="field"><label for="rb_desc">Description</label><input id="rb_desc" value="${esc(report?.description || '')}" maxlength="500"></div><label class="check"><input type="checkbox" id="rb_public" ${report?.is_public?'checked':''}>Share this report definition</label><p class="small muted">Each person sees only the records their permissions allow.</p></details>
+        <div class="report-run-actions"><button class="btn primary" type="submit">Run report</button><button class="btn" type="button" id="saveReportBtn">Save report</button></div><p id="rb_action_status" class="small" role="status" aria-live="polite"></p>
+        <details class="report-section" open><summary>Columns <span id="rb_column_count"></span></summary><label class="small" for="rb_field_search">Find a field</label><input type="search" id="rb_field_search" placeholder="Try owner, account, or minutes"><div id="rb_available_fields" class="report-field-picker"></div><p class="small muted">Column order</p><ol id="rb_selected_fields" class="report-selected-fields"></ol></details>
+        <details class="report-section" open><summary>Filters</summary><div class="field"><label for="rb_filter_logic">Match</label><select id="rb_filter_logic"><option value="all">All filters</option><option value="any" ${config.filter_logic==='any'?'selected':''}>Any filter</option></select></div><div id="rb_filters"></div><button class="btn small" type="button" id="rb_add_filter">+ Add filter</button></details>
+        <details class="report-section"><summary>Dates</summary><div class="field"><label for="rb_date_field">Date field</label><select id="rb_date_field">${fieldOptions(config.date_field || 'created_at',f=>f.type==='date')}</select></div><div class="field"><label for="rb_rel_date">Date range</label><select id="rb_rel_date"><option value="">All time / custom range</option>${opts.date_presets.map(p=>`<option value="${p.id}" ${p.id===config.relative_date?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="report-date-range" id="rb_custom_dates"><div class="field"><label for="rb_from">From</label><input id="rb_from" type="date" value="${esc(config.from || '')}"></div><div class="field"><label for="rb_to">Through</label><input id="rb_to" type="date" value="${esc(config.to || '')}"></div></div></details>
+        <details class="report-section"><summary>Grouping &amp; sorting</summary><div class="field"><label for="rb_group">Group by</label><select id="rb_group"><option value="">No grouping</option>${fieldOptions(config.group_by,f=>f.type==='text')}</select></div><div class="field"><label for="rb_sec_group">Then group by</label><select id="rb_sec_group"><option value="">None</option>${fieldOptions(config.secondary_group_by,f=>f.type==='text')}</select></div><div class="field"><label for="rb_sort">Sort records by</label><select id="rb_sort">${fieldOptions(config.sort_by || 'created_at')}</select></div><div class="field"><label for="rb_direction">Direction</label><select id="rb_direction"><option value="desc">Descending / newest first</option><option value="asc" ${config.sort_direction==='asc'?'selected':''}>Ascending / oldest first</option></select></div><div class="field"><label for="rb_measure">Calculate a field (optional)</label><select id="rb_measure"><option value="">No additional calculation</option>${fieldOptions(config.calc_field,f=>f.type==='number')}</select></div><div class="field"><label for="rb_calc">Calculation</label><select id="rb_calc">${[['sum','Sum'],['avg','Average'],['min','Minimum'],['max','Maximum']].map(([value,label])=>`<option value="${value}" ${(config.calc_function || 'sum')===value?'selected':''}>${label}</option>`).join('')}</select></div></details>
+      </form></details>
+      <section class="report-preview-panel" aria-label="Report preview"><div class="row between"><div><h2 id="prevTitle">${esc(report?.name || 'Report preview')}</h2><p class="small muted" id="prevSubtitle" role="status" aria-live="polite">Preparing preview…</p></div><div class="row"><button class="btn small" id="exportReportCsv">Download CSV</button>${report?'<button class="btn small" id="scheduleReportBtn">Schedule delivery</button>':''}</div></div><div id="reportPreviewResults"></div></section>
+    </div>`;
+    const find=id=>container.querySelector('#'+id);
+    reportMediaCleanup?.();
+    const reportMedia=window.matchMedia('(max-width: 960px)');
+    const adaptReport=event=>{if(!event.matches && container.isConnected)find('rb_disclosure').open=true;};
+    reportMedia.addEventListener('change',adaptReport);
+    reportMediaCleanup=()=>reportMedia.removeEventListener('change',adaptReport);
+    const status=message=>{find('rb_action_status').textContent=message;};
+    const drawColumns=()=>{
+      const term=find('rb_field_search').value.toLowerCase();
+      const groups=[...new Set(fields.map(f=>f.group))];
+      find('rb_available_fields').innerHTML=groups.map(group=>{
+        const visible=fields.filter(f=>f.group===group && `${f.label} ${f.group}`.toLowerCase().includes(term));
+        return visible.length?`<fieldset><legend>${esc(group)}</legend>${visible.map(f=>`<label class="check"><input type="checkbox" data-report-field="${f.key}" ${columns.includes(f.key)?'checked':''}>${esc(f.label)}</label>`).join('')}</fieldset>`:'';
+      }).join('') || '<p class="small muted">No matching fields.</p>';
+      find('rb_column_count').textContent=`(${columns.length})`;
+      find('rb_selected_fields').innerHTML=columns.map((key,i)=>`<li><span>${esc(byKey.get(key).label)}</span><div><button type="button" class="icon-btn" data-column-move="${i}" data-dir="-1" ${i===0?'disabled':''} aria-label="Move ${esc(byKey.get(key).label)} up">↑</button><button type="button" class="icon-btn" data-column-move="${i}" data-dir="1" ${i===columns.length-1?'disabled':''} aria-label="Move ${esc(byKey.get(key).label)} down">↓</button></div></li>`).join('') || '<li>Select at least one field above.</li>';
+      find('rb_available_fields').querySelectorAll('[data-report-field]').forEach(input=>input.onchange=()=>{
+        columns=input.checked?[...columns,input.dataset.reportField]:columns.filter(key=>key!==input.dataset.reportField);drawColumns();status('Columns changed. Run report to refresh the preview.');
+      });
+      find('rb_selected_fields').querySelectorAll('[data-column-move]').forEach(button=>button.onclick=()=>{
+        const i=Number(button.dataset.columnMove),j=i+Number(button.dataset.dir);[columns[i],columns[j]]=[columns[j],columns[i]];drawColumns();status('Column order changed.');
+      });
+    };
+    const operators=[['eq','Equals'],['ne','Does not equal'],['contains','Contains'],['not_contains','Does not contain'],['gt','Greater than / after'],['gte','At least / on or after'],['lt','Less than / before'],['lte','At most / on or before'],['empty','Is empty'],['not_empty','Is not empty'],['in','Is one of (comma separated)']];
+    const drawFilters=()=>{
+      find('rb_filters').innerHTML=filters.map((f,i)=>{
+        const def=byKey.get(f.field), blank=['empty','not_empty'].includes(f.op);
+        const choices=f.field==='status'?opts.statuses:f.field==='created_by_name'?opts.reps.map(p=>p.full_name):f.field==='team_name'?opts.teams.map(t=>t.name):f.field==='services'?opts.services:[];
+        return `<fieldset class="report-filter"><legend>Filter ${i+1}</legend><label for="filter_field_${i}">Field</label><select id="filter_field_${i}" data-filter-field="${i}">${fieldOptions(f.field)}</select><label for="filter_op_${i}">Condition</label><select id="filter_op_${i}" data-filter-op="${i}">${operators.filter(([op])=>def?.type==='text' || !['contains','not_contains'].includes(op)).map(([op,label])=>`<option value="${op}" ${op===f.op?'selected':''}>${label}</option>`).join('')}</select><label for="filter_value_${i}" ${blank?'hidden':''}>Value${f.op==='in'?'s':''}</label><input id="filter_value_${i}" data-filter-value="${i}" ${blank?'hidden':''} type="${f.op==='in'?'text':def?.type==='number'?'number':def?.type==='date'?'date':'text'}" ${def?.type==='number'?'step="any"':''} value="${esc(Array.isArray(f.value)?f.value.join(', '):f.value ?? '')}" list="filter_choices_${i}"><datalist id="filter_choices_${i}">${choices.map(v=>`<option value="${esc(v)}">`).join('')}</datalist><button type="button" class="btn small" data-filter-remove="${i}" aria-label="Remove filter ${i+1}">Remove</button></fieldset>`;
+      }).join('') || '<p class="small muted">No field filters. All permitted records in the date range are included.</p>';
+      find('rb_filters').querySelectorAll('[data-filter-field]').forEach(input=>input.onchange=()=>{const f=filters[input.dataset.filterField];f.field=input.value;f.value='';f.op=f.field==='services'?'contains':'eq';drawFilters();});
+      find('rb_filters').querySelectorAll('[data-filter-op]').forEach(input=>input.onchange=()=>{filters[input.dataset.filterOp].op=input.value;drawFilters();});
+      find('rb_filters').querySelectorAll('[data-filter-value]').forEach(input=>input.oninput=()=>{filters[input.dataset.filterValue].value=input.value;});
+      find('rb_filters').querySelectorAll('[data-filter-remove]').forEach(button=>button.onclick=()=>{filters.splice(Number(button.dataset.filterRemove),1);drawFilters();});
+    };
+    const getConfig=()=>{
+      if (!columns.length) throw new Error('Choose at least one report column.');
+      return {data_source:'referrals',columns:[...columns],filters:filters.map(f=>({...f,value:f.op==='in'?(Array.isArray(f.value)?f.value:String(f.value).split(',').map(v=>v.trim()).filter(Boolean)):f.value})),filter_logic:find('rb_filter_logic').value,
+        date_field:find('rb_date_field').value,relative_date:find('rb_rel_date').value,from:find('rb_rel_date').value?null:find('rb_from').value || null,to:find('rb_rel_date').value?null:find('rb_to').value || null,
+        group_by:find('rb_group').value,secondary_group_by:find('rb_sec_group').value,sort_by:find('rb_sort').value,sort_direction:find('rb_direction').value,calc_field:find('rb_measure').value,calc_function:find('rb_calc').value};
+    };
+    const formatCell=(r,key)=>{
+      const value=r[key];
+      if (value==null || value==='') return '<span class="muted">—</span>';
+      if (key==='status') return pill(value);
+      if (key==='customer_name') return `<a href="#/r/${r.id}">${esc(value)}</a>`;
+      if (key==='created_by_name') return personLink(r.created_by,value);
+      if (key==='assigned_name') return personLink(r.assigned_to,value);
+      if (key.endsWith('_minutes')) return `<span title="${esc(value)} minutes">${stageDuration(value)}</span>`;
+      if (byKey.get(key)?.type==='date') return esc(/^\d{4}-\d{2}-\d{2}$/.test(value)?usDate(value):fullDate(value));
+      return esc(value);
+    };
+    const metricText=metric=>metric?`${metric.operation==='avg'?'Average':metric.operation==='min'?'Minimum':metric.operation==='max'?'Maximum':'Sum'} · ${byKey.get(metric.field)?.label || metric.field}`:'';
+    const metricValue=metric=>metric?.value==null?'—':metric.field.endsWith('_minutes')?stageDuration(metric.value):metric.value.toLocaleString();
+    let previewSequence=0;
+    const runPreview=async()=>{
+      const sequence=++previewSequence;
+      find('prevSubtitle').textContent='Running report…';find('reportPreviewResults').setAttribute('aria-busy','true');
       try {
-        const res = await api(reportId ? `/reports/${reportId}/run` : '/reports/0/run', {
-          method: 'POST',
-          body: { config: cfg },
-        });
-
-        document.getElementById('prevSubtitle').textContent = `Matched ${res.total_records} records · Overall Conversion: ${res.totals.conversion_rate}%`;
-
-        if (cfg.group_by && res.summary) {
-          prevResults.innerHTML = `
-            <div class="table-wrap">
-              <table class="matrix-table">
-                <thead>
-                  <tr>
-                    <th>${esc(cfg.group_by.toUpperCase())}</th>
-                    <th class="num">TOTAL LEADS</th>
-                    <th class="num">ORDERED</th>
-                    <th class="num">CONVERSION</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${res.summary.map((g) => `
-                    <tr>
-                      <td><b>${esc(g.group)}</b></td>
-                      <td class="num">${g.count}</td>
-                      <td class="num"><b>${g.ordered}</b></td>
-                      <td class="num">${g.conversion_rate}%</td>
-                    </tr>
-                    ${(g.subgroups || []).map((s) => `
-                      <tr class="matrix-subrow">
-                        <td style="padding-left: 1.8rem;">↳ ${esc(s.group)}</td>
-                        <td class="num">${s.count}</td>
-                        <td class="num">${s.ordered}</td>
-                        <td class="num">${s.conversion_rate}%</td>
-                      </tr>
-                    `).join('')}
-                  `).join('')}
-                  <tr class="matrix-total">
-                    <td>GRAND TOTAL</td>
-                    <td class="num">${res.totals.total_records}</td>
-                    <td class="num">${res.totals.ordered_count}</td>
-                    <td class="num">${res.totals.conversion_rate}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          `;
-        } else {
-          prevResults.innerHTML = `
-            <div class="table-wrap">
-              <table class="rtable">
-                <thead><tr><th>Customer</th><th>Status</th><th>State</th><th>Rep</th><th>Services</th></tr></thead>
-                <tbody>
-                  ${res.rows.map((r) => `
-                    <tr>
-                      <td><b>${esc(leadName(r))}</b></td>
-                      <td>${pill(r.status)}</td>
-                      <td>${esc(r.state)}</td>
-                      <td>${esc(r.created_by_name)}</td>
-                      <td>${svcTags(r.services)}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          `;
-        }
-      } catch (err) {
-        prevResults.innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
-      }
+        const cfg=getConfig();
+        const result=await api(reportId?`/reports/${reportId}/run`:'/reports/0/run',{method:'POST',body:{config:cfg}});
+        if(sequence!==previewSequence || !container.isConnected)return;
+        find('prevTitle').textContent=find('rb_name').value || 'Report preview';
+        find('prevSubtitle').textContent=`${result.total_records.toLocaleString()} matched · ${result.rows.length.toLocaleString()} shown${result.query_truncated?' · Query capped at 10,000; narrow the filters':''}${result.total_records>result.rows.length?' · CSV includes up to 10,000 records':''}`;
+        find('reportPreviewResults').innerHTML=`<div class="report-metrics"><div><strong>${result.total_records.toLocaleString()}</strong><span>Opportunities</span></div><div><strong>${result.totals.ordered_count.toLocaleString()}</strong><span>Ordered</span></div><div><strong>${result.totals.conversion_rate}%</strong><span>Conversion</span></div><div><strong>${stageDuration(result.totals.avg_open_minutes)}</strong><span>Average open time</span></div></div>
+          ${result.totals.metric?`<p class="report-measure"><b>${esc(metricText(result.totals.metric))}: ${esc(metricValue(result.totals.metric))}</b><span class="small muted"> · ${result.totals.metric.sample_count} measured records</span></p>`:''}
+          ${cfg.group_by && result.summary?`<details open class="report-section"><summary>Summary by ${esc(byKey.get(cfg.group_by)?.label || cfg.group_by)}</summary><div class="table-wrap" tabindex="0" role="region" aria-label="Grouped report summary"><table class="matrix-table"><thead><tr><th>Group</th><th>Leads</th><th>Ordered</th><th>Conversion</th><th>Avg. open time</th>${cfg.calc_field?`<th>${esc(metricText(result.totals.metric))}</th>`:''}</tr></thead><tbody>${result.summary.map(g=>`<tr><td>${esc(g.group)}</td><td>${g.count}</td><td>${g.ordered}</td><td>${g.conversion_rate}%</td><td>${stageDuration(g.avg_open_minutes)}</td>${cfg.calc_field?`<td>${esc(metricValue(g.metric))}</td>`:''}</tr>${(g.subgroups || []).map(s=>`<tr class="matrix-subrow"><td>↳ ${esc(s.group)}</td><td>${s.count}</td><td>${s.ordered}</td><td>${s.conversion_rate}%</td><td>—</td>${cfg.calc_field?'<td>—</td>':''}</tr>`).join('')}`).join('')}</tbody></table></div></details>`:''}
+          ${result.totals.incomplete_history_count?`<p class="alert warn small">${result.totals.incomplete_history_count} records have incomplete stage history and are excluded from timing averages.</p>`:''}<h3>Records</h3><div class="table-wrap report-records" tabindex="0" role="region" aria-label="Selected report columns"><table class="report-data-table"><thead><tr>${cfg.columns.map(key=>`<th scope="col">${esc(byKey.get(key).label)}</th>`).join('')}</tr></thead><tbody>${result.rows.map(r=>`<tr>${cfg.columns.map(key=>`<td>${formatCell(r,key)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cfg.columns.length}">No records match these filters.</td></tr>`}</tbody></table></div><p class="small muted">Stage times use elapsed minutes. Missing historical time cannot be reconstructed. CSV keeps the numeric minute values.</p>`;
+        status('Preview is up to date.');
+      } catch(error) {if(sequence===previewSequence){find('prevSubtitle').textContent='Report needs attention';find('reportPreviewResults').innerHTML=`<div class="alert err">${esc(error.message)}</div>`;}}
+      finally {if(sequence===previewSequence && container.isConnected)find('reportPreviewResults').removeAttribute('aria-busy');}
     };
-
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      runPreview();
-    };
-
-    document.getElementById('saveReportBtn').onclick = async () => {
-      const body = {
-        name: document.getElementById('rb_name').value,
-        description: document.getElementById('rb_desc').value,
-        is_public: document.getElementById('rb_public').checked,
-        config: {
-          group_by: document.getElementById('rb_group').value,
-          secondary_group_by: document.getElementById('rb_sec_group').value,
-          relative_date: document.getElementById('rb_rel_date').value,
-        },
-      };
-
-      try {
-        if (reportId) {
-          await api(`/reports/${reportId}`, { method: 'PATCH', body });
-          toast('Report updated');
-        } else {
-          const r = await api('/reports', { method: 'POST', body });
-          toast('Report created');
-          location.hash = `#/analytics?tab=builder&report_id=${r.id}`;
-        }
-      } catch (err) { toast(err.message); }
-    };
-
-    document.getElementById('exportReportCsv').onclick = () => {
-      if (reportId) location.href = `/api/reports/${reportId}/export`;
-      else toast('Please save the report first to export CSV.');
-    };
-
-    const schedBtn = document.getElementById('scheduleReportBtn');
-    if (schedBtn) {
-      schedBtn.onclick = () => {
-        openScheduleModal(reportId, opts);
-      };
-    }
-
-    runPreview();
+    const busy=async(button,work)=>{button.disabled=true;try {await work();}catch(error){status(error.message);toast(error.message);}finally{button.disabled=false;}};
+    find('reportBuilderForm').onsubmit=e=>{e.preventDefault();busy(find('reportBuilderForm').querySelector('[type="submit"]'),async()=>{await runPreview();if(window.matchMedia('(max-width: 960px)').matches){find('rb_disclosure').open=false;find('prevTitle').scrollIntoView({block:'start'});}});};
+    find('saveReportBtn').onclick=()=>busy(find('saveReportBtn'),async()=>{
+      if(!find('reportBuilderForm').reportValidity())return;
+      status('Saving report…');
+      const body={name:find('rb_name').value,description:find('rb_desc').value,is_public:find('rb_public').checked,config:getConfig()};
+      if(reportId){await api(`/reports/${reportId}`,{method:'PATCH',body});status('Report saved, including columns and filters.');toast('Report saved');}
+      else{const saved=await api('/reports',{method:'POST',body});toast('Report saved');location.hash=`#/analytics?tab=builder&report_id=${saved.id}`;}
+    });
+    find('exportReportCsv').onclick=()=>busy(find('exportReportCsv'),async()=>{
+      status('Preparing CSV with your current columns and filters…');
+      const response=await fetch('/api/reports/export',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:getConfig()})});
+      if(!response.ok){const error=await response.json();throw new Error(error.error || 'Export failed.');}
+      const url=URL.createObjectURL(await response.blob()),anchor=document.createElement('a');anchor.href=url;anchor.download='opportunity_report.csv';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);status('CSV downloaded with your current settings.');
+    });
+    const toggleDates=()=>{find('rb_custom_dates').hidden=!!find('rb_rel_date').value;};
+    find('rb_rel_date').onchange=toggleDates;toggleDates();
+    find('rb_field_search').oninput=drawColumns;
+    find('rb_add_filter').onclick=()=>{if(filters.length>=30){toast('Use up to 30 filters.');return;}filters.push({field:'status',op:'eq',value:''});drawFilters();find(`filter_field_${filters.length-1}`).focus();};
+    find('scheduleReportBtn')?.addEventListener('click',()=>openScheduleModal(reportId,opts));
+    find('reportBuilderForm').addEventListener('change',()=>status('Settings changed. Run report to refresh the preview.'));
+    drawColumns();drawFilters();runPreview();
   }
 
   function renderScheduledReports(container, schedules, reports) {
