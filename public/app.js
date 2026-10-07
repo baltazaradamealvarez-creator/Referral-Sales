@@ -7,7 +7,7 @@
     e.preventDefault();
     (document.getElementById('mainContent') || document.querySelector('.login input'))?.focus();
   });
-  const STATUSES = ['New', 'Working', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
+  const STATUSES = ['New', 'Working', 'Passed', 'Ordered', 'DNQ', 'Cancelled'];
   const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
   // ---------- utils ----------
@@ -1146,6 +1146,7 @@
     const ppl = r.can_assign ? await people() : { dispatchers: [] };
     const editing = state.editing === r.id;
     const rs = new Set((r.services || '').split(',').map((x) => x.trim()).filter(Boolean));
+    r.stage_timing?.stages.sort((a,b)=>STATUSES.indexOf(a.status)-STATUSES.indexOf(b.status));
 
     // Helpers
     const initials = (name) => (name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
@@ -1181,6 +1182,10 @@
               <span class="pref-chip">🕐 ${esc(contactPref)}</span>
             </div>
           </div>
+          ${r.can_manage ? `<section class="record-status-controls" id="customerStatus" aria-label="Update customer status">
+            <h2>Update status</h2>
+            <div class="seg" id="statusSeg">${STATUSES.map(s=>`<button type="button" data-s="${s}" class="status-choice ${s}${r.status===s?' on':''}" aria-pressed="${r.status===s}">${s}</button>`).join('')}</div>
+          </section>` : ''}
         </div>
 
         <!-- Highlights Strip -->
@@ -1215,7 +1220,7 @@
         <p id="recordActionState" class="small" role="status" aria-live="polite"></p>
       </div>
 
-      ${sectionLinks([['customerOverview','Overview'],['customerStages','Stage timers'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerStatus','Status & order'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
+      ${sectionLinks([r.can_manage&&['customerStatus','Status'],['customerOverview','Overview'],['customerStages','Stage timers'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerOrder','Order details'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
       ${customerStages(r)}
       <div class="grid-2 customer-layout">
         <!-- LEFT COLUMN: Detail Sections -->
@@ -1399,9 +1404,8 @@
           ${customerDocuments(r)}
 
           ${r.can_manage ? `
-          <div class="card" id="customerStatus">
-            <h2>Update Status</h2>
-            <div class="seg" id="statusSeg" style="margin-bottom:.9rem">${STATUSES.map((s) => `<button data-s="${s}" class="${r.status === s ? 'on' : ''}">${s}</button>`).join('')}</div>
+          <div class="card" id="customerOrder">
+            <h2>Order details</h2>
             <form id="acctForm" class="fix-grid" style="margin:0">
               <div><label for="acct">Spectrum account / order #</label><input id="acct" name="acct" value="${esc(r.account_number)}"></div>
               <div><label for="inst">Install date</label><input id="inst" name="inst" type="date" value="${esc(r.install_date)}"></div>

@@ -18,7 +18,7 @@
   --s-new: #0b63ce;
   --s-working: #087f8c;
   --s-passed: #6b4bd6;
-  --s-dnq: #8a5a00;
+  --s-dnq: #b3261e;
   --s-ordered: #1e7d3a;
   --s-cancelled: #b3261e;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
@@ -66,7 +66,7 @@
     --s-new: #4c9bff;
     --s-working: #51c8d4;
     --s-passed: #a58cff;
-    --s-dnq: #f0b64a;
+    --s-dnq: #ff7b72;
     --s-ordered: #5fd07f;
     --s-cancelled: #ff7b72;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3);
@@ -77,7 +77,7 @@
   --bg: #0f141b; --surface: #171e28; --surface-2: #1f2835; --text: #e7ecf3; --muted: #9aa8bb;
   --border: #2b3645; --brand: #4c9bff; --brand-ink: #081222; --brand-soft: #16273f;
   --danger: #ff7b72; --danger-soft: #3a1d1d; --ok: #5fd07f; --ok-soft: #173222; --warn: #f0b64a; --warn-soft: #362a12;
-  --s-new: #4c9bff; --s-working: #51c8d4; --s-passed: #a58cff; --s-dnq: #f0b64a; --s-ordered: #5fd07f; --s-cancelled: #ff7b72;
+  --s-new: #4c9bff; --s-working: #51c8d4; --s-passed: #a58cff; --s-dnq: #ff7b72; --s-ordered: #5fd07f; --s-cancelled: #ff7b72;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3); color-scheme: dark;
 }
 
@@ -274,6 +274,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .45rem;
 }
 .record-meta-row .pill { font-size: .72rem; }
+.record-meta-row .speed-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.customer-hero .record-header { flex-wrap: wrap; row-gap: .65rem; }
+.record-status-controls { flex: 0 0 100%; }
+.record-status-controls h2 { margin: 0 0 .4rem; font-size: .8rem; color: var(--muted); }
+.record-status-controls #statusSeg { width: 100%; max-width: 650px; display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); }
+.record-status-controls #statusSeg .status-choice { min-height: 40px; padding: .45rem .3rem; }
+.record-status-controls .status-choice:is(.DNQ,.Cancelled) { color: var(--danger); }
+.record-status-controls .status-choice:is(.DNQ,.Cancelled).on { background: var(--danger-soft); }
+@media (max-width: 600px) { .record-status-controls #statusSeg { grid-template-columns: repeat(3,minmax(0,1fr)); }.record-status-controls #statusSeg .status-choice { min-height: 44px; } }
 
 /* Priority badge */
 .priority-badge {
@@ -464,6 +473,8 @@ details.raw pre {
 }
 .col.over { border-color: var(--brand); background: var(--brand-soft); }
 .col header { display: flex; justify-content: space-between; align-items: center; padding: .2rem .2rem .6rem; }
+.col:is([data-status="DNQ"],[data-status="Cancelled"]) header { background: var(--danger-soft); border-radius: .5rem; padding: .4rem; margin-bottom: .4rem; }
+.col:is([data-status="DNQ"],[data-status="Cancelled"]) header .pill { color: var(--danger); }
 .cards { display: flex; flex-direction: column; gap: .5rem; }
 .cards .empty { text-align: center; padding: 1rem 0; }
 .kcard {
@@ -1218,7 +1229,7 @@ input, select, textarea { min-width: 0; }
 .section-nav-label { flex: 0 0 auto; padding: 0 .65rem; color: var(--muted); font-size: .7rem; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
 .section-nav button { flex: 0 0 auto; min-height: 42px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: .85rem; font-weight: 650; padding: .5rem .8rem; cursor: pointer; white-space: nowrap; }
 .section-nav button:hover, .section-nav button:focus-visible { background: var(--brand-soft); color: var(--brand); }
-:is(#customerOverview, #customerDocuments, #customerStatus, #customerReminders, #customerActivity, #customerComments, #energyOptions, #personActivity, #personOpportunities, #addUser) { scroll-margin-top: calc(var(--header-height) + 88px); }
+:is(#customerOverview, #customerDocuments, #customerStatus, #customerOrder, #customerReminders, #customerActivity, #customerComments, #energyOptions, #personActivity, #personOpportunities, #addUser) { scroll-margin-top: calc(var(--header-height) + 88px); }
 .customer-hero { padding: 1.4rem; background: linear-gradient(120deg, var(--brand-soft), var(--surface) 45%); }
 .record-title-block h1 { font-size: clamp(1.3rem, 2vw, 1.8rem); letter-spacing: -.03em; overflow-wrap: anywhere; }
 .record-avatar { border-width: 1px; border-radius: 16px; width: 60px; height: 60px; }
