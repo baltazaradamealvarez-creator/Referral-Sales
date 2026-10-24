@@ -489,6 +489,17 @@ function migrate(db) {
       db.exec('PRAGMA foreign_keys = ON');
     }
   }
+
+  // Feature columns may be added after a database already recorded a higher
+  // schema version on another production branch. Ensure them independently of
+  // PRAGMA user_version so upgrades from either branch stay safe.
+  const referralColumns = new Set(db.prepare('PRAGMA table_info(referrals)').all().map((column) => column.name));
+  if (!referralColumns.has('callback_requested_at')) db.exec('ALTER TABLE referrals ADD COLUMN callback_requested_at TEXT;');
+  if (!referralColumns.has('callback_requested_by')) db.exec('ALTER TABLE referrals ADD COLUMN callback_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;');
+  if (!referralColumns.has('customer_active')) db.exec('ALTER TABLE referrals ADD COLUMN customer_active INTEGER NOT NULL DEFAULT 0;');
+  if (!referralColumns.has('active_date')) db.exec(`ALTER TABLE referrals ADD COLUMN active_date TEXT NOT NULL DEFAULT '';`);
+  if (!referralColumns.has('usage_date')) db.exec(`ALTER TABLE referrals ADD COLUMN usage_date TEXT NOT NULL DEFAULT '';`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_ref_customer_active ON referrals(customer_active, active_date);');
 }
 
 function openDb(file) {
