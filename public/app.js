@@ -133,7 +133,7 @@
   // Sub-tabs of the hub: [href, label].
   function hubTabs() {
     if (isAdmin()) {
-      return [['#/team', 'Users & teams'], ['#/team?tab=invites', 'Invite links'], ['#/team?tab=past-sales', 'Past sales'],
+      return [['#/team', 'Users & teams'], ['#/team?tab=invites', 'Invite links'], ['#/team?tab=past-sales', 'Past sales'], ['#/team?tab=usage', 'Usage upload'],
         ['#/payments', 'Payments'], ['#/affiliate', 'Affiliate'], ['#/duplicates', 'Duplicates'], ['#/audit-logs', 'Audit log'],
         ['#/team?tab=settings', 'Settings'], ['#/account', 'My account']];
     }
@@ -771,7 +771,7 @@
       if (!tbody) return;
       tbody.innerHTML = rows.length ? rows.map((r) => `
         <tr class="click" data-id="${r.id}">
-          <td class="c-main"><b>${esc(leadName(r))}</b>${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${r.comment_count}</div>` : ''}</td>
+          <td class="c-main"><b>${esc(leadName(r))}</b>${r.customer_active ? ' <span class="tag ok-text">Active customer</span>' : ''}${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${esc(r.comment_count)}</div>` : ''}</td>
           <td class="c-contact" data-label="Contact">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
           ${worksLeads() ? `<td class="small" data-label="Rep">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
@@ -1144,6 +1144,18 @@
                   <div class="field-row">
                     <span class="field-label">Account #</span>
                     ${fv(r.account_number ? esc(r.account_number) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Customer active</span>
+                    <span class="field-value">${r.customer_active ? '<span class="tag ok-text">Active</span>' : '<span class="muted">Not marked active</span>'}</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Active date</span>
+                    ${fv(r.active_date ? esc(dayDate(r.active_date)) : '')}
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Usage date</span>
+                    ${fv(r.usage_date ? esc(dayDate(r.usage_date)) : '')}
                   </div>
                   ${r.commission != null ? `<div class="field-row">
                     <span class="field-label">Commission</span>
@@ -1802,7 +1814,7 @@
     const roles = ['rep', 'manager', 'dispatch', 'admin'];
     const q = query();
     // Admins see one section at a time (sub-tabs); managers see their one page.
-    const tab = isAdmin() ? (['invites', 'past-sales', 'settings'].includes(q.tab) ? q.tab : 'users') : 'users';
+    const tab = isAdmin() ? (['invites', 'past-sales', 'usage', 'settings'].includes(q.tab) ? q.tab : 'users') : 'users';
     const filter = q.show || 'active';
     const shown = users.filter((u) => (filter === 'all' ? true : filter === 'inactive' ? !u.active : u.active));
 
@@ -1857,6 +1869,16 @@
         </form>
         <div id="historyPreview"></div>
         <div id="historyList" class="small muted">Loading uploads…</div>
+      </div>` : ''}
+      ${isAdmin() && tab === 'usage' ? `
+      <div class="card" id="usageCard">
+        <div class="row between"><h2 style="margin:0">Customer usage upload</h2><span class="tag">Admin only</span></div>
+        <p class="small muted" style="margin:.45rem 0 .8rem">Upload the current usage workbook (.xlsx) or a CSV exported from its <b>Usage</b> tab. Customers on that tab with Internet Usage marked Y will be matched to existing records by account number and marked active. Connect date becomes the active date; Internet Usage Date becomes the usage date. This does not create customers or change customers missing from the Usage tab.</p>
+        <form class="history-form" id="usageForm">
+          <div><label for="usage_file">Usage workbook or CSV</label><input type="file" id="usage_file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required></div>
+          <div class="iv-go"><button class="btn" id="usageCheck">Check file</button></div>
+        </form>
+        <div id="usagePreview"></div>
       </div>` : ''}
       ${tab === 'users' ? `
       <div class="grid-2">
@@ -1986,6 +2008,7 @@
 
     if (tab === 'invites') setupInvites(teams);
     if (tab === 'past-sales') setupHistory();
+    if (tab === 'usage') setupUsageImport();
 
     const addUser = document.getElementById('addUser');
     if (addUser) addUser.onsubmit = async (e) => {
@@ -2574,6 +2597,42 @@
       } finally { btn.disabled = false; btn.textContent = 'Check file'; }
     };
     load();
+  }
+
+  function setupUsageImport() {
+    const form = document.getElementById('usageForm');
+    const preview = document.getElementById('usagePreview');
+    const n = (x) => Number(x || 0).toLocaleString();
+    let pending = null;
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('usage_file').files[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) { preview.innerHTML = '<div class="alert err small">That file is over 10 MB. Split it into smaller files.</div>'; return; }
+      const btn = document.getElementById('usageCheck');
+      btn.disabled = true; btn.textContent = 'Reading…';
+      try {
+        pending = { file_name: file.name, data: await fileToBase64(file) };
+        const r = await api('/usage/import', { method: 'POST', body: pending });
+        preview.innerHTML = `<div class="invite-new">
+          <div><b>${esc(r.file_name)}</b>: ${n(r.rows)} active usage rows, ${n(r.matched)} matched to existing customer records, ${n(r.unmatched)} not found${r.ambiguous ? `, ${n(r.ambiguous)} account numbers matched more than one record` : ''}.</div>
+          <div class="small muted" style="margin:.35rem 0 .6rem">${n(r.unique_accounts)} unique account numbers; ${n(r.duplicate_rows)} duplicate rows skipped. Only exact account-number matches will be updated.</div>
+          ${r.unmatched_samples.length ? `<p class="small muted">A few not found: ${r.unmatched_samples.map((x) => `${esc(x.customer_name || 'Unnamed')} (…${esc(x.account_last4)})`).join(' · ')}</p>` : ''}
+          ${r.ambiguous_samples.length ? `<p class="small warn-text">Ambiguous accounts were skipped: ${r.ambiguous_samples.map((x) => `…${esc(x.account_last4)}`).join(' · ')}</p>` : ''}
+          <div class="row"><button class="btn primary" id="usageSave" ${r.matched ? '' : 'disabled'}>Mark ${n(r.matched)} customers active</button><button class="btn" id="usageCancel">Cancel</button></div></div>`;
+        document.getElementById('usageCancel').onclick = () => { preview.innerHTML = ''; pending = null; };
+        document.getElementById('usageSave').onclick = async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const saved = await api('/usage/import', { method: 'POST', body: { ...pending, commit: true } });
+            preview.innerHTML = `<div class="alert ok small">✓ Updated ${n(saved.updated)} existing customer records from ${esc(saved.file_name)}. Active date and usage date are saved on each matched record.</div>`;
+            form.reset(); pending = null;
+          } catch (err) { ev.target.disabled = false; toast(err.message); }
+        };
+      } catch (err) {
+        preview.innerHTML = `<div class="alert err small">${esc(err.message)}</div>`;
+      } finally { btn.disabled = false; btn.textContent = 'Check file'; }
+    };
   }
 
   // ---------- affiliate program ----------
