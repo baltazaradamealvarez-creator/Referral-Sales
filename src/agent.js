@@ -671,6 +671,26 @@ function mount(app, db, deps) {
     }
   }));
 
+  app.post('/api/assistant/pdf', awrap(async (req) => {
+    const u = requireUser(req);
+    if (!rateLimit(chatHits, u.id, 30, 10 * 60000)) throw new HttpError(429, 'That\'s a lot of questions. Try again in a few minutes.');
+    if (!ai || !ai.enabled()) throw new HttpError(503, 'The assistant is off. An admin can switch it on in Admin → Settings.');
+    const b = req.body || {};
+    const pdfBase64 = String(b.data_base64 || '').replace(/^data:application\/pdf;base64,/i, '');
+    const question = String(b.question || '').trim();
+    if (!question) throw new HttpError(400, 'Ask a question about the PDF.');
+    if (!pdfBase64 || pdfBase64.length > 14 * 1024 * 1024) throw new HttpError(400, 'Choose a PDF smaller than 10 MB.');
+    const pdf = Buffer.from(pdfBase64, 'base64');
+    if (pdf.length > 10 * 1024 * 1024 || pdf.subarray(0, 5).toString('ascii') !== '%PDF-') throw new HttpError(400, 'That file is not a valid PDF under 10 MB.');
+    try {
+      return { reply: await ai.answerPdf({ pdfBase64, question, senderName: u.full_name }) };
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      console.error('PDF assistant failed:', e.message);
+      throw new HttpError(502, 'The assistant could not read this PDF. Try a smaller file or ask about a shorter section.');
+    }
+  }));
+
   app.get('/api/reminders', wrap((req) => listReminders(requireUser(req))));
 
   app.post('/api/reminders', wrap((req, res) => {
