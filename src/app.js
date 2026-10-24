@@ -62,7 +62,7 @@ function createApp(db, opts = {}) {
   // Spreadsheet and PDF uploads (sent as base64 in JSON) get a bigger limit than everything else.
   const smallJson = express.json({ limit: '100kb' });
   const uploadJson = express.json({ limit: '15mb' });
-  app.use((req, res, next) => (['/api/history/import', '/api/assistant/pdf'].includes(req.path) ? uploadJson : smallJson)(req, res, next));
+  app.use((req, res, next) => (['/api/history/import', '/api/usage/import', '/api/assistant/pdf'].includes(req.path) ? uploadJson : smallJson)(req, res, next));
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
@@ -800,7 +800,8 @@ function createApp(db, opts = {}) {
       const cols = [
         ['ID', 'id'], ['Entered', 'created_at'], ['Customer', 'customer_name'], ['Phone', 'phone'], ['Email', 'email'],
         ['Address', 'address'], ['Services', 'services'], ['Status', 'status'], ['Account #', 'account_number'],
-        ['Install date', 'install_date'], ['Rep', 'created_by_name'], ['Team', 'team_name'],
+        ['Install date', 'install_date'], ['Customer active', 'customer_active'], ['Active date', 'active_date'], ['Usage date', 'usage_date'],
+        ['Rep', 'created_by_name'], ['Team', 'team_name'],
         ['Entered by', 'entered_by_name'], ['Assigned to', 'assigned_name'], ['Notes', 'notes'],
       ];
       const cell = (v) => {
@@ -1685,6 +1686,7 @@ function createApp(db, opts = {}) {
 
   require('./invites').mount(app, db, { requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify, rateLimit, cleanEmail });
   require('./history').mount(app, db, { requireRole, wrap, HttpError, logAudit });
+  require('./usage').mount(app, db, { requireRole, wrap, HttpError, logAudit });
   require('./payments').mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getSettings, logAudit, notify });
   speed = require('./speed').mount(app, db, {
     requireUser, requireRole, wrap, HttpError, getSettings, logAudit, notify,

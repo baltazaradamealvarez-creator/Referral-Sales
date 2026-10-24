@@ -469,6 +469,13 @@ const MIGRATIONS = [
   ALTER TABLE referrals ADD COLUMN callback_requested_at TEXT;
   ALTER TABLE referrals ADD COLUMN callback_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
   `,
+  // v17: customer activation and usage dates from the admin usage workbook import.
+  `
+  ALTER TABLE referrals ADD COLUMN customer_active INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE referrals ADD COLUMN active_date TEXT NOT NULL DEFAULT '';
+  ALTER TABLE referrals ADD COLUMN usage_date TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_ref_customer_active ON referrals(customer_active, active_date);
+  `,
 ];
 
 
