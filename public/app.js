@@ -983,9 +983,25 @@
 
         ${r.lead_tips && r.lead_tips.length ? `<div class="score-tips"><b>To improve this lead:</b> ${r.lead_tips.map(esc).join(' · ')}</div>` : ''}
         <div class="record-actions" id="waActions">${waButtonsHtml()}
+          ${r.callback_requested_at ? `<span class="small muted">📞 Team call-back requested ${when(r.callback_requested_at)}${r.callback_requested_by_name ? ` by ${esc(r.callback_requested_by_name)}` : ''}</span>` : `<button class="btn small primary" id="callbackBtn">📞 Request team call-back</button>`}
           ${r.can_edit && !editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
           ${r.can_edit && r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
         </div>
+      </div>
+
+      ${!r.callback_requested_at ? '<p class="small muted" style="margin:-.45rem 0 1rem .2rem">Use this once only after the customer confirms they can answer. It sends the call-back request to the silent group.</p>' : ''}
+
+      <div class="card" style="margin-bottom:1rem">
+        <h2>Comments</h2>
+        <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
+        <div id="comments">${r.comments.length ? r.comments.map((c) => `
+          <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+        </div>
+        <form id="commentForm" style="margin-top:1rem">
+          <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
+          <div id="mentionBox"></div>
+          <button class="btn primary" style="margin-top:.5rem">Post comment</button>
+        </form>
       </div>
 
       <div class="grid-2">
@@ -1201,18 +1217,6 @@
             <h2>Activity Timeline</h2>
             <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${esc(h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
           </div>
-          <div class="card">
-            <h2>Comments</h2>
-            <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
-            <div id="comments">${r.comments.length ? r.comments.map((c) => `
-              <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
-            </div>
-            <form id="commentForm" style="margin-top:1rem">
-              <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
-              <div id="mentionBox"></div>
-              <button class="btn primary" style="margin-top:.5rem">Post comment</button>
-            </form>
-          </div>
         </div>
       </div>`);
 
@@ -1223,6 +1227,17 @@
 
     const editBtn = document.getElementById('editBtn');
     if (editBtn) editBtn.onclick = () => { state.editing = r.id; renderReferral(id); };
+    const callbackBtn = document.getElementById('callbackBtn');
+    if (callbackBtn) callbackBtn.onclick = async () => {
+      const confirmed = confirm(`Request a call-back for ${leadName(r)}? This can be used only once. Confirm the customer said they will answer, and the request will be sent to the silent group.`);
+      if (!confirmed) return;
+      callbackBtn.disabled = true;
+      try {
+        await api(`/referrals/${r.id}/callback-request`, { method: 'POST', body: { confirm_customer_available: true } });
+        toast('Call-back request queued for the silent group');
+        renderReferral(id);
+      } catch (err) { toast(err.message); callbackBtn.disabled = false; }
+    };
     bindWhatsapp(document.getElementById('waActions'), r);
     const fuForm = document.getElementById('fuForm');
     if (fuForm) {
@@ -1493,6 +1508,9 @@
         <div class="field"><label for="waGroup">Post new leads to this group</label>
           <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
+        <div class="field" style="margin-top:.8rem"><label for="waCallbackGroup">Silent group for one-time call-back requests</label>
+          <select id="waCallbackGroup" style="width:100%"><option value="">${s.callback_group ? esc(s.callback_group.name) : 'Choose the silent group'}</option></select>
+          <p class="small muted" style="margin:.3rem 0 0">The customer page's call-back button posts there once, after the user confirms the customer will answer.</p></div>
         <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the group (in the format below)</label>
         <h3 class="wa-h3">Replies in the group</h3>
         <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status</span></label>
@@ -1534,9 +1552,11 @@
     if (nl) nl.onchange = async () => { try { await api('/whatsapp/settings', { method: 'PATCH', body: { new_lead_group: nl.checked } }); toast(nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted'); } catch (err) { toast(err.message); } };
     const sel = document.getElementById('waGroup');
     if (sel) {
+      const callbackSel = document.getElementById('waCallbackGroup');
       try {
         const groups = await api('/whatsapp/groups');
         sel.innerHTML = `<option value="">— pick a group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if (callbackSel) callbackSel.innerHTML = `<option value="">— choose the silent group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.callback_group && s.callback_group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
       } catch (err) { sel.innerHTML = `<option value="">${esc(err.message)}</option>`; }
       sel.onchange = async () => {
         const opt = sel.selectedOptions[0];
@@ -1548,6 +1568,13 @@
             await api('/whatsapp/instructions', { method: 'POST', body: {} });
             toast('Instructions posted to the group');
           } else toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
+        } catch (err) { toast(err.message); }
+      };
+      if (callbackSel) callbackSel.onchange = async () => {
+        const opt = callbackSel.selectedOptions[0];
+        try {
+          await api('/whatsapp/settings', { method: 'PATCH', body: { callback_group_id: callbackSel.value, callback_group_name: callbackSel.value ? opt.textContent.replace(/ \(\d+\)$/, '') : '' } });
+          toast(callbackSel.value ? 'Silent callback group saved' : 'Silent callback group cleared');
         } catch (err) { toast(err.message); }
       };
     }
@@ -1685,6 +1712,16 @@
               <div class="small muted">For ${esc(r.for)}${r.by !== 'you' ? ` · from ${esc(r.by)}` : ''}</div></div>
               ${r.can_cancel ? `<button class="btn small" data-cancel="${r.id}" title="Cancel">✕</button>` : ''}</div>`).join('') : '<p class="muted small">No reminders yet. They arrive as notifications (and on your phone or WhatsApp if you have those on).</p>'}</div>
         </div>
+        <div class="card">
+          <h2 style="margin-top:0">📄 Ask about a PDF</h2>
+          <p class="small muted" style="margin-top:0">Upload an offer, product guide or policy PDF and ask a question. The assistant can read scanned pages and tables too. The file is used for this answer and is not saved in the app.</p>
+          <form id="pdfForm" class="stack" style="gap:.65rem">
+            <input id="pdfFile" type="file" accept="application/pdf,.pdf" required ${info.ai ? '' : 'disabled'}>
+            <textarea id="pdfQuestion" rows="2" maxlength="2000" placeholder="What does the PDF say about eligibility?" required ${info.ai ? '' : 'disabled'}></textarea>
+            <button class="btn primary" ${info.ai ? '' : 'disabled'}>Read PDF and answer</button>
+          </form>
+          <div id="pdfAnswer" class="small" style="margin-top:.7rem"></div>
+        </div>
       </div>`);
     const log = document.getElementById('chatLog');
     log.scrollTop = log.scrollHeight;
@@ -1716,6 +1753,24 @@
     document.getElementById('chatForm').onsubmit = (e) => { e.preventDefault(); send(input.value); };
     input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.value); } };
     document.querySelectorAll('[data-idea]').forEach((b) => { b.onclick = () => send(b.dataset.idea); });
+    const pdfForm = document.getElementById('pdfForm');
+    if (pdfForm) pdfForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('pdfFile').files[0];
+      const question = document.getElementById('pdfQuestion').value.trim();
+      const answer = document.getElementById('pdfAnswer');
+      const button = pdfForm.querySelector('button');
+      if (!file || !question) return;
+      if (file.size > 10 * 1024 * 1024) { answer.innerHTML = '<div class="alert err small">Choose a PDF smaller than 10 MB.</div>'; return; }
+      button.disabled = true;
+      answer.innerHTML = '<p class="muted">Reading the PDF…</p>';
+      try {
+        const data_base64 = await fileToBase64(file);
+        const result = await api('/assistant/pdf', { method: 'POST', body: { data_base64, question } });
+        answer.innerHTML = `<div class="comment"><b>Answer</b><p style="white-space:pre-wrap">${esc(result.reply)}</p></div>`;
+      } catch (err) { answer.innerHTML = `<div class="alert err small">${esc(err.message)}</div>`; }
+      finally { button.disabled = false; }
+    };
     const clear = document.getElementById('chatClear');
     if (clear) clear.onclick = () => { state.chat = []; lsSet(`eo-chat-${state.me.id}`, []); renderAssistant(); };
     document.getElementById('remForm').onsubmit = async (e) => {
