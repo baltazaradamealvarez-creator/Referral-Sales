@@ -464,6 +464,11 @@ const MIGRATIONS = [
   CREATE INDEX idx_coach_drafts_status ON coach_drafts(status, created_at);
   CREATE UNIQUE INDEX idx_coach_message ON coach_drafts(chat, message_id) WHERE message_id <> '';
   `,
+  // v16: one-time callback requests and a dedicated WhatsApp group for them.
+  `
+  ALTER TABLE referrals ADD COLUMN callback_requested_at TEXT;
+  ALTER TABLE referrals ADD COLUMN callback_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  `,
 ];
 
 
