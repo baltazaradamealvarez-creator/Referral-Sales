@@ -59,10 +59,10 @@ function createApp(db, opts = {}) {
   let whatsapp = null; // WhatsApp alerts through a linked phone, mounted below
   app.disable('x-powered-by');
   app.set('trust proxy', true);
-  // Spreadsheet uploads (sent as base64 in JSON) get a bigger limit than everything else.
+  // Spreadsheet and PDF uploads (sent as base64 in JSON) get a bigger limit than everything else.
   const smallJson = express.json({ limit: '100kb' });
   const uploadJson = express.json({ limit: '15mb' });
-  app.use((req, res, next) => (req.path === '/api/history/import' ? uploadJson : smallJson)(req, res, next));
+  app.use((req, res, next) => (['/api/history/import', '/api/assistant/pdf'].includes(req.path) ? uploadJson : smallJson)(req, res, next));
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
@@ -155,12 +155,13 @@ function createApp(db, opts = {}) {
 
   const REFERRAL_SELECT = `
     SELECT r.*, u.full_name AS created_by_name, u.username AS created_by_username, t.name AS team_name,
-      a.full_name AS assigned_name, e.full_name AS entered_by_name
+      a.full_name AS assigned_name, e.full_name AS entered_by_name, cb.full_name AS callback_requested_by_name
     FROM referrals r
     JOIN users u ON u.id = r.created_by
     LEFT JOIN teams t ON t.id = r.team_id
     LEFT JOIN users a ON a.id = r.assigned_to
-    LEFT JOIN users e ON e.id = r.entered_by`;
+    LEFT JOIN users e ON e.id = r.entered_by
+    LEFT JOIN users cb ON cb.id = r.callback_requested_by`;
 
   function getReferral(id) {
     const ref = db.prepare(`${REFERRAL_SELECT} WHERE r.id = ?`).get(Number(id));
@@ -959,6 +960,42 @@ function createApp(db, opts = {}) {
     addComment(u, ref, req.body.body);
     res.status(201);
     return { ok: true };
+  }));
+
+  app.post('/api/referrals/:id/callback-request', wrap((req) => {
+    const u = requireUser(req);
+    const ref = getReferral(req.params.id);
+    if (!canViewReferral(u, ref)) throw new HttpError(404, 'Referral not found.');
+    if (!ref.phone) throw new HttpError(400, 'This customer has no phone number on the lead.');
+    if (req.body.confirm_customer_available !== true) throw new HttpError(400, 'Confirm that the customer will answer before requesting a call-back.');
+    if (!whatsapp || whatsapp.status() !== 'connected') throw new HttpError(409, 'WhatsApp is not connected. Ask an admin to reconnect it.');
+    const group = whatsapp.callbackGroup();
+    if (!group) throw new HttpError(409, 'The admin has not selected the silent callback group yet.');
+
+    const claimed = tx(db, () => db.prepare(`UPDATE referrals
+      SET callback_requested_at = datetime('now'), callback_requested_by = ?
+      WHERE id = ? AND callback_requested_at IS NULL`).run(u.id, ref.id).changes);
+    if (!claimed) throw new HttpError(409, 'A call-back has already been requested for this customer.');
+
+    const appUrl = String(process.env.APP_URL || '').replace(/\/$/, '');
+    const message = [
+      '📞 *Please call this lead back*',
+      'The customer confirmed they will answer.',
+      `*Customer:* ${ref.customer_name || `Lead #${ref.id}`}`,
+      `*Phone:* ${ref.phone}`,
+      `*Lead:* #${ref.id}${appUrl ? `\n${appUrl}/#/r/${ref.id}` : ''}`,
+    ].join('\n');
+    const queued = whatsapp.postCallbackRequest(message, {
+      onFailed: () => db.prepare(`UPDATE referrals SET callback_requested_at = NULL, callback_requested_by = NULL
+        WHERE id = ? AND callback_requested_by = ?`).run(ref.id, u.id),
+    });
+    if (!queued) {
+      db.prepare(`UPDATE referrals SET callback_requested_at = NULL, callback_requested_by = NULL
+        WHERE id = ? AND callback_requested_by = ?`).run(ref.id, u.id);
+      throw new HttpError(409, 'The callback message could not be queued. Please try again.');
+    }
+    logAudit(req, 'callback.request', 'referral', ref.id, `Callback requested for lead #${ref.id} to ${group.name || 'the silent group'}`);
+    return { ok: true, queued: true, requested_at: db.prepare('SELECT callback_requested_at FROM referrals WHERE id = ?').get(ref.id).callback_requested_at, group: group.name };
   }));
 
   // A note on a lead. opts.source: 'app' | 'whatsapp'. WhatsApp notes only alert the lead's

@@ -63,6 +63,8 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       enabled: s.wa_enabled === '1',
       groupId: s.wa_group_id || '',
       groupName: s.wa_group_name || '',
+      callbackGroupId: s.wa_callback_group_id || '',
+      callbackGroupName: s.wa_callback_group_name || '',
       newLeadGroup: s.wa_new_lead_group !== '0',
     };
   };
@@ -205,6 +207,15 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       if (!c.groupId || (!c.newLeadGroup && !force)) return false;
       return enqueue({ jid: c.groupId, text, onSent });
     },
+    postCallbackRequest(text, callbacks = {}) {
+      const c = cfg();
+      if (!c.callbackGroupId) return false;
+      return enqueue({ jid: c.callbackGroupId, text, ...callbacks });
+    },
+    callbackGroup: () => {
+      const c = cfg();
+      return c.callbackGroupId ? { id: c.callbackGroupId, name: c.callbackGroupName } : null;
+    },
     // A reply in a chat, optionally quoting the message it answers.
     reply(chat, text, { quotedId, onSent } = {}) { return enqueue({ jid: chat, text, quotedId, onSent }); },
     react(chat, messageId, emoji) { return enqueue({ jid: chat, react: { id: messageId, emoji } }); },
@@ -224,7 +235,9 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
     const c = cfg();
     return {
       enabled: c.enabled, status: st.status, qr: st.status === 'qr' ? st.qr : null, me: st.me, error: st.error,
-      group: c.groupId ? { id: c.groupId, name: c.groupName } : null, new_lead_group: c.newLeadGroup, queued: queue.length,
+      group: c.groupId ? { id: c.groupId, name: c.groupName } : null,
+      callback_group: c.callbackGroupId ? { id: c.callbackGroupId, name: c.callbackGroupName } : null,
+      new_lead_group: c.newLeadGroup, queued: queue.length,
       two_way: getSettings().wa_two_way !== '0', approved_status: getSettings().wa_approved_status === 'Passed' ? 'Passed' : 'Ordered',
       ai_available: !!process.env.ANTHROPIC_API_KEY, ai_enabled: getSettings().ai_enabled !== '0',
       diagnostics: { ...diagnostics },
@@ -269,6 +282,12 @@ function mount(app, db, { requireUser, requireRole, wrap, awrap, HttpError, getS
       if (id && !/^[\w.-]+@g\.us$/.test(id)) throw new HttpError(400, 'Pick a group from the list.');
       set.run('wa_group_id', id);
       set.run('wa_group_name', id ? String(b.group_name || '').slice(0, 100) : '');
+    }
+    if (b.callback_group_id !== undefined) {
+      const id = String(b.callback_group_id || '');
+      if (id && !/^[\w.-]+@g\.us$/.test(id)) throw new HttpError(400, 'Pick a callback group from the list.');
+      set.run('wa_callback_group_id', id);
+      set.run('wa_callback_group_name', id ? String(b.callback_group_name || '').slice(0, 100) : '');
     }
     if (b.new_lead_group !== undefined) set.run('wa_new_lead_group', b.new_lead_group ? '1' : '0');
     if (b.two_way !== undefined) set.run('wa_two_way', b.two_way ? '1' : '0');
