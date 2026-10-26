@@ -4,7 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { DatabaseSync } = require('node:sqlite');
 
-const STATUSES = ['New', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
+const STATUSES = ['New', 'Working', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
 const ROLES = ['admin', 'manager', 'dispatch', 'rep'];
 const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
@@ -464,18 +464,154 @@ const MIGRATIONS = [
   CREATE INDEX idx_coach_drafts_status ON coach_drafts(status, created_at);
   CREATE UNIQUE INDEX idx_coach_message ON coach_drafts(chat, message_id) WHERE message_id <> '';
   `,
-  // v16: one-time callback requests and a dedicated WhatsApp group for them.
+  // v16: expand the status constraint, retaining every referral column and index.
+  (db) => {
+    const oldSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='referrals'").get().sql;
+    const expanded = oldSql.replace("'New','Passed','DNQ','Ordered','Cancelled'", "'New','Working','Passed','DNQ','Ordered','Cancelled'");
+    if (expanded === oldSql) throw new Error('Could not expand the referral status constraint.');
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='referrals' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(expanded.replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?referrals["`]?/i, 'CREATE TABLE referrals_next'));
+    db.exec('INSERT INTO referrals_next SELECT * FROM referrals; DROP TABLE referrals; ALTER TABLE referrals_next RENAME TO referrals;');
+    for (const item of objects) db.exec(item.sql);
+  },
+  // v17: reversible cleanup of completed coaching drafts.
+  `ALTER TABLE coach_drafts ADD COLUMN hidden_at TEXT;`,
+  // v18: personal channel preferences, typed notifications and energy attribution.
   `
-  ALTER TABLE referrals ADD COLUMN callback_requested_at TEXT;
-  ALTER TABLE referrals ADD COLUMN callback_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE users ADD COLUMN notification_preferences TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE users ADD COLUMN comparepower_afuid TEXT NOT NULL DEFAULT '';
+  ALTER TABLE notifications ADD COLUMN event_type TEXT NOT NULL DEFAULT 'general';
+  INSERT INTO settings(key,value) VALUES('wa_new_lead_group','1') ON CONFLICT(key) DO NOTHING;
   `,
-  // v17: customer activation and usage dates from the admin usage workbook import.
-  `
-  ALTER TABLE referrals ADD COLUMN customer_active INTEGER NOT NULL DEFAULT 0;
-  ALTER TABLE referrals ADD COLUMN active_date TEXT NOT NULL DEFAULT '';
-  ALTER TABLE referrals ADD COLUMN usage_date TEXT NOT NULL DEFAULT '';
-  CREATE INDEX idx_ref_customer_active ON referrals(customer_active, active_date);
-  `,
+  // v19: v18 accidentally disabled dispatch-group lead posts when introducing
+  // personal alert preferences. Repair affected installations with a selected
+  // group; upgrades from older versions retain their explicit group setting.
+  (db, startingVersion) => {
+    if (startingVersion !== 18) return;
+    db.prepare(`UPDATE settings SET value='1' WHERE key='wa_new_lead_group'
+      AND EXISTS(SELECT 1 FROM settings WHERE key='wa_group_id' AND trim(value)<>'')`).run();
+  },
+  // v20: recover separate location fields from existing, unambiguous saved data.
+  (db) => { require('./location-repair').repairLocations(db); },
+  // v21: capture external WhatsApp replies without impersonating a CRM account.
+  (db) => {
+    if (db.prepare('PRAGMA table_info(comments)').all().some(column => column.name === 'external_author')) return;
+    const oldSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='comments'").get().sql;
+    const nullable = oldSql.replace(/user_id\s+INTEGER\s+NOT NULL/i, 'user_id INTEGER');
+    if (nullable === oldSql) throw new Error('Could not expand comment authorship.');
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='comments' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(nullable.replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?comments["`]?/i, 'CREATE TABLE comments_next'));
+    db.exec('INSERT INTO comments_next SELECT * FROM comments; DROP TABLE comments; ALTER TABLE comments_next RENAME TO comments;');
+    for (const item of objects) db.exec(item.sql);
+    db.exec(`ALTER TABLE comments ADD COLUMN external_author TEXT NOT NULL DEFAULT '';
+      ALTER TABLE comments ADD COLUMN whatsapp_chat TEXT NOT NULL DEFAULT '';
+      ALTER TABLE comments ADD COLUMN whatsapp_message_id TEXT NOT NULL DEFAULT '';
+      CREATE UNIQUE INDEX idx_comments_whatsapp_message ON comments(whatsapp_chat,whatsapp_message_id) WHERE whatsapp_message_id<>'';`);
+  },
+  // v22: quiet-group test posts and replies stay outside customer records and reports.
+  `CREATE TABLE IF NOT EXISTS wa_quiet_tests (
+    id INTEGER PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    sample_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'New',
+    assigned_to INTEGER REFERENCES users(id),
+    post_status TEXT NOT NULL DEFAULT 'queued',
+    post_error TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT(datetime('now')),
+    posted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_quiet_test_group ON wa_quiet_tests(group_id,id);
+  CREATE TABLE IF NOT EXISTS wa_quiet_test_replies (
+    id INTEGER PRIMARY KEY,
+    test_id INTEGER NOT NULL REFERENCES wa_quiet_tests(id) ON DELETE CASCADE,
+    chat TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id),
+    external_author TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    from_status TEXT NOT NULL,
+    to_status TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT(datetime('now')),
+    UNIQUE(chat,message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_quiet_test_replies ON wa_quiet_test_replies(test_id,id);`,
+  // v23: trusted external updates retain their own attribution; PDFs have reviewable outcomes.
+  (db) => {
+    if (!db.prepare('PRAGMA table_info(status_history)').all().some(c => c.name === 'external_author')) {
+      const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='status_history'").get().sql;
+      const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='status_history' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+      db.exec(sql.replace(/user_id\s+INTEGER\s+NOT NULL/i,'user_id INTEGER')
+        .replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?status_history["`]?/i,'CREATE TABLE status_history_next'));
+      db.exec('INSERT INTO status_history_next SELECT * FROM status_history; DROP TABLE status_history; ALTER TABLE status_history_next RENAME TO status_history;');
+      for (const item of objects) db.exec(item.sql);
+      db.exec(`ALTER TABLE status_history ADD COLUMN external_author TEXT NOT NULL DEFAULT '';
+        ALTER TABLE status_history ADD COLUMN whatsapp_chat TEXT NOT NULL DEFAULT '';
+        ALTER TABLE status_history ADD COLUMN whatsapp_message_id TEXT NOT NULL DEFAULT '';`);
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS wa_group_partners (
+      id INTEGER PRIMARY KEY,group_id TEXT NOT NULL,name TEXT NOT NULL,phone TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,authorized_by INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+      UNIQUE(group_id,phone));
+      CREATE TABLE IF NOT EXISTS wa_partner_identities (
+      group_id TEXT NOT NULL,jid TEXT NOT NULL,partner_id INTEGER NOT NULL REFERENCES wa_group_partners(id) ON DELETE CASCADE,
+      PRIMARY KEY(group_id,jid));
+      CREATE TABLE IF NOT EXISTS wa_order_documents (
+      id INTEGER PRIMARY KEY,chat TEXT NOT NULL,message_id TEXT NOT NULL,filename TEXT NOT NULL,
+      author TEXT NOT NULL,referral_id INTEGER REFERENCES referrals(id) ON DELETE SET NULL,
+      test_id INTEGER REFERENCES wa_quiet_tests(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'processing',detail TEXT NOT NULL DEFAULT '',fields TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+      UNIQUE(chat,message_id));`);
+    if (!db.prepare('PRAGMA table_info(wa_quiet_tests)').all().some(c => c.name === 'document_fields'))
+      db.exec("ALTER TABLE wa_quiet_tests ADD COLUMN document_fields TEXT NOT NULL DEFAULT '{}';");
+  },
+  // v24: original customer PDFs live on the persistent database and in its backups.
+  (db) => {
+    const columns=new Set(db.prepare('PRAGMA table_info(referrals)').all().map(c=>c.name));
+    for(const key of ['order_number','order_reference','delivery_date'])
+      if(!columns.has(key))db.exec(`ALTER TABLE referrals ADD COLUMN ${key} TEXT NOT NULL DEFAULT '';`);
+    if(!columns.has('initial_payment'))db.exec('ALTER TABLE referrals ADD COLUMN initial_payment REAL;');
+    db.exec(`CREATE TABLE IF NOT EXISTS customer_documents (
+      id INTEGER PRIMARY KEY,referral_id INTEGER NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,author TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'app',filename TEXT NOT NULL,sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,content BLOB NOT NULL,fields TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'attached',detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT(datetime('now')),UNIQUE(referral_id,sha256));
+      CREATE INDEX IF NOT EXISTS idx_customer_documents_ref ON customer_documents(referral_id,id);`);
+    const wa=new Set(db.prepare('PRAGMA table_info(wa_order_documents)').all().map(c=>c.name));
+    if(!wa.has('pdf_data'))db.exec('ALTER TABLE wa_order_documents ADD COLUMN pdf_data BLOB;');
+    if(!wa.has('document_id'))db.exec('ALTER TABLE wa_order_documents ADD COLUMN document_id INTEGER REFERENCES customer_documents(id) ON DELETE SET NULL;');
+  },
+  // v25: ensure every referrals table accepts the Working stage, including DBs that skipped mainline v16.
+  (db) => {
+    const oldSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='referrals'").get().sql;
+    if (oldSql.includes("'Working'")) return;
+    const expanded = oldSql.replace("'New','Passed','DNQ','Ordered','Cancelled'", "'New','Working','Passed','DNQ','Ordered','Cancelled'");
+    if (expanded === oldSql) throw new Error('Could not expand the referral status constraint.');
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='referrals' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(expanded.replace(/CREATE TABLE(?: IF NOT EXISTS)?\s+["`]?referrals["`]?/i, 'CREATE TABLE referrals_next'));
+    db.exec('INSERT INTO referrals_next SELECT * FROM referrals; DROP TABLE referrals; ALTER TABLE referrals_next RENAME TO referrals;');
+    for (const item of objects) db.exec(item.sql);
+  },
+  // v26: callback fields; tolerate fields already added by the earlier branch.
+  (db) => {
+    const cols = new Set(db.prepare('PRAGMA table_info(referrals)').all().map(c => c.name));
+    if (!cols.has('callback_requested_at')) db.exec('ALTER TABLE referrals ADD COLUMN callback_requested_at TEXT;');
+    if (!cols.has('callback_requested_by')) db.exec('ALTER TABLE referrals ADD COLUMN callback_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;');
+  },
+  // v27: usage-import fields; tolerate fields already added by the earlier branch.
+  (db) => {
+    const cols = new Set(db.prepare('PRAGMA table_info(referrals)').all().map(c => c.name));
+    if (!cols.has('customer_active')) db.exec('ALTER TABLE referrals ADD COLUMN customer_active INTEGER NOT NULL DEFAULT 0;');
+    if (!cols.has('active_date')) db.exec("ALTER TABLE referrals ADD COLUMN active_date TEXT NOT NULL DEFAULT '';");
+    if (!cols.has('usage_date')) db.exec("ALTER TABLE referrals ADD COLUMN usage_date TEXT NOT NULL DEFAULT '';");
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ref_customer_active ON referrals(customer_active, active_date);');
+  },
 ];
 
 
@@ -487,7 +623,8 @@ function migrate(db) {
     db.exec('PRAGMA foreign_keys = OFF');
     try {
       tx(db, () => {
-        db.exec(MIGRATIONS[v - 2]);
+        const migration = MIGRATIONS[v - 2];
+        if (typeof migration === 'function') migration(db, version); else db.exec(migration);
         const broken = db.prepare('PRAGMA foreign_key_check').all();
         if (broken.length) throw new Error(`Migration to v${v} broke foreign keys: ${JSON.stringify(broken)}`);
         db.exec(`PRAGMA user_version = ${v}`);

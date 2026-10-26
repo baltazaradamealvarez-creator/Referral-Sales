@@ -158,7 +158,7 @@ function mount(app, db, deps) {
   function staleLeads(u, days = 3, limit = 8) {
     const [w, wp] = scope(u);
     return db.prepare(`SELECT r.id, r.customer_name, r.status, r.updated_at, a.full_name AS assigned FROM referrals r LEFT JOIN users a ON a.id = r.assigned_to
-      WHERE ${w} AND r.status = 'Passed' AND r.updated_at < ? ORDER BY r.updated_at LIMIT ?`).all(...wp, sqlTime(Date.now() - days * 86400000), limit);
+      WHERE ${w} AND r.status IN ('Working', 'Passed') AND r.updated_at < ? ORDER BY r.updated_at LIMIT ?`).all(...wp, sqlTime(Date.now() - days * 86400000), limit);
   }
 
   function snapshot(u) {
@@ -169,9 +169,9 @@ function mount(app, db, deps) {
     const today = stats(u, from, end);
     const month = stats(u, mFrom, end);
     return [
-      `- Open leads (New or Passed): ${one(`SELECT COUNT(*) AS n FROM referrals r WHERE ${w} AND r.status IN ('New', 'Passed')`)}`,
+      `- Open leads (New, Working or Passed): ${one(`SELECT COUNT(*) AS n FROM referrals r WHERE ${w} AND r.status IN ('New', 'Working', 'Passed')`)}`,
       `- New leads nobody has called yet: ${waitingLeads(u, 100).length}`,
-      seesAll(u) ? `- Open leads with nobody assigned: ${one(`SELECT COUNT(*) AS n FROM referrals r WHERE ${w} AND r.status IN ('New', 'Passed') AND r.assigned_to IS NULL`)}` : null,
+      seesAll(u) ? `- Open leads with nobody assigned: ${one(`SELECT COUNT(*) AS n FROM referrals r WHERE ${w} AND r.status IN ('New', 'Working', 'Passed') AND r.assigned_to IS NULL`)}` : null,
       `- Today: ${today.leads_entered} leads entered, ${today.orders} orders`,
       `- This month: ${month.leads_entered} leads entered, ${month.orders} orders, ${money(month.commission)} commission`,
       `- ${u.full_name.split(' ')[0]}'s pending reminders: ${db.prepare('SELECT COUNT(*) AS n FROM reminders WHERE sent_at IS NULL AND user_id = ?').get(u.id).n}`,
@@ -191,6 +191,7 @@ function mount(app, db, deps) {
     const t = plain(target || 'me').trim();
     if (['group', 'grupo', 'the group', 'el grupo', 'dispatch'].includes(t)) {
       if (u.role === 'rep') throw new HttpError(403, 'Only dispatch, managers and admins can set reminders for the group.');
+      if (whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())) throw new HttpError(409,'This group is quiet. Set a personal reminder instead.');
       to = null;
     } else if (!['me', 'myself', 'yo', 'mi'].includes(t)) {
       to = findPerson(target);
@@ -249,10 +250,10 @@ function mount(app, db, deps) {
     const ref = m.referral_id ? db.prepare('SELECT id, customer_name FROM referrals WHERE id = ?').get(m.referral_id) : null;
     const by = m.created_by && m.created_by !== m.user_id ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(m.created_by) : null;
     const text = `⏰ Reminder: ${m.text}${ref ? ` — ${label(ref)}` : ''}${by ? ` (from ${by.full_name})` : ''}`;
-    if (m.user_id != null) { notify(m.user_id, ref ? ref.id : null, text); return; }
+    if (m.user_id != null) { notify(m.user_id, ref ? ref.id : null, text,'reminders'); return; }
     const link = ref && leadLink(ref.id) ? `\n${leadLink(ref.id)}` : '';
     if (!(whatsapp && whatsapp.postToGroup(`${text}${link}`, null, { force: true })) && m.created_by) {
-      notify(m.created_by, ref ? ref.id : null, `${text} (couldn't post it to the WhatsApp group)`);
+      notify(m.created_by, ref ? ref.id : null, `${text} (couldn't post it to the WhatsApp group)`,'reminders');
     }
   }
 
@@ -268,7 +269,7 @@ function mount(app, db, deps) {
     const closers = (s.orders_by_closer || []).slice(0, 5).map((x) => `${x.name.split(' ')[0]} ${x.n}`).join(' · ');
     const waiting = waitingLeads(sys, 6);
     const waitingTotal = waitingLeads(sys, 500).length;
-    const unassigned = db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE status IN ('New', 'Passed') AND assigned_to IS NULL").get().n;
+    const unassigned = db.prepare("SELECT COUNT(*) AS n FROM referrals WHERE status IN ('New', 'Working', 'Passed') AND assigned_to IS NULL").get().n;
     const stale = staleLeads(sys, 3, 5);
     const staleTotal = staleLeads(sys, 3, 500).length;
     const [dFrom, dTo] = period('today', now);
@@ -296,6 +297,7 @@ function mount(app, db, deps) {
   }
 
   async function postBriefing(kind, now = Date.now()) {
+    if (whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())) return false;
     let text = briefing(kind, now);
     if (ai && ai.enabled() && kind === 'morning') {
       try {
@@ -324,7 +326,7 @@ function mount(app, db, deps) {
     }
     // Briefings go out once a day, within 2 hours after their time (not hours late after a restart).
     const s = getSettings();
-    if (whatsapp && whatsapp.groupId() && whatsapp.status() === 'connected') {
+    if (whatsapp && whatsapp.groupId() && !whatsapp.isQuietGroup(whatsapp.groupId()) && whatsapp.status() === 'connected') {
       const p = localParts(now, tz());
       const today = `${p.y}-${pad(p.m)}-${pad(p.d)}`;
       for (const [kind, key] of [['morning', 'ai_briefing_time'], ['evening', 'ai_recap_time']]) {
@@ -350,7 +352,7 @@ function mount(app, db, deps) {
         type: 'object',
         properties: {
           text: { type: 'string', description: 'Part of the customer name, or a lead number like "123".' },
-          status: { type: 'array', items: { type: 'string', enum: [...STATUSES, 'open'] }, description: '"open" means New or Passed.' },
+          status: { type: 'array', items: { type: 'string', enum: [...STATUSES, 'open'] }, description: '"open" means New, Working or Passed.' },
           assigned: { type: 'string', description: '"me", "unassigned", or a person\'s name.' },
           rep: { type: 'string', description: 'Who entered the lead: "me" or a person\'s name.' },
           team: { type: 'string' },
@@ -449,7 +451,7 @@ function mount(app, db, deps) {
     const params = [...wp];
     const text = String(i.text || '').trim();
     if (/^#?\d{1,7}$/.test(text)) { where.push('r.id = ?'); params.push(Number(text.replace('#', ''))); } else if (text) { where.push('r.customer_name LIKE ?'); params.push(`%${text}%`); }
-    const st = (Array.isArray(i.status) ? i.status : i.status ? [i.status] : []).flatMap((s) => (s === 'open' ? ['New', 'Passed'] : STATUSES.includes(s) ? [s] : []));
+    const st = (Array.isArray(i.status) ? i.status : i.status ? [i.status] : []).flatMap((s) => (s === 'open' ? ['New', 'Working', 'Passed'] : STATUSES.includes(s) ? [s] : []));
     if (st.length) { where.push(`r.status IN (${st.map(() => '?').join(',')})`); params.push(...st); }
     const who = (v, col) => {
       const t = plain(v).trim();
@@ -462,7 +464,7 @@ function mount(app, db, deps) {
     if (i.team) { where.push('t.name LIKE ?'); params.push(`%${String(i.team).trim()}%`); }
     if (i.entered) { const [f, to] = period(i.entered); where.push('r.created_at >= ? AND r.created_at < ?'); params.push(sqlTime(f), sqlTime(to)); }
     if (i.not_called_yet) where.push("r.status = 'New' AND r.first_touch_at IS NULL");
-    if (Number(i.no_update_days) > 0) { where.push("r.status IN ('New', 'Passed') AND r.updated_at < ?"); params.push(sqlTime(Date.now() - Number(i.no_update_days) * 86400000)); }
+    if (Number(i.no_update_days) > 0) { where.push("r.status IN ('New', 'Working', 'Passed') AND r.updated_at < ?"); params.push(sqlTime(Date.now() - Number(i.no_update_days) * 86400000)); }
     const from = `FROM referrals r JOIN users rep ON rep.id = r.created_by LEFT JOIN teams t ON t.id = r.team_id LEFT JOIN users a ON a.id = r.assigned_to WHERE ${where.join(' AND ')}`;
     const limit = Math.min(40, Math.max(1, Number(i.limit) || 15));
     const total = db.prepare(`SELECT COUNT(*) AS n ${from}`).get(...params).n;
@@ -487,9 +489,9 @@ function mount(app, db, deps) {
 
   function leadDetail(u, id) {
     const r = viewable(u, id);
-    const notes = db.prepare(`SELECT c.body, c.created_at, c.source, u.full_name FROM comments c JOIN users u ON u.id = c.user_id
+    const notes = db.prepare(`SELECT c.body, c.created_at, c.source, COALESCE(u.full_name,NULLIF(c.external_author,''),'WhatsApp participant') AS full_name FROM comments c LEFT JOIN users u ON u.id = c.user_id
       WHERE c.referral_id = ? ORDER BY c.id DESC LIMIT 10`).all(r.id);
-    const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, u.full_name FROM status_history h LEFT JOIN users u ON u.id = h.user_id
+    const history = db.prepare(`SELECT h.from_status, h.to_status, h.created_at, COALESCE(u.full_name,NULLIF(h.external_author,''),'WhatsApp participant') AS full_name FROM status_history h LEFT JOIN users u ON u.id = h.user_id
       WHERE h.referral_id = ? ORDER BY h.id DESC LIMIT 10`).all(r.id);
     let tips = [];
     try { tips = JSON.parse(r.lead_flags || '[]'); } catch { tips = []; }
@@ -560,7 +562,7 @@ function mount(app, db, deps) {
       }
       case 'list_people': {
         const rows = db.prepare(`SELECT u.id, u.full_name, u.role, u.team_id, t.name AS team, u.last_seen_at,
-            (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed')) AS open_assigned
+            (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Working', 'Passed')) AS open_assigned
           FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.active = 1 ${i.role ? 'AND u.role = ?' : ''} ORDER BY u.role, u.full_name`).all(...(i.role ? [i.role] : []));
         const visible = seesAll(u) ? rows : rows.filter((p) => p.role !== 'rep' || p.id === u.id || (u.team_id != null && p.team_id === u.team_id));
         return { people: visible.slice(0, 80).map((p) => ({ name: p.full_name, role: p.role, team: p.team || undefined, open_leads_assigned: p.open_assigned || undefined, last_active: fmtSql(p.last_seen_at) || 'never' })) };
@@ -599,7 +601,7 @@ function mount(app, db, deps) {
       `- In the WhatsApp group, replying "approved"/"aprobado" to a lead sets it to ${approved}; the first dispatcher to reply takes the lead.`,
       '',
       '## How leads work',
-      '- Statuses: New (just entered, not worked yet) → Passed (qualified, being worked) → Ordered (the order went through: a sale, commission earned). DNQ = did not qualify (credit, address not serviceable…). Cancelled = customer cancelled or not interested.',
+      '- Statuses: New (just entered) → Working (being contacted or followed up) → Passed (qualified) → Ordered (the order went through: a sale, commission earned). DNQ = did not qualify (credit, address not serviceable…). Cancelled = customer cancelled or not interested.',
       '- Roles: reps and managers enter leads (managers lead a team of reps); dispatch are the closers who call leads and place orders; admins run everything.',
       '- Duplicates (same phone, email or address as any lead or past sale) are blocked when a lead is entered.',
       '- Call-backs: a lead can have a call-back time; reminders can also be set for anyone allowed.',
@@ -633,7 +635,7 @@ function mount(app, db, deps) {
       .map((m) => ({ role: m.role, content: String(m.content).slice(0, 2000) })).slice(-12);
     while (msgs.length && msgs[0].role !== 'user') msgs.shift();
     if (!msgs.length || msgs[msgs.length - 1].role !== 'user') throw new HttpError(400, 'Say something first.');
-    const seller = u.role === 'rep';
+    const seller = ['rep','manager'].includes(u.role);
     if (seller && containsComp(msgs[msgs.length - 1].content)) return { text: handoff(false), steps: [] };
     const out = await ai.runAgent({
       system: seller ? cleanKnowledge(systemPrompt(u, channel)) + '\nNEVER discuss seller compensation, commissions, earnings, salaries, bonuses, payouts or affiliate rewards. Refer those questions directly to the team lead. Keep all existing lead, status, assignment, statistics and reminder tools available.' : systemPrompt(u, channel),
@@ -654,7 +656,7 @@ function mount(app, db, deps) {
 
   app.get('/api/assistant', wrap((req) => {
     const u = requireUser(req);
-    return { ai: !!(ai && ai.enabled()), model: ai ? ai.model : null, reminders: listReminders(u), group: !!(whatsapp && whatsapp.groupId()), tz: tz() };
+    return { ai: !!(ai && ai.enabled()), model: ai ? ai.model : null, reminders: listReminders(u), group: !!(whatsapp && whatsapp.groupId() && !whatsapp.isQuietGroup(whatsapp.groupId())), tz: tz() };
   }));
 
   app.post('/api/assistant/chat', awrap(async (req) => {
@@ -709,7 +711,8 @@ function mount(app, db, deps) {
     return {
       available: !!(ai && ai.available()), enabled: !!(ai && ai.enabled()), model: ai ? ai.model : null,
       brief: s.ai_brief, default_brief: DEFAULT_BRIEF, briefing_time: s.ai_briefing_time, recap_time: s.ai_recap_time,
-      group: !!(whatsapp && whatsapp.groupId()), connected: !!(whatsapp && whatsapp.status() === 'connected'), tz: tz(),
+      group: !!(whatsapp && whatsapp.groupId()), connected: !!(whatsapp && whatsapp.status() === 'connected'),
+      group_quiet: !!(whatsapp && whatsapp.isQuietGroup(whatsapp.groupId())), tz: tz(),
     };
   }));
 
@@ -742,6 +745,7 @@ function mount(app, db, deps) {
   app.post('/api/assistant/briefing', awrap(async (req) => {
     requireRole(req, 'admin');
     if (!whatsapp || !whatsapp.groupId()) throw new HttpError(400, 'Link WhatsApp and pick the dispatch group first.');
+    if (whatsapp.isQuietGroup(whatsapp.groupId())) throw new HttpError(409, 'Quiet groups accept lead posts only. You can preview the briefing here.');
     await postBriefing(req.body && req.body.kind === 'evening' ? 'evening' : 'morning');
     return { ok: true };
   }));

@@ -87,7 +87,7 @@ function buildDashboard(db, u, q) {
     return {
       entered: c.total,
       ordered: c.Ordered,
-      open: c.New + c.Passed,
+      open: c.New + c.Working + c.Passed,
       dnq: c.DNQ,
       cancelled: c.Cancelled,
       conversion: pct(c.Ordered, c.total),
@@ -157,10 +157,10 @@ function buildDashboard(db, u, q) {
       FROM teams t LEFT JOIN referrals r ON r.team_id = t.id AND ${R}
       GROUP BY t.id ORDER BY ordered DESC, entered DESC, t.name`).map((x) => ({ ...x, ordered: x.ordered || 0, conversion: pct(x.ordered || 0, x.entered) }));
     out.dispatch = {
-      unassigned: get(`SELECT COUNT(*) AS n FROM referrals r WHERE ${S} AND r.assigned_to IS NULL AND r.status IN ('New', 'Passed')`, ...sp).n,
+      unassigned: get(`SELECT COUNT(*) AS n FROM referrals r WHERE ${S} AND r.assigned_to IS NULL AND r.status IN ('New', 'Working', 'Passed')`, ...sp).n,
       people: all(`
         SELECT u.id, u.full_name,
-          (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Passed') AND ${S}) AS open,
+          (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status IN ('New', 'Working', 'Passed') AND ${S}) AS open,
           (SELECT COUNT(*) FROM referrals r WHERE r.assigned_to = u.id AND r.status = 'Ordered' AND ${S} AND ${R}) AS ordered
         FROM users u WHERE u.active = 1 AND u.role = 'dispatch' ORDER BY open DESC, u.full_name`, ...sp, ...sp),
     };
@@ -183,12 +183,12 @@ function buildDashboard(db, u, q) {
 
   // ---- recent activity
   out.activity = all(`SELECT * FROM (
-      SELECT 'status' AS kind, h.created_at AS at, r.id AS referral_id, r.customer_name, a.full_name AS actor,
+      SELECT 'status' AS kind, h.created_at AS at, r.id AS referral_id, r.customer_name, COALESCE(a.full_name,NULLIF(h.external_author,''),'WhatsApp participant') AS actor,
         h.from_status, h.to_status, NULL AS body
-      FROM status_history h JOIN referrals r ON r.id = h.referral_id JOIN users a ON a.id = h.user_id WHERE ${S}
+      FROM status_history h JOIN referrals r ON r.id = h.referral_id LEFT JOIN users a ON a.id = h.user_id WHERE ${S}
       UNION ALL
-      SELECT 'comment', c.created_at, r.id, r.customer_name, a.full_name, NULL, NULL, substr(c.body, 1, 140)
-      FROM comments c JOIN referrals r ON r.id = c.referral_id JOIN users a ON a.id = c.user_id WHERE ${S}
+      SELECT 'comment', c.created_at, r.id, r.customer_name, COALESCE(a.full_name,NULLIF(c.external_author,''),'WhatsApp participant'), NULL, NULL, substr(c.body, 1, 140)
+      FROM comments c JOIN referrals r ON r.id = c.referral_id LEFT JOIN users a ON a.id = c.user_id WHERE ${S}
     ) ORDER BY at DESC LIMIT 12`, ...sp, ...sp);
 
   out.insights = insights(out, u, seesAll, db, S, sp, R, local);

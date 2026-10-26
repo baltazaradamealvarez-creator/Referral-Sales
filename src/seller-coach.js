@@ -2,6 +2,7 @@
 
 const { digitsOf } = require('./whatsapp');
 const { containsComp, cleanKnowledge } = require('./seller-policy');
+const { read:readPreferences } = require('./notification-preferences');
 
 const sqlTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 const isSpanish = (text) => /[¿¡]|\b(hola|precio|precios|cuanto|cuánto|necesito|ayuda|puedo|gracias)\b/i.test(String(text)) && !/\b(the|what|how|please|need)\b/i.test(String(text));
@@ -18,7 +19,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
       reviewer_id: Number(s.coach_reviewer_id) || null, knowledge: s.coach_knowledge || '' };
   };
   const reviewer = () => db.prepare("SELECT id,username FROM users WHERE id = ? AND role='admin' AND active=1").get(cfg().reviewer_id);
-  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active FROM users WHERE id=? AND role='rep'").get(id);
+  const seller = (id) => db.prepare("SELECT id,full_name,role,whatsapp,whatsapp_alerts,active,notification_preferences FROM users WHERE id=? AND role IN ('rep','manager')").get(id);
   const pending = (id) => db.prepare("SELECT id FROM coach_drafts WHERE seller_id=? AND status IN ('pending','queued','failed') LIMIT 1").get(id);
   const local = (now) => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: speedConfig().tz, hourCycle:'h23', weekday:'short',hour:'numeric',minute:'numeric' }).formatToParts(new Date(now)).map((x) => [x.type,x.value]));
   const working = (now) => { const p = local(now); const h = +p.hour + +p.minute/60; const hours = speedConfig().hours; return !['Sat','Sun'].includes(p.weekday) && h >= hours[0] && h < hours[1]; };
@@ -28,7 +29,8 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   db.prepare("UPDATE coach_drafts SET status='failed', error='Server restarted before delivery could be confirmed. Check WhatsApp before retrying.' WHERE status='queued'").run();
 
   function eligibility(u, now, manual = false) {
-    if (!u || !u.active || u.role !== 'rep') return 'Not an active seller';
+    if (!u || !u.active || !['rep','manager'].includes(u.role)) return 'Not an active seller or manager';
+    if (!manual && !readPreferences(u.notification_preferences).automatic_coaching) return 'Automatic coaching is off in notification preferences';
     if (!u.whatsapp_alerts || !u.whatsapp || digitsOf(u.whatsapp).length < 11) return 'WhatsApp alerts are off or no number is saved';
     if (whatsapp.me() && digitsOf(whatsapp.me().number) === digitsOf(u.whatsapp)) return 'Seller uses the bot’s own linked number';
     const c = contact(u.id);
@@ -40,19 +42,34 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   }
 
   function checkin(u) {
+    if (u.role === 'manager') return 'Hi / Hola! 👋 I’m the E&O sales AI assistant / Soy el asistente de ventas de E&O.\n\n'
+      + 'Do you or your team have customer leads ready? Please help your sellers enter them in the app so dispatch can follow up. Does anyone need help with product pricing, choosing a package, or entering a lead? We’re here to support you and your team.\n\n'
+      + '¿Tú o tu equipo tienen leads listos? Ayuda a tus vendedores a ingresarlos en la app para que dispatch les dé seguimiento. ¿Alguien necesita ayuda con precios, paquetes o ingresar un lead? Estamos para apoyarte a ti y a tu equipo.\n\n'
+      + 'Reply STOP to stop these check-ins / Responde ALTO para detener estos mensajes.';
     return 'Hi / Hola! 👋 I’m the E&O sales AI assistant / Soy el asistente de ventas de E&O.\n\n'
       + 'Have any customer leads ready? Enter them in the app so dispatch can help. Need help with product pricing, choosing a package, or entering a lead? We’re here to help.\n\n'
       + '¿Tienes leads listos? Ingrésalos en la app para que dispatch te ayude. ¿Necesitas ayuda con precios, paquetes o ingresar un lead? Estamos para ayudarte.\n\n'
       + 'Reply STOP to stop these check-ins / Responde ALTO para detener estos mensajes.';
   }
 
-  function sendCheckin(u, now, manual = false) {
+  function sendBlock(u, now, manual = false) {
     const reason = eligibility(u, now, manual);
+    if (reason) return reason;
+    if (!cfg().enabled) return 'Enable seller coaching and save the coaching settings below first.';
+    if (!reviewer()) return 'Choose an active admin reviewer and save the coaching settings below first.';
+    if (getSettings().wa_two_way==='0') return 'Turn on two-way replies in WhatsApp alerts so this person can respond.';
+    if (!ai.enabled()) return 'Enable the assistant with its API key in Assistant settings first.';
+    if (!whatsapp || whatsapp.status() !== 'connected') return 'Connect WhatsApp in WhatsApp alerts first.';
+    if (!working(now)) {
+      const { hours, tz } = speedConfig();
+      return `Check-ins can be sent Monday–Friday, ${hours[0]}:00–${hours[1]}:00 (${tz}). Try again during those hours.`;
+    }
+    return '';
+  }
+
+  function sendCheckin(u, now, manual = false) {
+    const reason = sendBlock(u, now, manual);
     if (reason) throw new HttpError(409, reason);
-    if (!working(now)) throw new HttpError(409, 'Check-ins are sent during weekday business hours.');
-    if (!cfg().enabled || !reviewer()) throw new HttpError(409, 'Enable coaching and choose an active admin reviewer first.');
-    if (getSettings().wa_two_way==='0') throw new HttpError(409,'Turn on two-way WhatsApp replies so sellers can respond.');
-    if (!ai.enabled() || !whatsapp || whatsapp.status() !== 'connected') throw new HttpError(409, 'The assistant and WhatsApp must both be connected.');
     ensureContact(u.id);
     // Reserve before enqueueing to prevent scheduler/manual sends racing each other.
     db.prepare("UPDATE coach_contacts SET last_checkin_at=?,last_error='' WHERE user_id=?").run(sqlTime(now),u.id);
@@ -70,7 +87,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const p = local(now); const [h,m] = c.time.split(':').map(Number); const late = +p.hour*60 + +p.minute - (h*60+m);
     if (late < 0 || late > 120) return [];
     const queued = [];
-    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts FROM users WHERE active=1 AND role='rep' AND whatsapp_alerts=1").all()) {
+    for (const u of db.prepare("SELECT id,full_name,role,active,whatsapp,whatsapp_alerts,notification_preferences FROM users WHERE active=1 AND role IN ('rep','manager') AND whatsapp_alerts=1").all()) {
       if (queued.length >= 20) break;
       if (eligibility(u,now)) continue;
       sendCheckin(u,now);
@@ -87,7 +104,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const r = db.prepare('INSERT OR IGNORE INTO coach_drafts(seller_id,reviewer_id,question,draft,reason,chat,message_id) VALUES (?,?,?,?,?,?,?)')
       .run(u.id,owner.id,String(question).slice(0,2000),draft,String(reason).slice(0,500),chat||'',messageId||'');
     if (r.changes) {
-      notify(owner.id,null,`📝 Seller reply needs your approval: ${u.full_name}. Open Admin → Settings → Seller coach.`);
+      notify(owner.id,null,`📝 Seller reply needs your approval: ${u.full_name}. Open Admin → Settings → Seller coach.`,'coaching_review');
       logAudit({ user:u, ip:'seller-coach' },'coach.review','coach_draft',Number(r.lastInsertRowid),'Seller question routed for owner approval');
     }
     return acknowledgement(isSpanish(question));
@@ -104,7 +121,7 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
     const context = conversations.get(u.id) || [];
     let out;
     try {
-      out = await ai.coachReply({ question:text,knowledge:cleanKnowledge(cfg().knowledge),context });
+      out = await ai.coachReply({ question:text,knowledge:cleanKnowledge(cfg().knowledge),context,role:u.role });
       if (!out || typeof out !== 'object') throw new Error('Invalid coaching response');
     }
     catch { return review(u,text,fallbackDraft(isSpanish(text)),'AI could not produce a reliable answer',chat,messageId); }
@@ -139,15 +156,31 @@ function mount(app, db, { ai, whatsapp, getSettings, speedConfig, notify, logAud
   }));
   app.get('/api/coach/sellers',wrap((req) => {
     requireRole(req,'admin');const now=Date.now();
-    return db.prepare("SELECT u.id,u.full_name,u.role,u.active,u.whatsapp,u.whatsapp_alerts,c.opted_out,c.last_sent_at,c.last_error FROM users u LEFT JOIN coach_contacts c ON c.user_id=u.id WHERE u.role='rep' AND u.active=1 ORDER BY u.full_name").all()
-      .map((u)=>({id:u.id,full_name:u.full_name,opted_out:!!u.opted_out,last_sent_at:u.last_sent_at,last_error:u.last_error,blocked:eligibility(u,now,true)}));
+    return db.prepare("SELECT u.id,u.full_name,u.role,u.active,u.whatsapp,u.whatsapp_alerts,c.opted_out,c.last_sent_at,c.last_error FROM users u LEFT JOIN coach_contacts c ON c.user_id=u.id WHERE u.role IN ('rep','manager') AND u.active=1 ORDER BY u.full_name").all()
+      .map((u)=>({id:u.id,full_name:u.full_name,role:u.role,opted_out:!!u.opted_out,last_sent_at:u.last_sent_at,last_error:u.last_error,blocked:eligibility(u,now,true)}));
   }));
-  app.get('/api/coach/sellers/:id/preview',wrap((req) => {requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');return {text:checkin(u),blocked:eligibility(u,Date.now(),true)};}));
+  app.get('/api/coach/sellers/:id/preview',wrap((req) => {
+    requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');
+    const c=contact(u.id);
+    return {text:checkin(u),blocked:sendBlock(u,Date.now(),true),name:u.full_name,
+      last_sent_at:c?.last_sent_at||null,last_error:c?.last_error||'',
+      send_status:c?.last_error?'failed':c?.last_checkin_at&&(!c.last_sent_at||c.last_sent_at<c.last_checkin_at)?'queued':c?.last_sent_at?'sent':null};
+  }));
   app.post('/api/coach/sellers/:id/checkin',wrap((req) => {
     requireRole(req,'admin');const u=seller(Number(req.params.id));if(!u)throw new HttpError(404,'Seller not found.');const out=sendCheckin(u,Date.now(),true);logAudit(req,'coach.checkin','user',u.id,'Manual check-in queued');return out;
   }));
   app.get('/api/coach/drafts',wrap((req)=>{
-    requireRole(req,'admin');return db.prepare("SELECT d.*,u.full_name AS seller_name,r.full_name AS reviewer_name FROM coach_drafts d JOIN users u ON u.id=d.seller_id LEFT JOIN users r ON r.id=d.reviewer_id ORDER BY CASE WHEN d.status IN ('pending','failed') THEN 0 ELSE 1 END,d.id DESC LIMIT 100").all();
+    requireRole(req,'admin');const hidden=req.query.hidden==='1';
+    return db.prepare(`SELECT d.*,u.full_name AS seller_name,r.full_name AS reviewer_name FROM coach_drafts d JOIN users u ON u.id=d.seller_id LEFT JOIN users r ON r.id=d.reviewer_id WHERE d.hidden_at IS ${hidden?'NOT ':''}NULL ORDER BY CASE WHEN d.status IN ('pending','failed') THEN 0 ELSE 1 END,d.id DESC LIMIT 100`).all();
+  }));
+  app.patch('/api/coach/drafts/:id/visibility',wrap((req)=>{
+    requireRole(req,'admin');const d=db.prepare('SELECT * FROM coach_drafts WHERE id=?').get(Number(req.params.id));
+    if(!d)throw new HttpError(404,'Draft not found.');
+    if(typeof req.body?.hidden!=='boolean')throw new HttpError(400,'Choose whether to hide or restore this draft.');
+    if(req.body.hidden&&!['sent','rejected'].includes(d.status))throw new HttpError(409,'Approve or reject this draft before hiding it.');
+    db.prepare('UPDATE coach_drafts SET hidden_at=? WHERE id=?').run(req.body.hidden?sqlTime(Date.now()):null,d.id);
+    logAudit(req,req.body.hidden?'coach.hide':'coach.restore','coach_draft',d.id,'Coaching draft visibility changed');
+    return {hidden:req.body.hidden};
   }));
   app.post('/api/coach/drafts/:id/review',wrap((req)=>{
     const actor=requireRole(req,'admin');const d=db.prepare('SELECT * FROM coach_drafts WHERE id=?').get(Number(req.params.id));

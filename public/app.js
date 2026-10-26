@@ -3,18 +3,23 @@
 (() => {
   const $app = document.getElementById('app');
   const state = { me: null, menuOpen: false };
-  const STATUSES = ['New', 'Passed', 'DNQ', 'Ordered', 'Cancelled'];
+  document.querySelector('.skip-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    (document.getElementById('mainContent') || document.querySelector('.login input'))?.focus();
+  });
+  const STATUSES = ['New', 'Working', 'Passed', 'Ordered', 'DNQ', 'Cancelled'];
   const SERVICES = ['Internet', 'TV', 'Mobile', 'Voice'];
 
   // ---------- utils ----------
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const personLink=(id,name)=>id?`<a class="person-link" href="#/people/${Number(id)}">${esc(name)}</a>`:esc(name);
 
   async function api(path, opts = {}) {
     const init = { method: opts.method || 'GET', headers: {}, credentials: 'same-origin' };
-    if (opts.body !== undefined) {
+    if (opts.body !== undefined || !['GET', 'HEAD'].includes(init.method.toUpperCase())) {
       init.headers['Content-Type'] = 'application/json';
-      init.body = JSON.stringify(opts.body);
+      init.body = JSON.stringify(opts.body === undefined ? {} : opts.body);
     }
     const res = await fetch('/api' + path, init);
     let data = null;
@@ -60,6 +65,7 @@
   const pill = (s) => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
   const svcTags = (s) => (s ? s.split(',').map((x) => `<span class="tag">${esc(x.trim())}</span>`).join('') : '');
   const leadName = (r) => r.customer_name || 'No name';
+  const scoreTextColor = (score) => Number(score) >= 60 ? 'var(--ok)' : Number(score) >= 35 ? 'var(--warn)' : 'var(--danger)';
   const role = () => state.me && state.me.role;
   const isAdmin = () => role() === 'admin';
   const isManager = () => role() === 'manager';
@@ -155,7 +161,7 @@
 
   function subTabsHtml() {
     if (!inHub()) return '';
-    return `<nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}">${l}</a>`).join('')}</nav>`;
+    return `<div class="hub-navigation"><nav class="subtabs" aria-label="${isAdmin() ? 'Admin' : 'Account'} sections">${hubTabs().map(([h, l]) => `<a href="${h}" class="${hubActive(h) ? 'on' : ''}" ${hubActive(h) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav><div class="hub-picker"><label for="hubSection">${isAdmin() ? 'Admin' : 'Account'} section</label><select id="hubSection">${hubTabs().map(([h,l])=>`<option value="${h}" ${hubActive(h)?'selected':''}>${l}</option>`).join('')}</select></div></div>`;
   }
 
   // The phone tab bar shows these four; the rest go under "More".
@@ -207,18 +213,49 @@
 
   function modal(html, { wide } = {}) {
     closeModal();
+    const previousFocus = document.activeElement;
     const wrap = document.createElement('div');
     wrap.className = 'modal-back';
-    wrap.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
+    wrap.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true" tabindex="-1">${html}</div>`;
+    const dialog = wrap.querySelector('.modal');
+    const heading = dialog.querySelector('h1, h2, h3');
+    if (heading) { heading.id ||= 'dialogHeading'; dialog.setAttribute('aria-labelledby', heading.id); }
+    else dialog.setAttribute('aria-label', 'Dialog');
+    wrap._previousFocus = previousFocus;
     wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) closeModal(); });
+    wrap.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const items = [...dialog.querySelectorAll('a[href], button:not(.select-value), input, select, textarea, [tabindex]')]
+        .filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length);
+      const first = items[0], last = items[items.length - 1];
+      if (!first) { e.preventDefault(); dialog.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === dialog)) { e.preventDefault(); first.focus(); }
+    });
     document.body.appendChild(wrap);
+    $app.inert = true;
+    document.body.classList.add('has-modal');
     requestAnimationFrame(() => wrap.classList.add('open'));
-    const first = wrap.querySelector('input, select, textarea, button:not([data-close])');
-    if (first) first.focus();
-    return wrap.querySelector('.modal');
+    const first = wrap.querySelector('input, select, textarea, button:not([data-close]):not(.select-value)');
+    (first || dialog).focus();
+    return dialog;
   }
-  function closeModal() { document.querySelectorAll('.modal-back').forEach((m) => m.remove()); }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeMenus(); } });
+  function closeModal() {
+    const wraps = [...document.querySelectorAll('.modal-back')];
+    if (!wraps.length) return;
+    const previousFocus = wraps[0]._previousFocus;
+    wraps.forEach((m) => m.remove());
+    $app.inert = false;
+    document.body.classList.remove('has-modal');
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const active = document.activeElement;
+    const trigger = active?.closest('#moreSheet') ? document.querySelector('[data-more]')
+      : active?.closest('#menuPop') ? document.getElementById('menuBtn') : null;
+    closeModal(); closeMenus(); trigger?.focus();
+  });
 
   // ---------- tooltips for charts (any element with data-tip) ----------
 
@@ -252,13 +289,26 @@
 
   function closeMenus() {
     document.querySelectorAll('.menu-pop.open, .sheet.open, .search-results.open').forEach((m) => m.classList.remove('open'));
+    document.querySelectorAll('#menuBtn, [data-more]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
     document.querySelector('.topbar')?.classList.remove('searching');
   }
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.menu') && !e.target.closest('.search') && !e.target.closest('.sheet') && !e.target.closest('[data-more]')) closeMenus();
   });
 
+  // Section shortcuts move focus without submitting or hiding an existing form.
+  function sectionLinks(items,label='On this page') {
+    return `<nav class="section-nav" aria-label="${esc(label)}"><span class="section-nav-label">${esc(label)}</span>${items.filter(Boolean).map(([id,name])=>`<button type="button" data-section-jump="${id}" aria-controls="${id}">${esc(name)}</button>`).join('')}</nav>`;
+  }
+  let shellResizeObserver=null;
+  let stageTimer=null;
+  let reportMediaCleanup=null;
+  window.addEventListener('hashchange',()=>clearInterval(stageTimer));
   function shell(content, opts = {}) {
+    clearInterval(stageTimer);
+    reportMediaCleanup?.();
+    reportMediaCleanup=null;
+    shellResizeObserver?.disconnect();
     const me = state.me;
     const links = navLinks();
     const theme = getTheme();
@@ -267,7 +317,7 @@
     $app.innerHTML = `
       <header class="topbar"><div class="topbar-inner ${opts.wide ? 'wide' : ''}">
         <a class="brand" href="#/home" aria-label="E&amp;O Sales home">${markSvg()}<span class="brand-text">${wordmark(esc(me.team_name || (seesAll() ? 'All teams' : 'Spectrum Referrals')))}</span></a>
-        <nav class="nav">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="lbl">${l}</span></a>`).join('')}</nav>
+        <nav class="nav" aria-label="Main navigation">${links.map(([h, l, key]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="lbl">${l}</span></a>`).join('')}</nav>
         <div class="search">
           <button class="icon-btn search-toggle" id="searchToggle" aria-label="Search">🔍</button>
           <input id="gsearch" type="search" placeholder="Search customers…  /" autocomplete="off" aria-label="Search customers">
@@ -276,7 +326,7 @@
         <div class="top-actions">
           <a class="icon-btn" id="bellBtn" href="#/notifications" title="Notifications" aria-label="Notifications"></a>
           <div class="menu">
-            <button class="icon-btn" id="menuBtn" aria-label="Account" aria-haspopup="true">👤</button>
+            <button class="icon-btn" id="menuBtn" aria-label="Account" aria-expanded="false" aria-controls="menuPop">👤</button>
             <div class="menu-pop" id="menuPop">
               <div class="who"><b>${esc(me.full_name)}</b><div class="small muted">@${esc(me.username)} · ${roleLabel(me.role)}</div></div>
               <a href="#/account">My account</a>
@@ -289,17 +339,33 @@
         </div>
       </div></header>
       <div class="offline-bar" role="status">📶 You're offline. New leads are saved on this phone and sent when you're back.</div>
-      <main class="${opts.wide ? 'wide' : ''}">${subTabsHtml()}${content}</main>
+      <main id="mainContent" class="${opts.wide ? 'wide' : ''}" tabindex="-1">${subTabsHtml()}${content}</main>
       <nav class="tabbar" aria-label="Main">
-        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}"><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
-        <button data-more class="${more.some(([h, , key]) => isActive(h, key)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
+        ${tabs.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" class="${isActive(h, key) ? 'active' : ''}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="ti">${icon}</span><span class="lbl">${key === 'new' ? 'New' : l.replace('My Referrals', 'Mine')}</span></a>`).join('')}
+        <button data-more aria-expanded="false" aria-controls="moreSheet" class="${more.some(([h, , key]) => isActive(h, key)) ? 'active' : ''}"><span class="ti">☰</span><span>More</span></button>
       </nav>
-      <div class="sheet" id="moreSheet">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}"><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
-        <a href="#/help"><span class="ti">❓</span><span>Help</span></a></div>`;
+      <nav class="sheet" id="moreSheet" aria-label="More pages">${more.map(([h, l, key, icon]) => `<a href="${h}" data-nav="${key}" ${isActive(h, key) ? 'aria-current="page"' : ''}><span class="ti">${icon}</span><span class="lbl">${l}</span></a>`).join('')}
+        <a href="#/help"><span class="ti">❓</span><span>Help</span></a></nav>`;
+    const header=document.querySelector('.topbar');
+    const measureHeader=()=>document.documentElement.style.setProperty('--header-height',header.getBoundingClientRect().height+'px');
+    measureHeader();
+    if(window.ResizeObserver){shellResizeObserver=new ResizeObserver(measureHeader);shellResizeObserver.observe(header);}
+    const hubSection=document.getElementById('hubSection');
+    if(hubSection)hubSection.onchange=()=>{location.hash=hubSection.value;};
+    document.querySelectorAll('[data-section-jump]').forEach(button=>{button.onclick=()=>{
+      const target=document.getElementById(button.dataset.sectionJump);if(!target)return;
+      target.setAttribute('tabindex','-1');target.focus({preventScroll:true});
+      target.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    };});
     badges();
+    // Keep the selected tab visible without scrolling the page away from its heading.
+    for (const nav of document.querySelectorAll('.subtabs, .nav')) {
+      const active = nav.querySelector('[aria-current="page"]');
+      if (active) nav.scrollLeft += active.getBoundingClientRect().left - nav.getBoundingClientRect().left - 8;
+    }
 
     const pop = document.getElementById('menuPop');
-    document.getElementById('menuBtn').onclick = () => { const open = !pop.classList.contains('open'); closeMenus(); pop.classList.toggle('open', open); };
+    document.getElementById('menuBtn').onclick = (e) => { const open = !pop.classList.contains('open'); closeMenus(); pop.classList.toggle('open', open); e.currentTarget.setAttribute('aria-expanded', String(open)); };
     pop.querySelectorAll('[data-theme-set]').forEach((b) => {
       b.onclick = () => { setTheme(b.dataset.themeSet); pop.querySelectorAll('[data-theme-set]').forEach((x) => x.classList.toggle('on', x === b)); };
     });
@@ -309,7 +375,7 @@
       renderLogin();
     };
     const sheet = document.getElementById('moreSheet');
-    document.querySelector('[data-more]').onclick = () => { const open = !sheet.classList.contains('open'); closeMenus(); sheet.classList.toggle('open', open); };
+    document.querySelector('[data-more]').onclick = (e) => { const open = !sheet.classList.contains('open'); closeMenus(); sheet.classList.toggle('open', open); e.currentTarget.setAttribute('aria-expanded', String(open)); };
     setupSearch();
   }
 
@@ -326,7 +392,7 @@
       const q = input.value.trim();
       items = [
         ...data.referrals.map((r) => ({ href: `#/r/${r.id}`, html: `<b>${esc(leadName(r))}</b> ${pill(r.status)}<div class="small muted">${esc([r.phone, r.email, r.address].filter(Boolean).join(' · '))}</div><div class="small muted">${esc(r.created_by_name)}${r.team_name ? ` · ${esc(r.team_name)}` : ''}</div>` })),
-        ...data.users.map((u) => ({ href: `#/referrals?scope=${seesAll() ? 'all' : 'team'}&user_id=${u.id}`, html: `👤 <b>${esc(u.full_name)}</b> <span class="small muted">@${esc(u.username)} · ${roleLabel(u.role)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</span>` })),
+        ...data.users.map((u) => ({ href: `#/people/${u.id}`, html: `👤 <b>${esc(u.full_name)}</b> <span class="small muted">@${esc(u.username)} · ${roleLabel(u.role)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</span>` })),
       ];
       items.push({ href: `#/referrals?q=${encodeURIComponent(q)}`, html: `<span class="muted">See all results for “${esc(q)}” →</span>` });
       sel = -1;
@@ -518,13 +584,16 @@
               <div><label for="f_phone">Phone</label><input id="f_phone" inputmode="tel"></div>
               <div><label for="f_email">Email</label><input id="f_email" inputmode="email" autocapitalize="none"></div>
               <div><label for="f_address">Address</label><input id="f_address"></div>
+              <div><label for="f_city">City</label><input id="f_city"></div>
+              <div><label for="f_state">State</label><input id="f_state" maxlength="40" placeholder="TX or Texas"></div>
+              <div><label for="f_zip">ZIP</label><input id="f_zip" inputmode="numeric" maxlength="10" placeholder="75211 or 75211-1234"></div>
               <div><label for="f_dob">Date of birth</label><input id="f_dob" inputmode="numeric" placeholder="MM/DD/YYYY"></div>
               <div class="full"><label for="f_notes">Notes</label><textarea id="f_notes" rows="3"></textarea></div>
             </div>
           </div>
-          <div id="quickMsg"></div>
+          <div id="quickMsg" role="status" aria-live="polite"></div>
           <button class="btn primary big" id="sendBtn" style="margin-top:.6rem">Send referral</button>
-          <div class="row between" style="margin-top:.6rem"><button type="button" class="link-btn small" id="fixBtn">Something wrong? Fix the details</button><span class="small muted hide-sm">Ctrl + Enter to send</span></div>
+          <div class="row between" style="margin-top:.6rem"><button type="button" class="link-btn small" id="fixBtn" aria-expanded="false" aria-controls="fixWrap">Review or edit details</button><span class="small muted hide-sm">Ctrl + Enter to send</span></div>
         </form>
         <div class="card">
           <div class="row between"><h2 style="margin:0">My latest referrals</h2><a href="#/referrals?scope=mine" class="small">See all</a></div>
@@ -536,7 +605,7 @@
     const chips = document.getElementById('chips');
     const fixWrap = document.getElementById('fixWrap');
     const msg = document.getElementById('quickMsg');
-    const fields = ['name', 'phone', 'email', 'address', 'dob', 'notes'];
+    const fields = ['name', 'phone', 'email', 'address', 'city', 'state', 'zip', 'dob', 'notes'];
     const f = Object.fromEntries(fields.map((k) => [k, document.getElementById('f_' + k)]));
     const touched = new Set();
     const svc = new Set();
@@ -555,10 +624,11 @@
     const drawScore = () => {
       const vals = currentVals();
       if (!ta.value.trim() && !fields.some((k) => vals[k])) { meter.hidden = true; return; }
-      const q = LeadScore.scoreLead({ ...vals, zip: parsed.zip, city: parsed.city, services: [...svc] });
+      const q = LeadScore.scoreLead({ ...vals, services: [...svc] });
       const fix = q.checks.email.fix;
       meter.hidden = false;
       meter.style.setProperty('--sc', q.color);
+      meter.style.setProperty('--sc-text', scoreTextColor(q.score));
       meter.innerHTML = `<div class="sm-top"><span class="sm-label">Lead quality</span><b class="sm-pct">${q.score}%</b><span class="sm-band">${q.band}</span></div>
         <div class="sm-bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${q.score}" aria-label="Lead quality"><span style="width:${q.score}%"></span></div>
         ${q.fakes.length ? `<ul class="sm-fakes">${q.fakes.map((x) => `<li>⛔ ${esc(x.msg)}</li>`).join('')}</ul>` : ''}
@@ -569,25 +639,34 @@
 
     // "Did you mean …?" for the address read from the box.
     const addrHint = document.getElementById('addrHint');
+    const useAddress = (x) => {
+      for (const k of ['address', 'city', 'state', 'zip']) {
+        f[k].value = k === 'address' ? x.line1 : x[k] || '';
+        touched.add(k);
+      }
+      addrHint.innerHTML = ''; drawChips();
+    };
     const suggestAddress = debounce(async () => {
       const a = currentVals().address;
       if (!a || touched.has('address') || a.length < 6 || !/\d/.test(a)) { addrHint.innerHTML = ''; return; }
       let best;
       try { best = ((await api('/address/suggest?q=' + encodeURIComponent(a))).suggestions || [])[0]; } catch { best = null; }
       const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (!best || currentVals().address !== a || norm(best.label).startsWith(norm(a))) { addrHint.innerHTML = ''; return; }
+      const vals = currentVals();
+      const hasLocality = ['city', 'state', 'zip'].every(k => vals[k]);
+      if (!best || vals.address !== a || (hasLocality && norm(best.label).startsWith(norm(a)))) { addrHint.innerHTML = ''; return; }
       if ((a.match(/^\s*\d+/) || [''])[0].trim() !== (best.line1.match(/^\d+/) || [''])[0]) { addrHint.innerHTML = ''; return; }
       addrHint.innerHTML = `<div class="addr-hint">📍 Did you mean <b>${esc(best.label)}</b>? <button type="button" class="btn small" id="useAddr">Use it</button></div>`;
-      document.getElementById('useAddr').onclick = () => { touched.add('address'); f.address.value = best.label; addrHint.innerHTML = ''; drawChips(); };
+      document.getElementById('useAddr').onclick = () => useAddress(best);
     }, 700);
-    attachAddressSuggest(f.address, (x) => { f.address.value = x.label; touched.add('address'); addrHint.innerHTML = ''; drawChips(); });
+    attachAddressSuggest(f.address, useAddress);
 
     const drawChips = () => {
       const vals = currentVals();
-      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', dob: 'Date of birth', notes: 'Notes' };
+      const label = { name: 'Name', phone: 'Phone', email: 'Email', address: 'Address', city: 'City', state: 'State', zip: 'ZIP', dob: 'Date of birth', notes: 'Notes' };
       if (vals.dob && /^\d{4}-\d{2}-\d{2}$/.test(vals.dob)) vals.dob = usDate(vals.dob);
       chips.innerHTML = fields
-        .filter((k) => k !== 'notes' || vals.notes)
+        .filter((k) => !['notes', 'city', 'state', 'zip'].includes(k) || vals[k])
         .map((k) => `<span class="chip ${vals[k] ? 'on' : ''}">${vals[k] ? '✓' : '○'} ${label[k]}${vals[k] ? `: <b>${esc(vals[k].split('\n')[0])}</b>` : ''}</span>`)
         .join('')
         + (ta.value.trim() && !vals.phone && !vals.email && !vals.address
@@ -612,7 +691,13 @@
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); document.getElementById('quickForm').requestSubmit(); }
     });
     for (const k of fields) f[k].addEventListener('input', () => { touched.add(k); drawChips(); });
-    document.getElementById('fixBtn').onclick = () => { fixWrap.hidden = !fixWrap.hidden; if (!fixWrap.hidden) f.name.focus(); };
+    const setDetailsOpen = (open) => {
+      fixWrap.hidden = !open;
+      const toggle = document.getElementById('fixBtn');
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.textContent = open ? 'Hide details' : 'Review or edit details';
+    };
+    document.getElementById('fixBtn').onclick = () => { setDetailsOpen(fixWrap.hidden); if (!fixWrap.hidden) f.name.focus(); };
     const tplBtn = document.getElementById('tplBtn');
     if (tplBtn) tplBtn.onclick = () => {
       if (ta.value.trim() && !confirm('Replace what you typed with the template?')) return;
@@ -628,7 +713,10 @@
     document.getElementById('quickForm').onsubmit = async (e) => {
       e.preventDefault();
       const btn = document.getElementById('sendBtn');
+      if (btn.disabled) return;
       btn.disabled = true;
+      btn.textContent = 'Sending referral…';
+      btn.setAttribute('aria-busy', 'true');
       msg.innerHTML = '';
       try {
         const body = { text: ta.value, services: [...svc] };
@@ -636,12 +724,12 @@
         const credit = document.getElementById('creditTo');
         if (credit && credit.value) body.credit_to = Number(credit.value);
         const ref = await api('/referrals', { method: 'POST', body });
-        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a>
+        msg.innerHTML = `<div class="alert ok">✓ Sent! ${esc(leadName(ref))} is in as <b>New</b>${ref.created_by !== state.me.id ? ` for ${esc(ref.created_by_name)}` : ''}. <a href="#/r/${ref.id}">View</a> · <a href="#/r/${ref.id}?energy=1">Check energy options</a>
           <div class="wa-row">${waButtonsHtml()}</div></div>`;
         bindWhatsapp(msg, ref);
         ta.value = '';
         for (const k of fields) f[k].value = '';
-        touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
+        touched.clear(); parsed = {}; setDetailsOpen(false); svc.clear(); svcTouched = false;
         if (credit) credit.value = '';
         drawChips(); drawServices();
         loadRecent();
@@ -657,7 +745,7 @@
           msg.innerHTML = '<div class="alert warn">📶 No signal. The lead is <b>saved on this phone</b> and will send by itself when you\'re back online.</div>';
           ta.value = '';
           for (const k of fields) f[k].value = '';
-          touched.clear(); parsed = {}; fixWrap.hidden = true; svc.clear(); svcTouched = false;
+          touched.clear(); parsed = {}; setDetailsOpen(false); svc.clear(); svcTouched = false;
           drawChips(); drawServices(); drawOutbox();
           return;
         }
@@ -665,6 +753,8 @@
         msg.innerHTML = `<div class="alert ${cls}">${err.status === 409 ? '⛔ ' : ''}${esc(err.message)}</div>`;
       } finally {
         btn.disabled = false;
+        btn.textContent = 'Send referral';
+        btn.setAttribute('aria-busy', 'false');
       }
     };
     drawOutbox();
@@ -689,16 +779,16 @@
     if (score == null || !window.LeadScore) return '';
     const s = Number(score);
     const band = s >= 80 ? 'Strong' : s >= 60 ? 'Good' : s >= 35 ? 'Fair' : 'Weak';
-    return `<span class="score-badge${big ? ' big' : ''}" style="--sc:${LeadScore.scoreColor(s)}" title="Lead quality: ${band} (${s}%)">${s}%</span>`;
+    return `<span class="score-badge${big ? ' big' : ''}" style="--sc:${LeadScore.scoreColor(s)};--sc-text:${scoreTextColor(s)}" title="Lead quality: ${band} (${s}%)">${s}%</span>`;
   }
 
   function leadItem(r) {
     const sub = [r.phone, r.email, r.address].filter(Boolean).join(' · ');
-    return `<li data-id="${r.id}"><div class="who"><b>${esc(leadName(r))}</b><span>${esc(sub)}</span></div>
+    return `<li data-id="${r.id}"><div class="who"><b><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b><span>${esc(sub)}</span></div>
       <div style="text-align:right;flex-shrink:0">${scoreBadge(r.lead_score)} ${pill(r.status)}<div class="small muted">${when(r.created_at)}</div></div></li>`;
   }
   function bindLeadItems(root) {
-    root.querySelectorAll('[data-id]').forEach((el) => { el.onclick = () => { location.hash = '#/r/' + el.dataset.id; }; });
+    root.querySelectorAll('[data-id]').forEach((el) => { el.onclick = (e) => { if(e.target.closest('a'))return;location.hash = '#/r/' + el.dataset.id; }; });
   }
 
   // ---------- referrals / customers list ----------
@@ -712,11 +802,13 @@
   const defaultScope = () => (seesAll() ? 'all' : isManager() ? 'team' : 'mine');
 
   async function renderReferrals() {
+    state.customerListRoute = location.hash;
     const params = query();
     const scope = params.scope || defaultScope();
     const [ppl, teams] = await Promise.all([people(), seesAll() ? api('/teams') : Promise.resolve([])]);
     const scopes = scopesFor();
     const title = scope === 'assigned' ? 'My queue' : worksLeads() ? 'Customers' : 'My referrals';
+    const filtersOpen = ['status', 'service', 'user_id', 'team_id', 'assigned_to'].some((k) => params[k]);
 
     shell(`
       <div class="card">
@@ -727,19 +819,20 @@
             <a class="btn small" id="csvBtn" href="#">⬇ Export CSV</a>
           </div>
         </div>
-        <div class="filters">
-          <input class="q" id="q" placeholder="Search name, phone, email, address, notes, account #" value="${esc(params.q || '')}">
-          <select id="st"><option value="">All statuses</option>${STATUSES.map((s) => `<option ${params.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-          <select id="svc"><option value="">All services</option>${SERVICES.map((s) => `<option ${params.service === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-          ${worksLeads() ? `<select id="usr"><option value="">All reps</option>${ppl.credit.filter((u) => !params.team_id || String(u.team_id) === params.team_id).map((u) => `<option value="${u.id}" ${params.user_id === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
-          ${seesAll() ? `<select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
-          ${seesAll() && scope === 'all' ? `<select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>` : ''}
+        <div class="filters customer-filters ${filtersOpen ? '' : 'collapsed'}" id="customerFilters">
+          <div class="filter-field q"><label for="q">Search customers</label><div class="filter-search"><input id="q" type="search" placeholder="Name, phone, email, address…" aria-label="Search customers by name, phone, email, address, notes or account number" value="${esc(params.q || '')}"><button type="button" class="btn filter-toggle" id="filtersToggle" aria-expanded="${filtersOpen}" aria-controls="customerFilters">Filters</button></div></div>
+          <div class="filter-field"><label for="st">Status</label><select id="st"><option value="">All statuses</option>${STATUSES.map((s) => `<option ${params.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+          <div class="filter-field"><label for="svc">Service</label><select id="svc"><option value="">All services</option>${SERVICES.map((s) => `<option ${params.service === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+          ${worksLeads() ? `<div class="filter-field"><label for="usr">Opportunity owner</label><select id="usr"><option value="">All reps</option>${ppl.credit.filter((u) => !params.team_id || String(u.team_id) === params.team_id).map((u) => `<option value="${u.id}" ${params.user_id === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select></div>` : ''}
+          ${seesAll() ? `<div class="filter-field"><label for="tm">Team</label><select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>` : ''}
+          ${seesAll() && scope === 'all' ? `<div class="filter-field"><label for="asg">Dispatcher</label><select id="asg"><option value="">Any dispatcher</option>${ppl.dispatchers.map((u) => `<option value="${u.id}" ${params.assigned_to === String(u.id) ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select></div>` : ''}
         </div>
+        <div class="filter-summary"><span id="filterSummary" class="small muted"></span><button type="button" class="link-btn small" id="clearFilters" hidden>Clear filters</button></div>
         <div class="table-wrap"><table class="rtable leads-table">
-          <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Rep</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
+          <thead><tr><th>Customer</th><th>Contact</th><th>Address</th>${worksLeads() ? '<th>Opportunity owner</th>' : ''}${worksLeads() ? '<th>Dispatch</th>' : ''}<th>Status</th><th>Entered</th></tr></thead>
           <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table></div>
-        <p class="small muted" id="count"></p>
+        <p class="small muted" id="count" role="status" aria-live="polite"></p>
       </div>`);
 
     const setParam = (k, v) => {
@@ -756,6 +849,16 @@
     const qEl = document.getElementById('q');
     qEl.oninput = debounce(() => load(), 250);
     qEl.onkeydown = (e) => { if (e.key === 'Enter') setParam('q', qEl.value); };
+    const filterBox = document.getElementById('customerFilters');
+    document.getElementById('filtersToggle').onclick = (e) => {
+      filterBox.classList.toggle('collapsed');
+      e.currentTarget.setAttribute('aria-expanded', String(!filterBox.classList.contains('collapsed')));
+    };
+    const resetFilters = () => {
+      const next = '#/referrals?scope=' + scope;
+      if (location.hash === next) renderReferrals(); else location.hash = next;
+    };
+    document.getElementById('clearFilters').onclick = resetFilters;
 
     const currentParams = () => {
       const p = new URLSearchParams({ scope });
@@ -765,21 +868,41 @@
     };
     document.getElementById('csvBtn').onclick = (e) => { e.preventDefault(); location.href = '/api/referrals.csv?' + currentParams().toString(); };
 
+    let loadId = 0;
     async function load() {
-      const rows = await api('/referrals?' + currentParams().toString());
+      const request = ++loadId;
       const tbody = document.getElementById('rows');
       if (!tbody) return;
+      const searchParams = currentParams();
+      const activeFilters = [...searchParams.keys()].filter((k) => k !== 'scope').length;
+      document.getElementById('clearFilters').hidden = !activeFilters;
+      document.getElementById('filterSummary').textContent = activeFilters ? `${activeFilters} active filter${activeFilters === 1 ? '' : 's'}` : '';
+      tbody.setAttribute('aria-busy', 'true');
+      let rows;
+      try { rows = await api('/referrals?' + searchParams.toString()); }
+      catch (err) {
+        if (!tbody.isConnected || request !== loadId) return;
+        tbody.setAttribute('aria-busy', 'false');
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="7"><div class="empty-state"><h2>Customers could not be loaded</h2><p>${esc(err.message)}</p><button type="button" class="btn" id="retryCustomers">Try again</button></div></td></tr>`;
+        document.getElementById('count').textContent = '';
+        document.getElementById('retryCustomers').onclick = load;
+        return;
+      }
+      if (!tbody.isConnected || request !== loadId) return;
+      tbody.setAttribute('aria-busy', 'false');
       tbody.innerHTML = rows.length ? rows.map((r) => `
         <tr class="click" data-id="${r.id}">
-          <td class="c-main"><b>${esc(leadName(r))}</b>${r.customer_active ? ' <span class="tag ok-text">Active customer</span>' : ''}${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${esc(r.comment_count)}</div>` : ''}</td>
+          <td class="c-main"><b><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b>${r.customer_active ? ' <span class="tag ok-text">Active customer</span>' : ''}${svcTags(r.services)}${r.account_number ? `<div class="small muted">Acct ${esc(r.account_number)}</div>` : ''}${r.comment_count ? `<div class="small muted">💬 ${esc(r.comment_count)}</div>` : ''}</td>
           <td class="c-contact" data-label="Contact">${esc(r.phone)}<div class="small muted">${esc(r.email)}</div></td>
           <td class="c-addr small" data-label="Address">${esc(r.address)}</td>
-          ${worksLeads() ? `<td class="small" data-label="Rep">${esc(r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
-          ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
-          <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}</td>
+          ${worksLeads() ? `<td class="small" data-label="Opportunity owner">${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? `<div class="muted">${esc(r.team_name)}</div>` : ''}</td>` : ''}
+          ${worksLeads() ? `<td class="small" data-label="Dispatch">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">—</span>'}</td>` : ''}
+          <td class="c-status">${pill(r.status)} ${scoreBadge(r.lead_score)}${['New','Working','Passed'].includes(r.status)?`<div class="small muted">${stageAge(r)}</div>`:''}</td>
           <td class="small muted" data-label="Entered">${when(r.created_at)}</td>
-        </tr>`).join('') : '<tr><td colspan="7" class="muted">No referrals match.</td></tr>';
+        </tr>`).join('') : `<tr class="empty-row"><td colspan="7"><div class="empty-state"><h2>${activeFilters ? 'No customers match these filters' : 'No customers here yet'}</h2><p>${activeFilters ? 'Try another search or clear your filters.' : 'New referrals will appear here as they are entered.'}</p>${activeFilters ? '<button type="button" class="btn" id="emptyClearFilters">Clear filters</button>' : '<a class="btn primary" href="#/new">New referral</a>'}</div></td></tr>`;
       document.getElementById('count').textContent = `${rows.length}${rows.length === 500 ? '+' : ''} referral${rows.length === 1 ? '' : 's'}`;
+      bindStageAges();
+      document.getElementById('emptyClearFilters')?.addEventListener('click', resetFilters);
       bindLeadItems(tbody);
     }
     load();
@@ -802,13 +925,13 @@
         </div>
       </div>
       <div class="board-filters">
-        <input id="q" placeholder="Search…" value="${esc(params.q || '')}">
-        ${seesAll() ? `<select id="tm"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+        <input id="q" type="search" aria-label="Search board customers" placeholder="Search customers…" value="${esc(params.q || '')}">
+        ${seesAll() ? `<select id="tm" aria-label="Filter board by team"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
         <select id="closed" title="How far back to show DNQ / Ordered / Cancelled">
           ${[['7', 'Closed: last 7 days'], ['30', 'Closed: last 30 days'], ['90', 'Closed: last 90 days'], ['0', 'Closed: all time']].map(([v, l]) => `<option value="${v}" ${closed === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
       </div>
-      ${worksLeads() ? '<p class="small muted" style="margin:.2rem 0 .8rem">Drag a card to another column to change its status.</p>' : ''}
+      <p class="small muted board-help" style="margin:.2rem 0 .8rem"><span class="hide-sm">${worksLeads() ? 'Drag a card to another column, or open the customer to change its status.' : 'Open a customer to see their details.'}</span><span class="show-sm">Swipe across to see each status. Tap a customer to open their details.</span></p>
       <div class="board" id="board">${STATUSES.map((s) => `
         <section class="col" data-status="${s}">
           <header><span class="pill ${s}">${s}</span><span class="n muted small" data-n="${s}"></span></header>
@@ -832,12 +955,13 @@
     const card = (r) => {
       const draggable = canMoveCard(r);
       return `<article class="kcard" data-id="${r.id}" ${draggable ? 'draggable="true"' : ''}>
-        <div class="row between" style="flex-wrap:nowrap"><b class="kname">${esc(leadName(r))}</b><span class="small muted" style="white-space:nowrap">${scoreBadge(r.lead_score)} ${when(r.created_at)}</span></div>
+        <div class="row between" style="flex-wrap:nowrap"><b class="kname"><a class="record-link" href="#/r/${r.id}">${esc(leadName(r))}</a></b><span class="small muted" style="white-space:nowrap">${scoreBadge(r.lead_score)} ${when(r.created_at)}</span></div>
         ${r.phone ? `<div class="small">${esc(r.phone)}</div>` : ''}
         ${r.address ? `<div class="small muted kaddr">${esc(r.address)}</div>` : ''}
         ${r.services ? `<div>${svcTags(r.services)}</div>` : ''}
         <div class="kmeta small">
-          <span>👤 ${esc(r.created_by_name)}${seesAll() && r.team_name ? ` · ${esc(r.team_name)}` : ''}</span>
+          ${['New','Working','Passed'].includes(r.status)?`<span class="stage-age">${stageAge(r)}</span>`:''}
+          <span>👤 ${personLink(r.created_by,r.created_by_name)}${seesAll() && r.team_name ? ` · ${esc(r.team_name)}` : ''}</span>
           ${r.install_date ? `<span>📅 ${esc(dayDate(r.install_date))}</span>` : ''}
           ${r.comment_count ? `<span>💬 ${r.comment_count}</span>` : ''}
         </div>
@@ -853,7 +977,7 @@
         document.querySelector(`[data-n="${s}"]`).textContent = list.length;
       }
       document.querySelectorAll('.kcard').forEach((el) => {
-        el.onclick = (e) => { if (!e.target.closest('[data-take]')) location.hash = '#/r/' + el.dataset.id; };
+        el.onclick = (e) => { if (!e.target.closest('[data-take], a')) location.hash = '#/r/' + el.dataset.id; };
         el.ondragstart = (e) => { e.dataTransfer.setData('text/plain', el.dataset.id); el.classList.add('dragging'); };
         el.ondragend = () => el.classList.remove('dragging');
       });
@@ -870,6 +994,7 @@
           } catch (err) { toast(err.message); }
         };
       });
+      bindStageAges();
     }
 
     document.querySelectorAll('.col').forEach((col) => {
@@ -887,6 +1012,8 @@
         draw();
         try {
           await api('/referrals/' + id, { method: 'PATCH', body: { status: to } });
+          r.current_stage_started_at = new Date().toISOString().replace('T',' ').slice(0,19);
+          draw();
           toast(`${leadName(r)} → ${to}`);
         } catch (err) {
           r.status = from;
@@ -909,6 +1036,105 @@
 
   // ---------- referral detail ----------
 
+  const DOCUMENT_LABELS={name:'Customer',phone:'Phone',email:'Email',address:'Address',city:'City',state:'State',zip:'ZIP',account_number:'Spectrum account',order_number:'Work order',order_reference:'Order reference',install_date:'Installation date',delivery_date:'Kit delivery date',services:'Services',package_details:'Package',est_monthly_value:'Monthly total',initial_payment:'Initial payment',mobile_activation_pending:'Mobile activation needed',mobile_offer:'Mobile offer'};
+  function documentFields(fields) {
+    return Object.entries(fields).filter(([,v])=>v!=='' && v!=null).map(([key,value])=>{
+      let display=value;
+      if(['est_monthly_value','initial_payment'].includes(key))display='$'+Number(value).toFixed(2);
+      if(['install_date','delivery_date'].includes(key))display=usDate(value);
+      if(key==='mobile_activation_pending')display=value ? 'Yes — activation still required' : 'No';
+      return `<dt>${esc(DOCUMENT_LABELS[key] || key.replace(/_/g,' '))}</dt><dd>${esc(display)}</dd>`;
+    }).join('');
+  }
+  function customerDocuments(r) {
+    return `<section class="card" id="customerDocuments"><h2>Documents</h2>
+      <p class="small muted">Keep Spectrum confirmations and other PDFs with this customer. WhatsApp order PDFs appear here automatically.</p>
+      <div id="customerDocumentList">${r.documents?.length ? r.documents.map(d=>`<article class="customer-document"><b>${esc(d.filename)}</b>
+        <p class="small muted">${esc(d.author)} · ${d.source==='whatsapp' ? 'WhatsApp' : 'Web upload'} · ${when(d.created_at)} · ${Math.max(1,Math.round(d.size_bytes/1024))} KB</p>
+        <p class="small document-state ${d.status==='review'?'err-text':''}"><b>${esc({attached:'Attached',applied:'Order details saved',review:'Needs review'}[d.status] || d.status)}</b> · ${esc(d.detail)}</p>
+        <div class="row"><a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}?view=1" target="_blank" rel="noopener" aria-label="Open ${esc(d.filename)}">Open PDF</a>
+          <a class="btn small" href="/api/referrals/${r.id}/documents/${d.id}" aria-label="Download ${esc(d.filename)}">Download</a>
+          ${d.can_apply && !d.can_confirm ? `<button type="button" class="btn small" data-apply-document="${d.id}">Apply order details</button>` : ''}${d.can_confirm ? `<button type="button" class="btn small" data-confirm-document="${d.id}">Confirm this customer’s order</button>` : ''}
+          ${d.can_delete ? `<button type="button" class="btn small" data-delete-document="${d.id}" aria-label="Remove ${esc(d.filename)}">Remove</button>` : ''}</div>
+        ${d.status!=='applied' && d.conflicts?.length ? `<div class="document-comparison"><h3>Customer differences</h3>${d.conflicts.map(c=>`<div><b>${esc(DOCUMENT_LABELS[c.key] || c.key)}</b><p><span class="muted">CRM:</span> ${esc(c.saved)}</p><p><span class="muted">PDF:</span> ${esc(c.incoming)}</p></div>`).join('')}<p class="small muted">Review the original PDF. A manager can confirm it belongs to this customer; saved contact details will be preserved.</p></div>`:''}
+        ${Object.keys(d.fields || {}).length ? `<details><summary class="small">Extracted order details</summary><dl class="document-fields small">${documentFields(d.fields)}</dl></details>` : ''}</article>`).join('') : '<p class="small muted">No PDFs attached yet.</p>'}</div>
+      <form id="documentUploadForm"><div class="field"><label for="customerPdf">Attach a PDF (up to 5 MB)</label><input type="file" id="customerPdf" accept="application/pdf,.pdf" required></div>
+        ${r.can_manage ? '<label class="check"><input type="checkbox" id="documentApply" checked> Save order details and mark Ordered</label>' : '<p class="small muted">Dispatch or your manager can apply the extracted order details.</p>'}
+        <button class="btn primary" id="attachCustomerPdf">Attach PDF</button><p class="small" id="documentUploadState" role="status" aria-live="polite"></p></form>
+    </section>`;
+  }
+  function bindCustomerDocuments(r) {
+    const form=document.getElementById('documentUploadForm'),feedback=document.getElementById('documentUploadState');
+    form.onsubmit=async event=>{
+      event.preventDefault();const file=document.getElementById('customerPdf').files[0],button=document.getElementById('attachCustomerPdf');
+      if(!file || file.size>5*1024*1024 || !/\.pdf$/i.test(file.name)){feedback.textContent='Choose a PDF up to 5 MB.';return;}
+      button.disabled=true;button.textContent='Attaching PDF…';feedback.textContent='Reading the PDF and saving it to this customer…';
+      try {
+        const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('The file could not be read.'));reader.readAsDataURL(file);});
+        const result=await api(`/referrals/${r.id}/documents`,{method:'POST',body:{filename:file.name,data,apply:!!document.getElementById('documentApply')?.checked}});
+        toast(result.document.status==='applied' ? 'PDF attached and order details saved' : result.document.status==='review' ? 'PDF attached — order details need review' : result.duplicate ? 'This PDF is already attached' : 'PDF attached');
+        await renderReferral(r.id);
+      } catch(error){feedback.textContent=error.message;button.disabled=false;button.textContent='Attach PDF';}
+    };
+    document.querySelectorAll('[data-apply-document]').forEach(button=>{button.onclick=async()=>{
+      button.disabled=true;button.textContent='Applying…';
+      try{const result=await api(`/referrals/${r.id}/documents/${button.dataset.applyDocument}/apply`,{method:'POST',body:{}});toast(result.document.status==='applied' ? 'Order details saved' : result.document.detail);await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;button.textContent='Apply order details';}
+    };});
+    document.querySelectorAll('[data-confirm-document]').forEach(button=>{button.onclick=async()=>{
+      if(!confirm(`Have you reviewed the differences and confirmed this PDF belongs to ${r.customer_name}? This will save the order details and mark Ordered. Existing contact details will be preserved.`))return;
+      button.disabled=true;
+      try{const result=await api(`/referrals/${r.id}/documents/${button.dataset.confirmDocument}/apply`,{method:'POST',body:{confirm_customer:true}});toast(result.document.status==='applied'?'Order confirmed and saved':result.document.detail);await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;}
+    };});
+    document.querySelectorAll('[data-delete-document]').forEach(button=>{button.onclick=async()=>{
+      if(!confirm('Remove this PDF from the customer? Saved customer and order details will remain.'))return;
+      button.disabled=true;
+      try{await api(`/referrals/${r.id}/documents/${button.dataset.deleteDocument}`,{method:'DELETE',body:{}});toast('PDF removed');await renderReferral(r.id);}
+      catch(error){feedback.textContent=error.message;button.disabled=false;}
+    };});
+  }
+
+  function stageAge(r) {
+    return r.current_stage_started_at?`<span data-stage-age="${esc(r.current_stage_started_at)}" title="Elapsed time in ${esc(r.status)}">⏱ ${stageDuration((Date.now()-parseDate(r.current_stage_started_at).getTime())/60000)} in stage</span>`:'Time unknown';
+  }
+  function bindStageAges() {
+    clearInterval(stageTimer);
+    stageTimer=setInterval(()=>document.querySelectorAll('[data-stage-age]').forEach(el=>{
+      el.textContent=`⏱ ${stageDuration((Date.now()-parseDate(el.dataset.stageAge).getTime())/60000)} in stage`;
+    }),60000);
+  }
+  function stageDuration(minutes) {
+    if (minutes == null) return 'Unknown';
+    const m = Math.max(0,Math.floor(minutes + 0.00001));
+    if (!m) return minutes > 0 ? '<1m' : '0m';
+    const days=Math.floor(m/1440), hours=Math.floor(m%1440/60), mins=m%60;
+    return [days && `${days}d`,hours && `${hours}h`,mins && `${mins}m`].filter(Boolean).join(' ');
+  }
+  function customerStages(r) {
+    const t=r.stage_timing;
+    if (!t) return '';
+    return `<section class="card stage-card" id="customerStages">
+      <div class="stage-heading"><div><h2>Time in each stage</h2><p class="small muted">Elapsed time · repeat visits are added together</p></div>
+      <div class="stage-current"><span class="small muted">${t.running?'Current stage':'Current status'} · ${esc(t.current_stage)}</span><strong data-current-stage-clock>${t.running?stageDuration(t.current_minutes):t.current_started_at?'Closed':'Unknown'}</strong><span class="small muted">${t.current_started_at?`Since ${esc(fullDate(t.current_started_at))}`:'No recorded entry time'}</span></div></div>
+      <div class="stage-grid">${t.stages.map((s,i)=>`<div class="stage-tile ${s.current?'active':''}"><div class="row between">${pill(s.status)}${s.current?'<span class="small">Current</span>':''}</div><strong data-stage-value="${i}">${s.visits?stageDuration(s.minutes):'—'}</strong><span class="small muted">${s.visits?`${s.visits} ${s.visits===1?'visit':'visits'}`:'No recorded visit'}</span></div>`).join('')}</div>
+      ${t.partial?'<p class="alert warn small">Earlier stage history is incomplete. These timers show recorded visits only; the missing time is unknown.</p>':''}
+      <details class="stage-visits"><summary>See stage visits and timestamps</summary><ol>${t.stages.flatMap(s=>s.intervals.map(v=>({...v,status:s.status}))).sort((a,b)=>a.entered_at.localeCompare(b.entered_at)).map(v=>`<li><b>${esc(v.status)}</b><span>${esc(fullDate(v.entered_at))} → ${v.exited_at?esc(fullDate(v.exited_at)):t.running&&v.status===t.current_stage?'Now':'Closed'} · ${stageDuration(v.minutes)}</span></li>`).join('')||'<li>No recorded stage changes yet.</li>'}</ol></details>
+      <p class="small muted">Open stages update every minute. Closed records stop their active clock. The first-response timer still uses working hours.</p></section>`;
+  }
+  function bindStageClock(r) {
+    const t=r.stage_timing;
+    if (!t?.running) return;
+    const snapshot=Date.now();
+    stageTimer=setInterval(()=>{
+      const current=document.querySelector('[data-current-stage-clock]');
+      if (!current) {clearInterval(stageTimer);return;}
+      const delta=(Date.now()-snapshot)/60000;
+      current.textContent=stageDuration(t.current_minutes+delta);
+      t.stages.forEach((s,i)=>{if(s.current)document.querySelector(`[data-stage-value="${i}"]`).textContent=stageDuration(s.minutes+delta);});
+    },60000);
+  }
+
   async function renderReferral(id) {
     let r;
     try {
@@ -920,6 +1146,7 @@
     const ppl = r.can_assign ? await people() : { dispatchers: [] };
     const editing = state.editing === r.id;
     const rs = new Set((r.services || '').split(',').map((x) => x.trim()).filter(Boolean));
+    r.stage_timing?.stages.sort((a,b)=>STATUSES.indexOf(a.status)-STATUSES.indexOf(b.status));
 
     // Helpers
     const initials = (name) => (name || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
@@ -935,16 +1162,16 @@
     const PRIORITIES = ['Low', 'Standard', 'High', 'Urgent'];
 
     shell(`
-      <p><a href="javascript:history.back()">← Back to list</a></p>
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${esc(state.customerListRoute || '#/referrals')}">Customers</a><span aria-hidden="true">/</span><span class="crumb-active">${esc(leadName(r))}</span></nav>
 
       <!-- Record Header Card -->
-      <div class="card" style="margin-bottom:1rem">
+      <div class="card customer-hero" style="margin-bottom:1rem">
         <div class="record-header">
           <div class="record-avatar">${initials(r.customer_name)}</div>
           <div class="record-title-block">
             <h1>${esc(leadName(r))}</h1>
             <div class="record-subtitle">
-              ${r.company ? esc(r.company) + ' · ' : ''}#${r.id} · ${esc(r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${esc(r.entered_by_name)}` : ''}
+              ${r.company ? esc(r.company) + ' · ' : ''}#${r.id} · Owner: ${personLink(r.created_by,r.created_by_name)}${r.team_name ? ` (${esc(r.team_name)})` : ''}${r.entered_by && r.entered_by !== r.created_by ? ` · entered by ${personLink(r.entered_by,r.entered_by_name)}` : ''}
             </div>
             <div class="record-meta-row">
               ${pill(r.status)}
@@ -955,6 +1182,10 @@
               <span class="pref-chip">🕐 ${esc(contactPref)}</span>
             </div>
           </div>
+          ${r.can_manage ? `<section class="record-status-controls" id="customerStatus" aria-label="Update customer status">
+            <h2>Update status</h2>
+            <div class="seg" id="statusSeg">${STATUSES.map(s=>`<button type="button" data-s="${s}" class="status-choice ${s}${r.status===s?' on':''}" aria-pressed="${r.status===s}">${s}</button>`).join('')}</div>
+          </section>` : ''}
         </div>
 
         <!-- Highlights Strip -->
@@ -964,7 +1195,7 @@
             <div class="hl-label">Est. Monthly</div>
           </div>
           <div class="highlight-tile">
-            <div class="hl-val" style="color:${r.lead_score != null && window.LeadScore ? LeadScore.scoreColor(r.lead_score) : 'inherit'}">${r.lead_score != null ? `${r.lead_score}%` : '—'}</div>
+            <div class="hl-val" style="color:${r.lead_score != null ? scoreTextColor(r.lead_score) : 'inherit'}">${r.lead_score != null ? `${r.lead_score}%` : '—'}</div>
             <div class="hl-label">Lead quality</div>
           </div>
           <div class="highlight-tile">
@@ -985,29 +1216,30 @@
         <div class="record-actions" id="waActions">${waButtonsHtml()}
           ${r.callback_requested_at ? `<span class="small muted">📞 Team call-back requested ${when(r.callback_requested_at)}${r.callback_requested_by_name ? ` by ${esc(r.callback_requested_by_name)}` : ''}</span>` : `<button class="btn small primary" id="callbackBtn">📞 Request team call-back</button>`}
           ${r.can_edit && !editing ? '<button class="btn small" id="editBtn">✏️ Edit Record</button>' : ''}
-          ${r.can_edit && r.can_manage ? '<button class="btn small" id="deleteBtn" style="color:var(--danger)">🗑 Delete</button>' : ''}
+          ${isAdmin() ? '<button class="btn small danger" id="deleteBtn">🗑 Delete record</button>' : ''}
         </div>
+        <p id="recordActionState" class="small" role="status" aria-live="polite"></p>
       </div>
 
       ${!r.callback_requested_at ? '<p class="small muted" style="margin:-.45rem 0 1rem .2rem">Use this once only after the customer confirms they can answer. It sends the call-back request to the silent group.</p>' : ''}
-
-      <div class="card" style="margin-bottom:1rem">
+      <div class="card" id="customerComments" style="margin-bottom:1rem">
         <h2>Comments</h2>
-        <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone.</p>
+        <p class="small muted" style="margin-top:0">Something not adding up? Leave a note. Type <b>@</b> to tag someone. Use <b>@owner</b> or the owner’s username for an urgent WhatsApp alert, if they enabled it.</p>
         <div id="comments">${r.comments.length ? r.comments.map((c) => `
-          <div class="comment"><div class="meta"><b>${esc(c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
+          <div class="comment"><div class="meta"><b>${personLink(c.user_id,c.full_name)}</b> · ${when(c.created_at)}${c.source === 'whatsapp' ? ' · <span class="via-wa">via WhatsApp</span>' : c.source === 'assistant' ? ' · <span class="via-wa">via Assistant</span>' : ''}${c.external ? ' · external participant' : ''}</div><p>${highlightMentions(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet.</p>'}
         </div>
         <form id="commentForm" style="margin-top:1rem">
-          <textarea id="commentBody" rows="3" placeholder="e.g. @dispatch address doesn't match the account"></textarea>
+          <textarea id="commentBody" rows="3" aria-label="Add a comment or mention a teammate" placeholder="e.g. @dispatch address doesn’t match the account"></textarea>
           <div id="mentionBox"></div>
           <button class="btn primary" style="margin-top:.5rem">Post comment</button>
         </form>
       </div>
-
-      <div class="grid-2">
+      ${sectionLinks([r.can_manage&&['customerStatus','Status'],['customerOverview','Overview'],['customerStages','Stage timers'],['customerDocuments',`Documents${r.documents?.length?' · '+r.documents.length:''}`],r.can_manage&&['customerOrder','Order details'],['customerReminders','Reminders'],['customerActivity','Activity'],['customerComments','Comments'],['energyOptions','Energy']],'Customer sections')}
+      ${customerStages(r)}
+      <div class="grid-2 customer-layout">
         <!-- LEFT COLUMN: Detail Sections -->
         <div class="stack">
-          <div class="card">
+          <div class="card" id="customerOverview">
             ${editing ? `
               <form id="editForm">
                 <h2 style="margin-bottom:.8rem">Edit Record</h2>
@@ -1022,8 +1254,9 @@
                   </div>
                   <div class="field full"><label>Address</label><input name="address" value="${esc(r.address)}" placeholder="Street address"></div>
                   <div class="field"><label>City</label><input name="city" value="${esc(r.city || '')}" placeholder="City"></div>
+                  <div class="field"><label>State</label><input name="state" value="${esc(r.state || '')}" maxlength="40" placeholder="TX or Texas"></div>
                   <div class="field"><label>Date of Birth</label><input name="dob" value="${esc(usDate(r.dob))}" placeholder="MM/DD/YYYY" inputmode="numeric"></div>
-                  <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" placeholder="ZIP code"></div>
+                  <div class="field"><label>ZIP</label><input name="zip" value="${esc(r.zip || '')}" inputmode="numeric" maxlength="10" placeholder="ZIP or ZIP+4"></div>
                   <div class="field full"><label>Services</label><div class="row" style="gap:.4rem">${SERVICES.map((s) => `<button type="button" class="toggle ${rs.has(s) ? 'on' : ''}" data-esvc="${s}">${s}</button>`).join('')}</div></div>
                   <div class="field"><label>Lead Priority</label>
                     <select name="lead_priority">${PRIORITIES.map((p) => `<option ${priority === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
@@ -1086,6 +1319,10 @@
                     ${fv(r.city ? esc(r.city) : '')}
                   </div>
                   <div class="field-row">
+                    <span class="field-label">State</span>
+                    ${fv(r.state ? esc(r.state) : '')}
+                  </div>
+                  <div class="field-row">
                     <span class="field-label">ZIP Code</span>
                     ${fv(r.zip ? esc(r.zip) : '')}
                   </div>
@@ -1108,8 +1345,8 @@
                     ${estVal ? `<span class="field-value value-highlight">$${estVal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>` : empty}
                   </div>
                   <div class="field-row">
-                    <span class="field-label">Created By</span>
-                    <span class="field-value">${esc(r.created_by_name)}${r.team_name ? ` <span class="muted small">(${esc(r.team_name)})</span>` : ''}</span>
+                    <span class="field-label">Opportunity owner</span>
+                    <span class="field-value">${personLink(r.created_by,r.created_by_name)}${r.team_name ? ` <span class="muted small">(${esc(r.team_name)})</span>` : ''}</span>
                   </div>
                   <div class="field-row">
                     <span class="field-label">Created</span>
@@ -1121,7 +1358,7 @@
                   </div>
                   <div class="field-row">
                     <span class="field-label">Dispatch</span>
-                    <span class="field-value">${r.assigned_name ? esc(r.assigned_name) : '<span class="muted">Unassigned</span>'}</span>
+                    <span class="field-value">${r.assigned_name ? personLink(r.assigned_to,r.assigned_name) : '<span class="muted">Unassigned</span>'}</span>
                   </div>
                 </div>
               </div>
@@ -1145,18 +1382,10 @@
                     <span class="field-label">Account #</span>
                     ${fv(r.account_number ? esc(r.account_number) : '')}
                   </div>
-                  <div class="field-row">
-                    <span class="field-label">Customer active</span>
-                    <span class="field-value">${r.customer_active ? '<span class="tag ok-text">Active</span>' : '<span class="muted">Not marked active</span>'}</span>
-                  </div>
-                  <div class="field-row">
-                    <span class="field-label">Active date</span>
-                    ${fv(r.active_date ? esc(dayDate(r.active_date)) : '')}
-                  </div>
-                  <div class="field-row">
-                    <span class="field-label">Usage date</span>
-                    ${fv(r.usage_date ? esc(dayDate(r.usage_date)) : '')}
-                  </div>
+                  <div class="field-row"><span class="field-label">Customer active</span><span class="field-value">${r.customer_active ? '<span class="tag ok-text">Active</span>' : '<span class="muted">Not marked active</span>'}</span></div>
+                  <div class="field-row"><span class="field-label">Active date</span>${fv(r.active_date ? esc(dayDate(r.active_date)) : '')}</div>
+                  <div class="field-row"><span class="field-label">Usage date</span>${fv(r.usage_date ? esc(dayDate(r.usage_date)) : '')}</div>
+                  ${[['order_number','Work Order #'],['order_reference','Order Reference'],['delivery_date','Kit Delivery Date'],['est_monthly_value','Monthly Total'],['initial_payment','Initial Payment']].filter(([key])=>r[key]!=null && r[key]!=='' && (key!=='est_monthly_value' || r[key]>0)).map(([key,label])=>`<div class="field-row"><span class="field-label">${label}</span>${fv(key==='delivery_date'?esc(dayDate(r[key])):['initial_payment','est_monthly_value'].includes(key)?'$'+Number(r[key]).toFixed(2):esc(r[key]))}</div>`).join('')}
                   ${r.commission != null ? `<div class="field-row">
                     <span class="field-label">Commission</span>
                     <span class="field-value">$${Number(r.commission).toFixed(2)}</span>
@@ -1189,10 +1418,11 @@
             `}
           </div>
 
+          ${customerDocuments(r)}
+
           ${r.can_manage ? `
-          <div class="card">
-            <h2>Update Status</h2>
-            <div class="seg" id="statusSeg" style="margin-bottom:.9rem">${STATUSES.map((s) => `<button data-s="${s}" class="${r.status === s ? 'on' : ''}">${s}</button>`).join('')}</div>
+          <div class="card" id="customerOrder">
+            <h2>Order details</h2>
             <form id="acctForm" class="fix-grid" style="margin:0">
               <div><label for="acct">Spectrum account / order #</label><input id="acct" name="acct" value="${esc(r.account_number)}"></div>
               <div><label for="inst">Install date</label><input id="inst" name="inst" type="date" value="${esc(r.install_date)}"></div>
@@ -1205,7 +1435,7 @@
           <div class="card">
             <h2>Dispatch Assignment</h2>
             <div class="row">
-              <select id="assignSel" style="flex:1;width:auto;min-width:0"><option value="">Unassigned</option>${ppl.dispatchers.map((d) => `<option value="${d.id}" ${r.assigned_to === d.id ? 'selected' : ''}>${esc(d.full_name)}${d.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select>
+              <select id="assignSel" aria-label="Assigned dispatcher" style="flex:1;width:auto;min-width:0"><option value="">Unassigned</option>${ppl.dispatchers.map((d) => `<option value="${d.id}" ${r.assigned_to === d.id ? 'selected' : ''}>${esc(d.full_name)}${d.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select>
               ${r.assigned_to !== state.me.id ? '<button class="btn primary" id="takeBtn">Take it</button>' : ''}
             </div>
           </div>` : ''}
@@ -1213,7 +1443,7 @@
 
         <!-- RIGHT COLUMN: Activity Sidebar -->
         <div class="activity-sidebar">
-          <div class="card">
+          <div class="card" id="customerReminders">
             <h2>📞 Call-back reminder</h2>
             ${r.follow_up_at && !r.follow_up_sent ? `<p style="margin-top:0">Reminder set for <b>${esc(fullDate(r.follow_up_at))}</b>${r.follow_up_note ? ` — ${esc(r.follow_up_note)}` : ''}</p>` : '<p class="small muted" style="margin-top:0">Get a notification when it\'s time to call this customer back.</p>'}
             <div class="row fu-quick">${[['1h', 'In 1 hour'], ['t10', 'Tomorrow 10am'], ['t17', 'Tomorrow 5pm']].map(([k, l]) => `<button type="button" class="btn small" data-fu="${k}">${l}</button>`).join('')}</div>
@@ -1225,16 +1455,26 @@
             </form>
           </div>
 
-          <div class="card">
+          <div class="card" id="customerActivity">
             <h2>Activity Timeline</h2>
-            <ul class="timeline">${r.history.map((h) => `<li>${fullDate(h.created_at)} — ${esc(h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</li>`).join('')}</ul>
+            <ul class="timeline">${r.history.map((h) => `<li><span>${fullDate(h.created_at)} — ${personLink(h.user_id,h.full_name)} ${h.from_status ? `changed <b>${esc(h.from_status)}</b> → <b>${esc(h.to_status)}</b>` : 'entered the referral'}</span></li>`).join('')}</ul>
           </div>
         </div>
-      </div>`);
+      </div><section class="card" id="energyOptions" style="margin-top:1rem"></section>`);
 
+    bindStageClock(r);
+    bindCustomerDocuments(r);
     // Section collapse toggles
+    window.EnergyOptions?.bind({root:document.getElementById('energyOptions'),ref:r,api,esc,toast});
     document.querySelectorAll('[data-toggle-section]').forEach((hdr) => {
-      hdr.onclick = () => hdr.closest('.record-section').classList.toggle('collapsed');
+      const section=hdr.closest('.record-section'),fields=section.querySelector('.record-fields');
+      const control=document.createElement('button');control.type='button';control.className='section-toggle';
+      const heading=hdr.querySelector('h3'),chevron=hdr.querySelector('.section-chevron');
+      control.innerHTML=`<span>${esc(heading.textContent)}</span>`;control.append(chevron);
+      heading.replaceChildren(control);hdr.replaceChildren(heading);
+      fields.id='record-fields-'+section.dataset.section;
+      control.setAttribute('aria-controls',fields.id);control.setAttribute('aria-expanded','true');
+      control.onclick=()=>{const collapsed=section.classList.toggle('collapsed');control.setAttribute('aria-expanded',String(!collapsed));};
     });
 
     const editBtn = document.getElementById('editBtn');
@@ -1249,6 +1489,19 @@
         toast('Call-back request queued for the silent group');
         renderReferral(id);
       } catch (err) { toast(err.message); callbackBtn.disabled = false; }
+    };
+    const deleteBtn = document.getElementById('deleteBtn');
+    if (deleteBtn) deleteBtn.onclick = async () => {
+      if (!confirm(`Permanently delete #${r.id} ${r.customer_name}, including its comments and status history? This cannot be undone.${r.status === 'Ordered' ? ' Any affiliate earnings for this sale will be reversed.' : ''}`)) return;
+      deleteBtn.disabled = true;
+      const feedback = document.getElementById('recordActionState');
+      feedback.textContent = 'Deleting record…';
+      try {
+        await api(`/referrals/${r.id}`, { method: 'DELETE' });
+        state.editing = null;
+        toast(`Record #${r.id} deleted`);
+        location.hash = '#/referrals';
+      } catch (err) { feedback.textContent = err.message; feedback.classList.add('err-text'); deleteBtn.disabled = false; }
     };
     bindWhatsapp(document.getElementById('waActions'), r);
     const fuForm = document.getElementById('fuForm');
@@ -1278,7 +1531,22 @@
 
     const editForm = document.getElementById('editForm');
     if (editForm) {
-      attachAddressSuggest(editForm.address, (x) => { editForm.address.value = x.line1; if (x.city) editForm.city.value = x.city; if (x.zip) editForm.zip.value = x.zip; });
+      const editedLocality = new Set();
+      for (const field of ['city', 'state', 'zip']) editForm[field].addEventListener('input', () => editedLocality.add(field));
+      const readEditedAddress = debounce(async () => {
+        const address = editForm.address.value;
+        try {
+          const location = await api('/parse', { method: 'POST', body: { text: `Address: ${address}` } });
+          if (editForm.address.value !== address) return;
+          for (const field of ['city', 'state', 'zip']) if (location[field] && !editedLocality.has(field)) editForm[field].value = location[field];
+        } catch { /* Keep the visible fields if parsing isn't available. */ }
+      }, 250);
+      editForm.address.addEventListener('input', readEditedAddress);
+      attachAddressSuggest(editForm.address, (x) => {
+        editForm.address.value = x.line1;
+        for (const field of ['city', 'state', 'zip']) editForm[field].value = x[field] || '';
+        editedLocality.clear();
+      });
       document.querySelectorAll('[data-esvc]').forEach((b) => { b.onclick = () => b.classList.toggle('on'); });
       document.getElementById('cancelEdit').onclick = () => { state.editing = null; renderReferral(id); };
       editForm.onsubmit = async (e) => {
@@ -1426,12 +1694,12 @@
   }
 
   function countTable(rows, firstCol, nameOf, attrs = () => '') {
-    return `<div class="table-wrap"><table>
+    return `<div class="table-wrap"><table class="rtable sales-table">
       <thead><tr><th>${firstCol}</th>${STATUSES.map((s) => `<th class="num">${s}</th>`).join('')}<th class="num">Total</th></tr></thead>
-      <tbody>${rows.map((u) => `<tr ${attrs(u)}><td>${nameOf(u)}</td>${STATUSES.map((s) => `<td class="num">${u[s]}</td>`).join('')}<td class="num"><b>${u.total}</b></td></tr>`).join('') || `<tr><td colspan="${STATUSES.length + 2}" class="muted">Nothing yet.</td></tr>`}</tbody>
+      <tbody>${rows.map((u) => `<tr ${attrs(u)}><td>${nameOf(u)}</td>${STATUSES.map((s) => `<td class="num" data-label="${s}">${u[s]}</td>`).join('')}<td class="num" data-label="Total"><b>${u.total}</b></td></tr>`).join('') || `<tr class="empty-row"><td colspan="${STATUSES.length + 2}" class="muted">No sales in this period.</td></tr>`}</tbody>
     </table></div>`;
   }
-  const repName = (u) => `<b>${esc(u.full_name)}</b>${u.role !== 'rep' ? ` <span class="small muted">${roleLabel(u.role)}</span>` : ''}`;
+  const repName = (u) => `<b>${personLink(u.id,u.full_name)}</b>${u.role !== 'rep' ? ` <span class="small muted">${roleLabel(u.role)}</span>` : ''}`;
 
   async function renderSales() {
     const params = query();
@@ -1451,7 +1719,7 @@
       ${s.team ? `<div class="card"><h2>Team: ${esc(s.team.name)}</h2>${statTiles(s.team.totals)}<h2 style="margin-top:1.2rem">By rep</h2>
         ${countTable(s.team.users, 'Rep', repName, (u) => (worksLeads() ? `class="click" data-user="${u.id}"` : ''))}</div>` : ''}
       ${s.teams ? `<div class="card"><h2>All teams</h2>${statTiles(s.all)}
-        <div style="margin-top:1rem">${countTable(s.teams, 'Team', (t) => `<b>${esc(t.name)}</b>`, (t) => `class="click" data-team="${t.id}"`)}</div>
+        <div style="margin-top:1rem">${countTable(s.teams, 'Team', (t) => `<b><a class="record-link" href="#/sales?${esc(new URLSearchParams({ ...params, period, team_id: t.id }).toString())}">${esc(t.name)}</a></b>`, (t) => `class="click" data-team="${t.id}"`)}</div>
         <p class="small muted">Click a team to see its reps.</p></div>` : ''}
       ${s.selectedTeam ? `<div class="card"><h2>${esc(s.selectedTeam.name)} — by rep</h2>${countTable(s.selectedTeam.users, 'Rep', repName, (u) => `class="click" data-user="${u.id}"`)}</div>` : ''}
       ${s.dispatchers ? `<div class="card"><div class="row between"><h2>Dispatch</h2>${s.unassigned ? `<a class="small" href="#/referrals?scope=unassigned">${s.unassigned} open lead${s.unassigned === 1 ? '' : 's'} unassigned</a>` : ''}</div>
@@ -1465,10 +1733,10 @@
       el.onclick = () => { location.hash = '#/sales?' + new URLSearchParams({ ...params, period, team_id: el.dataset.team }).toString(); };
     });
     document.querySelectorAll('[data-user]').forEach((el) => {
-      el.onclick = () => { location.hash = `#/referrals?scope=${listScope}&user_id=${el.dataset.user}`; };
+      el.onclick = (e) => { if (!e.target.closest('a')) location.hash = `#/referrals?scope=${listScope}&user_id=${el.dataset.user}`; };
     });
     document.querySelectorAll('[data-assignee]').forEach((el) => {
-      el.onclick = () => { location.hash = `#/referrals?scope=all&assigned_to=${el.dataset.assignee}`; };
+      el.onclick = (e) => { if (!e.target.closest('a')) location.hash = `#/referrals?scope=all&assigned_to=${el.dataset.assignee}`; };
     });
   }
 
@@ -1498,15 +1766,86 @@
 
   // Admin → Settings: link a phone's WhatsApp by QR code, pick the dispatch group.
   let waPoll = null;
+  let waTestPoll = null;
+  function drawWaTestResults(t) {
+    const box=document.getElementById('waTestResults');if(!box)return;
+    const run=t.last_test;
+    const labels={queued:'Sending test…',sent:'Test posted. Reply to it in WhatsApp to check capture.',failed:'Test could not be sent.',skipped:'Test was not posted.',interrupted:'Test interrupted by a restart.',unconfirmed:'Post not confirmed. Check the group before sending again.'};
+    box.innerHTML=run ? `<p style="margin:.4rem 0"><b>${esc(labels[run.post_status] || run.post_status)}</b>${run.post_error ? ` ${esc(run.post_error)}` : ''}</p>
+      <p class="small">Test lead status: <b>${esc(run.status)}</b> · ${run.replies.length} captured ${run.replies.length===1 ? 'reply' : 'replies'}. Bot messages and reactions: <b>none</b>.</p>
+      ${run.document_fields && Object.keys(run.document_fields).length ? `<p class="small">PDF test account: <b>${esc(run.document_fields.account_number || '—')}</b> · Install: ${esc(run.document_fields.install_date || '—')}</p>` : ''}
+      ${run.replies.length ? `<div class="small">${run.replies.map(r=>`<div class="comment"><div class="meta"><b>${esc(r.author)}</b> · ${r.actor==='external' ? 'external participant' : 'CRM user'}${r.from_status!==r.to_status ? ` · ${esc(r.from_status)} → ${esc(r.to_status)}` : ' · comment only'}</div><p>${esc(r.body)}</p></div>`).join('')}</div>` : '<p class="small muted">From a different phone, reply directly to the sample lead. The quiet group’s access setting applies here too. Authorized participants can change test status. Reply with a sample order PDF to test extraction too. The bot stays silent.</p>'}`
+      : '<p class="small muted">No test sent yet. Only the selected group receives the sample.</p>';
+    const send=document.getElementById('waSendTestLead');
+    if(send){send.disabled=!t.group || !t.connected || run?.post_status==='queued' || !!document.getElementById('waTestGroupWarning')?.textContent;send.textContent=run?.post_status==='queued' ? 'Sending test…' : 'Send test lead';}
+  }
+  async function refreshWaTestResults() {
+    clearTimeout(waTestPoll);
+    const box=document.getElementById('waTestResults');if(!box)return;
+    try {
+      const t=await api('/whatsapp/quiet-test');if(document.getElementById('waTestResults')!==box)return;
+      drawWaTestResults(t);
+      if(t.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
+    } catch(err){if(document.getElementById('waTestResults')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}
+  }
+  async function drawQuietAutomation(s) {
+    const box=document.getElementById('waQuietAutomation');if(!box)return;
+    try {
+      const [access,documents]=await Promise.all([api('/whatsapp/partners'),api('/whatsapp/documents')]);
+      if(document.getElementById('waQuietAutomation')!==box)return;
+      const names=new Map([s.group,s.quiet_group?.group,s.quiet_test?.group].filter(Boolean).map(g=>[g.id,g.name]));
+      const trusted=access.participants.filter(p=>p.enabled),everyone=access.access==='everyone';
+      box.innerHTML=`<h3 class="wa-h3" id="waTrustedHeading">Spectrum group permissions</h3>
+        <div class="field"><label for="waQuietAccess">Who can update leads from quiet groups?</label><select id="waQuietAccess"><option value="everyone" ${everyone ? 'selected' : ''}>Everyone in the group</option><option value="selected" ${everyone ? '' : 'selected'}>Selected numbers only</option></select></div>
+        <p class="small muted">${everyone ? 'Everyone in your Spectrum quiet groups can update the leads posted there and submit order PDFs. No CRM account or number registration is needed. Updates show who sent them. CRM access outside the group stays the same.' : 'Allow specific WhatsApp numbers below. Other external participants add comments only, and recognized CRM users keep their existing permissions.'}</p>
+        <p class="small"><b>on it</b> → Working · <b>confirmed</b> → Passed · an order PDF with a complete account number → Ordered. Reply directly to the lead post. The bot stays silent.</p>
+        ${everyone ? '' : `<form id="waPartnerForm"><div class="field"><label for="waPartnerGroup">Allow updates in</label><select id="waPartnerGroup" required><option value="">— choose a quiet or test group —</option>${access.groups.map(id=>`<option value="${esc(id)}">${esc(names.get(id) || id)}</option>`).join('')}</select></div>
+        <div class="grid-2"><div class="field"><label for="waPartnerName">Participant name</label><input id="waPartnerName" required maxlength="100" autocomplete="off" placeholder="e.g. Spectrum dispatch"></div>
+        <div class="field"><label for="waPartnerPhone">WhatsApp number, including country code</label><input id="waPartnerPhone" type="tel" required maxlength="25" autocomplete="off" placeholder="e.g. +1 512 555 0100"></div></div>
+        <button class="btn primary" id="waPartnerSave" ${access.groups.length ? '' : 'disabled'}>Allow updates</button><p id="waPartnerResult" class="small" role="status"></p></form>
+        ${trusted.length ? `<div>${trusted.map(p=>`<div class="comment"><div class="row between"><span><b>${esc(p.name)}</b> · +${esc(p.phone)}<br><span class="small muted">${esc(names.get(p.group_id) || 'Previously selected group')}</span></span><button type="button" class="btn small" data-revoke-partner="${p.id}" aria-label="Remove update access for ${esc(p.name)}">Remove access</button></div></div>`).join('')}</div>` : '<p class="small muted">No Spectrum participants have update access yet.</p>'}` }
+        <h3 class="wa-h3">Order PDF activity</h3>
+        <p class="small muted">Text-based PDFs up to 5 MB and 20 pages are read inside the app. Scans, password protection, missing account numbers and conflicting customer details need review. Existing customer details are preserved. Unquoted documents must match one permitted lead posted in the same group.</p>
+        <button type="button" class="btn small" id="waRefreshDocuments">Refresh PDF activity</button>
+        <div aria-live="polite">${documents.length ? documents.map(d=>`<div class="comment"><div class="meta"><b>${esc(d.filename)}</b> · ${esc(d.author)} · ${esc({processing:'Reading PDF…',applied:'Order saved',review:'Needs review',comment:'Comment only'}[d.status] || d.status)}${d.test_id ? ' · TEST' : ''}</div>${d.has_pdf ? `<p class="small"><a href="/api/whatsapp/documents/${d.id}/pdf?view=1" target="_blank" rel="noopener">Open PDF</a> · <a href="/api/whatsapp/documents/${d.id}/pdf">Download PDF</a></p>` : ''}<p class="small">${esc(d.detail || 'Reading order details…')}${d.referral_id ? ` <a href="#/r/${d.referral_id}">${esc(d.customer_name || 'Open customer')}</a>` : ''}</p>${d.has_pdf && !d.document_id && d.referral_id && !d.test_id ? `<button type="button" class="btn small" data-recover-document="${d.id}">Attach for review</button>`:''}${Object.keys(d.fields).length ? `<details><summary class="small">Extracted details</summary><dl class="wa-pdf-fields small">${documentFields(d.fields)}</dl></details>` : ''}</div>`).join('') : '<p class="small muted">No order PDFs received yet.</p>'}</div>`;
+      box.querySelector('#waQuietAccess').onchange=async e=>{
+        const select=e.target;select.disabled=true;
+        try{await api('/whatsapp/settings',{method:'PATCH',body:{quiet_access:select.value}});toast(select.value==='everyone' ? 'Everyone in the Spectrum quiet group can update posted leads' : 'Quiet group access limited to selected numbers');await drawWaLink();}
+        catch(err){toast(err.message);select.value=access.access;select.disabled=false;}
+      };
+      const form=box.querySelector('#waPartnerForm');
+      if(form)form.onsubmit=async e=>{
+        e.preventDefault();const button=box.querySelector('#waPartnerSave'),result=box.querySelector('#waPartnerResult');button.disabled=true;button.textContent='Saving…';
+        try {await api('/whatsapp/partners',{method:'POST',body:{group_id:box.querySelector('#waPartnerGroup').value,name:box.querySelector('#waPartnerName').value,phone:box.querySelector('#waPartnerPhone').value}});toast('Participant can now update leads in this group');await drawQuietAutomation(s);}
+        catch(err){result.textContent=err.message;button.disabled=false;button.textContent='Allow updates';}
+      };
+      box.querySelectorAll('[data-revoke-partner]').forEach(button=>{button.onclick=async()=>{
+        button.disabled=true;
+        try{await api('/whatsapp/partners/'+button.dataset.revokePartner,{method:'DELETE'});toast('Update access removed');await drawQuietAutomation(s);}
+        catch(err){toast(err.message);button.disabled=false;}
+      };});
+      box.querySelectorAll('[data-recover-document]').forEach(button=>{button.onclick=async()=>{
+        button.disabled=true;
+        try{const result=await api(`/whatsapp/documents/${button.dataset.recoverDocument}/attach`,{method:'POST',body:{}});toast('PDF attached for review');location.hash=`#/r/${result.referral_id}`;}
+        catch(error){toast(error.message);button.disabled=false;}
+      };});
+      box.querySelector('#waRefreshDocuments').onclick=()=>drawQuietAutomation(s);
+    } catch(err) {if(document.getElementById('waQuietAutomation')===box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}
+  }
   async function drawWaLink() {
     clearTimeout(waPoll);
+    clearTimeout(waTestPoll);
     const card = document.getElementById('waLinkCard');
     if (!card) return;
     let s;
     try { s = await api('/whatsapp/status'); } catch (err) { card.innerHTML = `<h2>WhatsApp alerts</h2><div class="alert err small">${esc(err.message)}</div>`; return; }
     if (!document.getElementById('waLinkCard')) return;
     const chip = { off: ['Off', ''], starting: ['Connecting…', 'wait'], qr: ['Scan the QR code', 'wait'], connected: ['Connected', 'ok'], reconnecting: ['Reconnecting…', 'wait'], logged_out: ['Disconnected — scan again', 'bad'], replaced: ['Linked somewhere else', 'bad'] }[s.status] || [s.status, ''];
-    const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) so the app can post every new lead to your dispatch group and send people their alerts. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
+    const intro = `<p class="small muted" style="margin-top:0">Link a phone's WhatsApp (like WhatsApp Web) to post leads to your dispatch group and update the CRM by replying there. Personal WhatsApp alerts are limited to orders and owner mentions. <b>Use a separate number just for alerts</b> — WhatsApp doesn't officially allow this kind of link and can block the number. The app's own notifications keep working either way.</p>`;
+    const quietMain = s.group_mode === 'quiet';
+    const qg = s.quiet_group || {};
+    const qt = s.quiet_test || {};
+    const postLabels = { queued: 'Waiting to send', sent: 'Accepted by WhatsApp; CRM replies linked', failed: 'Failed to send', skipped: 'Not posted', interrupted: 'Post interrupted by a restart', unconfirmed: 'Post not confirmed', unlinked: 'Accepted; CRM reply link failed' };
     let body = '';
     if (s.status === 'off' || s.status === 'logged_out' || s.status === 'replaced') {
       body = `${s.status !== 'off' ? `<div class="alert warn small">${s.status === 'replaced' ? 'This WhatsApp was linked to another computer, so it disconnected here. Connect again to take it back.' : 'The phone disconnected this link. Connect and scan again.'}</div>` : ''}
@@ -1518,33 +1857,90 @@
     } else if (s.status === 'connected') {
       body = `<p style="margin:.2rem 0 .8rem">Linked to <b>${esc(s.me && s.me.name ? s.me.name : 'WhatsApp')}</b>${s.me && s.me.number ? ` · +${esc(s.me.number)}` : ''}. ${s.people} ${s.people === 1 ? 'person gets' : 'people get'} their alerts on WhatsApp.${s.queued ? ` ${s.queued} message${s.queued === 1 ? '' : 's'} waiting to send.` : ''}</p>
         <div class="field"><label for="waGroup">Post new leads to this group</label>
-          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0"><option value="">${s.group ? esc(s.group.name) : 'Loading groups…'}</option></select><button type="button" class="btn" id="waTestGroup" ${s.group ? '' : 'disabled'}>Send a test</button></div>
+          <div class="row" style="flex-wrap:nowrap"><select id="waGroup" style="flex:1;min-width:0">${s.group ? `<option value="${esc(s.group.id)}">${esc(s.group.name)}</option>` : '<option value="">Loading groups…</option>'}</select><button type="button" class="btn" id="waTestGroup" ${s.group && !quietMain ? '' : 'disabled'}>Send a test</button></div>
+          <p class="small err-text" id="waGroupWarning" role="status"></p>
           <p class="small muted" style="margin:.3rem 0 0">Add the alerts number to your dispatch group first, then pick it here.</p></div>
         <div class="field" style="margin-top:.8rem"><label for="waCallbackGroup">Silent group for one-time call-back requests</label>
           <select id="waCallbackGroup" style="width:100%"><option value="">${s.callback_group ? esc(s.callback_group.name) : 'Choose the silent group'}</option></select>
           <p class="small muted" style="margin:.3rem 0 0">The customer page's call-back button posts there once, after the user confirms the customer will answer.</p></div>
-        <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the group (in the format below)</label>
+        <div class="field"><label for="waGroupMode">Dispatch group behavior</label><select id="waGroupMode"><option value="interactive" ${quietMain ? '' : 'selected'}>Interactive — existing bot replies and updates</option><option value="quiet" ${quietMain ? 'selected' : ''}>Quiet — lead posts and silent CRM updates only</option></select></div>
+        <label class="check"><input type="checkbox" id="waNewLead" ${s.new_lead_group ? 'checked' : ''}> Post every new lead to the dispatch group</label>
+        <p class="small muted" style="margin:.3rem 0 .8rem">Reply to a posted lead with a note or status to update its CRM record. Group posts work independently of each person’s notification preferences.</p>
         <h3 class="wa-h3">Replies in the group</h3>
-        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status</span></label>
+        <label class="check"><input type="checkbox" id="waTwoWay" ${s.two_way ? 'checked' : ''}> <span>${quietMain ? 'Save lead replies and order PDFs in the CRM silently. The Spectrum group permissions below control who can update posted leads.' : 'Replies to a lead become notes, the first dispatcher to reply takes the lead, and status words such as “approved”, “DNQ” or “cancelado” change its status'}</span></label>
         <div class="field" style="max-width:420px"><label for="waApproved">When someone writes <b>approved</b> / <b>aprobado</b>, set the lead to</label>
           <select id="waApproved"><option value="Ordered" ${s.approved_status === 'Ordered' ? 'selected' : ''}>Ordered (the sale went through)</option><option value="Passed" ${s.approved_status === 'Passed' ? 'selected' : ''}>Passed (qualified, still being worked)</option></select></div>
-        <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>
-        <p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>
-        <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>`;
+        ${quietMain ? '<p class="small muted">This group receives lead posts only. No acknowledgments, reactions, bot answers, instructions, reminders or briefings are sent here. Private assistant chats remain available.</p>' : `<label class="check" style="margin-top:.6rem"><input type="checkbox" id="waAi" ${s.ai_enabled && s.ai_available ? 'checked' : ''} ${s.ai_available ? '' : 'disabled'}> AI helper (Claude Haiku): reads unclear replies, asks follow-up questions, and answers questions that start with “bot”</label>`}
+        ${quietMain ? '' : `<p class="small muted" style="margin:.2rem 0 0">${s.ai_available ? 'About a fifth of a cent per message it reads.' : 'To switch it on, add <code>ANTHROPIC_API_KEY</code> in Render → your service → <b>Environment</b> (from console.anthropic.com). Until then, keyword rules handle replies.'}</p>`}
+        <div class="row" style="margin-top:.9rem"><button type="button" class="btn" id="waInstr" ${s.group && !quietMain ? '' : 'disabled'}>📋 Post the instructions to the group (English + Español)</button><button type="button" class="btn danger" id="waDisconnect">Disconnect</button></div>
+        <h3 class="wa-h3">Additional quiet group · Spectrum</h3>
+        <p class="small muted">Use this to keep dispatch interactive and send clean lead posts to a separate group. Replies are saved in the CRM with no bot messages or reactions. Everyone in the Spectrum group can update its posted leads by default. The group permissions below also offer a selected-numbers option.</p>
+        <div class="field"><label for="waQuietGroup">Quiet group</label><select id="waQuietGroup">${qg.group ? `<option value="${esc(qg.group.id)}">${esc(qg.group.name)}</option>` : '<option value="">— pick a group —</option>'}</select><p id="waQuietGroupWarning" class="small err-text" role="status"></p></div>
+        <label class="check"><input type="checkbox" id="waQuietOn" ${qg.enabled ? 'checked' : ''} ${qg.group ? '' : 'disabled'}> Post each new lead to this quiet group</label>
+        <label class="check"><input type="checkbox" id="waQuietCapture" ${qg.capture_replies !== false ? 'checked' : ''}> Save replies to its lead posts in the CRM</label>
+        <label class="check"><input type="checkbox" id="waQuietNotes" ${s.quiet_include_notes !== false ? 'checked' : ''}> Include the original lead’s Notes field in quiet posts</label>
+        <p class="small muted">Applies to both quiet-group options. CRM comments are never posted back to a quiet group. Quiet posts use the format below, without lead numbers, rep names, portal links or reply instructions.</p>
+        <details><summary class="small">Preview the quiet post</summary><pre class="wa-preview" id="waQuietPreview">${esc(WaFormat.quietLead({customer_name:'Maria Lopez',phone:'5128675309',address:'1010 Ogden Ave, Dallas TX 75211',dob:'1985-03-14',email:'maria.lopez@gmail.com',services:'Internet, TV',notes:'Internet and cable package\nWait for call'},{includeNotes:s.quiet_include_notes !== false}))}</pre></details>
+        <p class="small" id="waQuietStatus" role="status">${qg.enabled ? qg.posting_ready ? 'Quiet lead posts ready.' : 'Waiting for the connection or group selection.' : 'Additional quiet-group lead posts are off.'}${qg.last_lead_post ? ` Latest post: #${qg.last_lead_post.referral_id} — ${esc(postLabels[qg.last_lead_post.status] || qg.last_lead_post.status)}${qg.last_lead_post.error ? ` · ${esc(qg.last_lead_post.error)}` : ''}` : ''}</p>
+        <h3 class="wa-h3" id="waTestHeading">Test quiet mode before launch</h3>
+        <p class="small muted">Choose a group that includes the alerts phone. Send a clearly marked sample, then reply to it from WhatsApp. Test replies and statuses stay here; customer records, notifications and sales totals are unaffected. Selecting a test group does not turn on regular lead posts.</p>
+        <div class="field"><label for="waQuietTestGroup">Test group</label><select id="waQuietTestGroup">${qt.group ? `<option value="${esc(qt.group.id)}">${esc(qt.group.name)}</option>` : '<option value="">— pick a test group —</option>'}</select><p id="waTestGroupWarning" class="small err-text" role="status"></p></div>
+        <p class="small muted">This is exactly what the test posts. The Notes switch above applies.</p>
+        <pre class="wa-preview" id="waTestPreview">${esc(qt.sample_text || WaFormat.quietLead(WaFormat.QUIET_TEST_LEAD,{includeNotes:s.quiet_include_notes!==false}))}</pre>
+        <div class="row" style="margin-top:.8rem"><button type="button" class="btn primary" id="waSendTestLead" ${qt.group ? '' : 'disabled'}>Send test lead</button><button type="button" class="btn" id="waRefreshTest">Refresh test results</button></div>
+        <div id="waTestResults" role="status" aria-live="polite"></div>
+        <div class="grid-2" style="margin-top:.8rem"><div class="field"><label for="waTestActor">Simulate as</label><select id="waTestActor"><option value="external">${s.quiet_access==='selected' ? 'Unapproved external participant' : 'Spectrum group participant'}</option><option value="crm">My CRM account</option>${s.quiet_access==='selected' ? '<option value="partner">Trusted Spectrum participant</option>' : ''}</select></div>
+          <div class="field"><label for="waTestReply">Try a reply</label><input id="waTestReply" maxlength="2000" value="approved" placeholder="e.g. on it, confirmed, approved"></div></div>
+        <button type="button" class="btn" id="waSimulateReply">Simulate reply</button><p class="small muted">Simulation shows the result here without sending a message or saving a reply.</p><div id="waSimulationResult" role="status" aria-live="polite"></div>`;
     } else {
       body = `<p class="small">${s.status === 'reconnecting' ? 'The link dropped; reconnecting by itself…' : 'Connecting…'}${s.error ? ` <span class="muted">(${esc(s.error)})</span>` : ''}</p><button type="button" class="btn danger" id="waDisconnect">Disconnect</button>`;
     }
+    const flow = s.group_flow, post = flow?.last_lead_post;
+    const flowHtml = flow ? `<div class="alert ${flow.posting_ready && flow.replies_ready ? 'ok' : 'warn'} small" id="waGroupFlow" role="status" style="margin-top:1rem">
+      <b>Dispatch group:</b> <span id="waPostingReady">${esc(flow.posting_ready ? 'New lead posts ready' : flow.posting_blocker)}</span> · <span id="waRepliesReady">${esc(flow.replies_ready ? quietMain ? 'Silent CRM reply capture ready' : 'Status replies ready' : flow.reply_blocker)}</span>
+      ${post ? `<p style="margin:.4rem 0 0">Latest lead post: <a href="#/r/${post.referral_id}">#${post.referral_id}</a> — ${esc(postLabels[post.status] || post.status)} · ${esc(new Date(post.at).toLocaleString())}${post.group_id !== s.group?.id ? ' (previous group)' : ''}${post.error ? `<br>${esc(post.error)}` : ''}</p>` : '<p style="margin:.4rem 0 0">No lead-post result recorded yet.</p>'}
+      <p style="margin:.4rem 0 0">Turning posts on applies to new leads; earlier leads are not reposted automatically. ${quietMain ? 'Reply directly to a lead post to save a comment. Clear status words update the lead according to the Spectrum group permissions below.' : 'In the group, use <b>#123 approved</b> to update an earlier lead.'} An accepted post does not confirm delivery or reading.</p></div>` : '';
     const dx = s.diagnostics;
     const outcomes = { processing: 'Processing a message', not_ready: 'Bot is not ready', two_way_off: 'Replies are switched off', empty: 'No supported text', other_group: 'Message came from another group', old_message: 'Message is over 24 hours old', duplicate: 'Already processed this message ID', ordinary_chat: 'Group message needs “bot”, a lead number, or a reply to a bot post', help: 'Help requested', unknown_sender: 'Sender is not matched to an active account', assistant_off: 'Assistant is disabled or its API key is missing', rate_limited: 'Too many assistant requests', lead_not_found: 'Lead was not found', no_access: 'Sender cannot access this lead', assistant: 'Assistant answer queued', assistant_failed: 'Assistant request failed', lead_updated: 'Lead reply processed', update_failed: 'Lead update failed', handler_error: 'Message handler failed', handled: 'Message processed' };
+    Object.assign(outcomes,{quiet_ignored:'Quiet group message is not linked to a lead',quiet_capture_off:'Quiet reply capture is off',quiet_lead_updated:'CRM reply saved silently',quiet_external_comment:'External reply saved as a comment',quiet_update_failed:'Quiet CRM reply could not be saved',quiet_test_reply:'Reply captured on the isolated test lead',quiet_pdf_applied:'Order PDF saved silently',quiet_pdf_review:'PDF needs review in Settings',quiet_pdf_comment:'PDF sender does not have order-update access',unsupported_document:'PDF automation is available in quiet lead groups'});
     const diagnosticsHtml = dx ? `<details style="margin-top:1rem"><summary class="small">WhatsApp diagnostics</summary>
-      <p class="small muted">Since this server started: ${dx.received} incoming text messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
-      <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming text yet'}</dd>
+      <p class="small muted">Since this server started: ${dx.received} incoming messages, ${dx.sent} outgoing messages accepted by WhatsApp, ${dx.failed} failed and ${dx.dropped} discarded. Acceptance does not confirm delivery or reading.</p>
+      <p class="small muted">Decryption-retry requests: ${dx.retry_requests || 0} · originals provided: ${dx.retry_available || 0} · unavailable: ${dx.retry_missing || 0} · blocked by chat rules: ${dx.retry_blocked || 0}. Session-save errors: ${dx.auth_save_errors || 0}; retry-cache errors: ${dx.retry_cache_errors || 0}. Providing the original for retry does not confirm delivery.</p>
+      <dl class="kv small"><dt>Last received</dt><dd>${dx.last_received_at ? esc(new Date(dx.last_received_at).toLocaleString()) : 'No incoming messages yet'}</dd>
         <dt>Last result</dt><dd>${esc(outcomes[dx.last_result] || dx.last_result || '—')}</dd><dt>Last sent</dt><dd>${dx.last_sent_at ? esc(new Date(dx.last_sent_at).toLocaleString()) : 'None yet'}</dd>
         <dt>Send queue</dt><dd>${s.queued} waiting</dd>${dx.last_error ? `<dt>Last error</dt><dd class="err-text">${esc(dx.last_error)}</dd>` : ''}</dl>
-      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. In the selected group, send <b>bot hello</b> or <b>help</b>; private text goes to the assistant. Replies require the two-way switch. Counters and queued messages reset when the server restarts.</p><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button></details>` : '';
-    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}${diagnosticsHtml}`;
+      <p class="small muted">Test from a different phone than the linked alerts number; messages sent by the linked number are ignored to prevent loops. Save your personal number in your account. ${quietMain ? 'In this quiet group, reply directly to a lead post; the reply is saved silently in the CRM.' : 'In the dispatch group, send <b>bot hello</b> or <b>help</b>.'} Private text goes to the assistant. Quiet groups only capture lead replies, using their reply-capture switch. Counters and queued messages reset when the server restarts.</p><div class="row"><button type="button" class="btn small" id="waRefreshDiagnostics">Refresh diagnostics</button><button type="button" class="btn small" id="waCopyDiagnostics">Copy diagnostics</button></div></details>` : '';
+    card.innerHTML = `<div class="row between"><h2 style="margin:0">WhatsApp alerts</h2><span class="wa-state ${chip[1]}">${chip[0]}</span></div>${intro}${body}<div id="waQuietAutomation"></div>${flowHtml}${diagnosticsHtml}`;
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+    drawQuietAutomation(s);
     on('waRefreshDiagnostics', drawWaLink);
+    drawWaTestResults(qt);
+    if(qt.last_test)waTestPoll=setTimeout(refreshWaTestResults,3000);
+    on('waRefreshTest',refreshWaTestResults);
+    on('waSendTestLead',async()=>{
+      const button=document.getElementById('waSendTestLead');button.disabled=true;button.textContent='Sending test…';
+      try {const t=await api('/whatsapp/quiet-test',{method:'POST',body:{}});drawWaTestResults(t);refreshWaTestResults();}
+      catch(err){
+        const box=document.getElementById('waTestResults');if(box)box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;
+        button.disabled=!document.getElementById('waQuietTestGroup')?.value || !!document.getElementById('waTestGroupWarning')?.textContent;
+        button.textContent='Send test lead';
+      }
+    });
+    on('waSimulateReply',async()=>{
+      const button=document.getElementById('waSimulateReply'),box=document.getElementById('waSimulationResult');button.disabled=true;
+      try {
+        const r=await api('/whatsapp/quiet-test/simulate',{method:'POST',body:{actor:document.getElementById('waTestActor').value,text:document.getElementById('waTestReply').value}});
+        box.innerHTML=`<div class="alert ok small" style="margin-top:.6rem">Would save as ${r.actor==='external' ? 'an external comment' : r.actor==='partner' ? 'a Spectrum participant’s comment' : 'a CRM comment'}. Test status: <b>${esc(r.from_status)} → ${esc(r.to_status)}</b>. ${r.ambiguous ? 'Several statuses were mentioned; the status stays unchanged. ' : r.can_change_status ? '' : 'This participant cannot change the status. '}Bot response: <b>nothing</b> — no messages or reactions.</div>`;
+      }catch(err){box.innerHTML=`<p class="small err-text">${esc(err.message)}</p>`;}finally{button.disabled=false;}
+    });
+    on('waCopyDiagnostics', async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify({ status: s.status, group: s.group?.name || '',
+          new_lead_group: s.new_lead_group, two_way: s.two_way, queued: s.queued,
+          group_mode:s.group_mode,quiet_group:qg,group_flow: flow, diagnostics: dx }, null, 2));
+        toast('Diagnostics copied');
+      } catch { toast('Could not copy. Select the diagnostic text to copy it.'); }
+    });
     on('waConnect', async () => { await api('/whatsapp/connect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink(); });
     on('waCancel', async () => { await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch(() => {}); drawWaLink(); });
     on('waDisconnect', async () => {
@@ -1552,7 +1948,11 @@
       await api('/whatsapp/disconnect', { method: 'POST', body: {} }).catch((e) => toast(e.message)); drawWaLink();
     });
     on('waTestGroup', async () => { try { await api('/whatsapp/test', { method: 'POST', body: { target: 'group' } }); toast('Test queued for the group — check WhatsApp diagnostics'); } catch (err) { toast(err.message); } });
-    const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } };
+    const patchWa = async (body, msg) => { try { await api('/whatsapp/settings', { method: 'PATCH', body }); toast(msg); } catch (err) { toast(err.message); } drawWaLink(); };
+    document.getElementById('waGroupMode')?.addEventListener('change', e => patchWa({group_mode:e.target.value},e.target.value === 'quiet' ? 'Dispatch group is now quiet' : 'Dispatch group is now interactive').then(drawAiCard));
+    document.getElementById('waQuietOn')?.addEventListener('change', e => patchWa({quiet_enabled:e.target.checked},e.target.checked ? 'Quiet lead posts are on' : 'Quiet lead posts are paused'));
+    document.getElementById('waQuietCapture')?.addEventListener('change', e => patchWa({quiet_capture:e.target.checked},e.target.checked ? 'Quiet replies are saved to the CRM' : 'Quiet reply capture is off'));
+    document.getElementById('waQuietNotes')?.addEventListener('change', e => patchWa({quiet_include_notes:e.target.checked},e.target.checked ? 'Original notes included in quiet posts' : 'Notes omitted from quiet posts'));
     const tw = document.getElementById('waTwoWay');
     if (tw) tw.onchange = () => patchWa({ two_way: tw.checked }, tw.checked ? 'Group replies are on' : 'Group replies are off');
     const ap = document.getElementById('waApproved');
@@ -1561,25 +1961,46 @@
     if (aiBox) aiBox.onchange = () => patchWa({ ai_enabled: aiBox.checked }, aiBox.checked ? 'AI helper on' : 'AI helper off');
     on('waInstr', async () => { try { await api('/whatsapp/instructions', { method: 'POST', body: {} }); toast('Instructions posted to the group'); } catch (err) { toast(err.message); } });
     const nl = document.getElementById('waNewLead');
-    if (nl) nl.onchange = async () => { try { await api('/whatsapp/settings', { method: 'PATCH', body: { new_lead_group: nl.checked } }); toast(nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted'); } catch (err) { toast(err.message); } };
+    if (nl) nl.onchange = () => patchWa({ new_lead_group: nl.checked }, nl.checked ? 'New leads will be posted' : 'New leads won\'t be posted');
     const sel = document.getElementById('waGroup');
     if (sel) {
       const callbackSel = document.getElementById('waCallbackGroup');
       try {
         const groups = await api('/whatsapp/groups');
-        sel.innerHTML = `<option value="">— pick a group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        const missing = s.group && !groups.some(g => g.id === s.group.id);
+        sel.innerHTML = `<option value="">— pick a group —</option>${missing ? `<option value="${esc(s.group.id)}" selected>${esc(s.group.name)} (unavailable)</option>` : ''}${groups.map((g) => `<option value="${esc(g.id)}" ${s.group && s.group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
         if (callbackSel) callbackSel.innerHTML = `<option value="">— choose the silent group —</option>${groups.map((g) => `<option value="${esc(g.id)}" ${s.callback_group && s.callback_group.id === g.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
-      } catch (err) { sel.innerHTML = `<option value="">${esc(err.message)}</option>`; }
+        if (missing) {
+          document.getElementById('waGroupWarning').textContent = 'The saved group was not found on the linked account. Add the alerts phone to that group, or select another group.';
+          document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
+          document.getElementById('waPostingReady').textContent = 'Saved group unavailable on the linked account';
+          document.getElementById('waRepliesReady').textContent = 'Status replies need group access';
+        }
+        const qs = document.getElementById('waQuietGroup');
+        const quietMissing = qg.group && !groups.some(g => g.id === qg.group.id);
+        qs.innerHTML = `<option value="">— pick a group —</option>${quietMissing ? `<option value="${esc(qg.group.id)}" selected>${esc(qg.group.name)} (unavailable)</option>` : ''}${groups.filter(g => g.id !== s.group?.id).map(g => `<option value="${esc(g.id)}" ${g.id === qg.group?.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if (quietMissing) {
+          document.getElementById('waQuietGroupWarning').textContent = 'The quiet group was not found on the linked account. Add the alerts phone to the group, or pick another group.';
+          document.getElementById('waQuietStatus').textContent = 'Saved quiet group unavailable on the linked account.';
+        }
+        const testSelect=document.getElementById('waQuietTestGroup'),testMissing=qt.group && !groups.some(g=>g.id===qt.group.id);
+        testSelect.innerHTML=`<option value="">— pick a test group —</option>${testMissing ? `<option value="${esc(qt.group.id)}" selected>${esc(qt.group.name)} (unavailable)</option>` : ''}${groups.filter(g=>g.id!==s.group?.id || quietMain).map(g=>`<option value="${esc(g.id)}" ${g.id===qt.group?.id ? 'selected' : ''}>${esc(g.name)} (${g.size})</option>`).join('')}`;
+        if(testMissing){document.getElementById('waTestGroupWarning').textContent='The test group was not found. Add the alerts phone to it, or choose another group.';document.getElementById('waSendTestLead').disabled=true;}
+      } catch (err) {
+        document.getElementById('waGroupWarning').textContent = `Could not check group membership: ${err.message}`;
+        document.getElementById('waGroupFlow')?.classList.replace('ok', 'warn');
+      }
       sel.onchange = async () => {
         const opt = sel.selectedOptions[0];
         try {
           await api('/whatsapp/settings', { method: 'PATCH', body: { group_id: sel.value, group_name: sel.value ? opt.textContent.replace(/ \(\d+\)$/, '') : '' } });
-          document.getElementById('waTestGroup').disabled = !sel.value;
-          document.getElementById('waInstr').disabled = !sel.value;
-          if (sel.value && confirm('Dispatch group saved. Post the instructions (English + Español) to the group now?')) {
+          document.getElementById('waTestGroup').disabled = !sel.value || quietMain;
+          document.getElementById('waInstr').disabled = !sel.value || quietMain;
+          if (sel.value && !quietMain && confirm('Dispatch group saved. Post the instructions (English + Español) to the group now?')) {
             await api('/whatsapp/instructions', { method: 'POST', body: {} });
             toast('Instructions posted to the group');
           } else toast(sel.value ? 'Dispatch group saved' : 'Group cleared');
+          drawWaLink();
         } catch (err) { toast(err.message); }
       };
       if (callbackSel) callbackSel.onchange = async () => {
@@ -1590,6 +2011,14 @@
         } catch (err) { toast(err.message); }
       };
     }
+    document.getElementById('waQuietGroup')?.addEventListener('change', async e => {
+      const selected = e.target;
+      await patchWa({quiet_group_id:selected.value,quiet_group_name:selected.value ? selected.selectedOptions[0].textContent.replace(/ \(\d+\)$/,'') : ''},selected.value ? 'Quiet group saved — switch on lead posts when ready' : 'Quiet group cleared');
+    });
+    document.getElementById('waQuietTestGroup')?.addEventListener('change',async e=>{
+      const selected=e.target;
+      await patchWa({test_group_id:selected.value,test_group_name:selected.value ? selected.selectedOptions[0].textContent.replace(/ \(\d+\)$/,'') : ''},selected.value ? 'Test group saved — regular lead posts stay as configured' : 'Test group cleared');
+    });
     // Keep the QR code and status fresh while something is happening.
     if (['starting', 'qr', 'reconnecting'].includes(s.status)) waPoll = setTimeout(drawWaLink, 2500);
   }
@@ -1618,7 +2047,7 @@
         <button type="button" class="btn primary" id="aiSave">Save</button>
         <button type="button" class="btn" id="aiReset">Reset the text</button>
         <button type="button" class="btn" id="aiPreview">👀 Preview the briefing</button>
-        <button type="button" class="btn" id="aiPost" ${s.group && s.connected ? '' : 'disabled'}>📣 Post it to the group now</button>
+        <button type="button" class="btn" id="aiPost" ${s.group && s.connected && !s.group_quiet ? '' : 'disabled'}>📣 Post it to the group now</button>
       </div>
       <pre class="wa-preview" id="aiPreviewBox" hidden></pre>`;
     const on = document.getElementById('aiOn');
@@ -1641,44 +2070,99 @@
 
   // ---------- assistant page: chat + reminders ----------
 
+  async function drawEnergySettings() {
+    const card=document.getElementById('energySettings');if(!card)return;
+    try {
+      const cfg=await api('/energy/settings');if(!card.isConnected)return;
+      card.innerHTML=`<h2>Energy options · ComparePower</h2><p class="small muted">Optional Texas energy checks on any customer record. Plans and meter lookups need no API key. Checkout attribution credits the opportunity owner’s tracking ID, with the default below when theirs is blank.</p>
+        <form id="energySettingsForm"><div class="grid-2"><div class="field"><label for="energyAfid">Organization refid (cp_afid)</label><input id="energyAfid" maxlength="80" value="${esc(cfg.afid)}"></div><div class="field"><label for="energyAfuid">Default team tracking ID (cp_afuid)</label><input id="energyAfuid" maxlength="80" value="${esc(cfg.default_afuid)}"></div></div><button class="btn primary">Save energy settings</button><p class="small" role="status" id="energySettingsState"></p></form>`;
+      card.querySelector('form').onsubmit=async(e)=>{e.preventDefault();const btn=e.target.querySelector('button:not(.select-value)'),feedback=card.querySelector('#energySettingsState');btn.disabled=true;
+        try{await api('/energy/settings',{method:'PATCH',body:{afid:card.querySelector('#energyAfid').value,default_afuid:card.querySelector('#energyAfuid').value}});feedback.textContent='Energy attribution saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}};
+    }catch(err){if(card.isConnected)card.innerHTML=`<h2>Energy options</h2><p class="alert err">${esc(err.message)}</p><button class="btn" id="energySettingsRetry">Retry</button>`;card.querySelector('#energySettingsRetry')?.addEventListener('click',drawEnergySettings);}
+  }
+
   async function drawCoachCard() {
     const card=document.getElementById('coachCard'); if(!card)return;
     try {
-      const [s,sellers,drafts]=await Promise.all([api('/coach/settings'),api('/coach/sellers'),api('/coach/drafts')]);
+      const hiddenDrafts=!!state.coachHiddenDrafts;
+      const [s,sellers,drafts]=await Promise.all([api('/coach/settings'),api('/coach/sellers'),api('/coach/drafts'+(hiddenDrafts?'?hidden=1':''))]);
       if(!card.isConnected)return;
       card.innerHTML=`<div class="row between"><h2 style="margin:0">Seller coach</h2><span class="wa-state ${s.enabled?'ok':''}">${s.enabled?'On':'Off'}</span></div>
-        <p class="small muted">Supportive private WhatsApp check-ins for sellers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
+        <p class="small muted">Supportive private WhatsApp check-ins for sellers and managers. Encourage lead entry, help with product prices and packages, and route difficult questions to you. Compensation is never discussed, including in approved replies.</p>
+        <section class="coach-manual" id="manualCoaching" tabindex="-1" aria-labelledby="coachManualHeading">
+          <h3 id="coachManualHeading" style="margin-top:0">Send a manual check-in</h3>
+          <p class="small muted">Choose a seller or manager, review their message, then send it on WhatsApp.</p>
+          <div class="field"><label for="coachSeller">Who would you like to check in with?</label><select id="coachSeller"><option value="">Choose a seller or manager</option>${sellers.map((u)=>`<option value="${u.id}">${esc(u.full_name)}${u.role==='manager'?' (Manager)':''}${u.blocked?' — unavailable':''}</option>`).join('')}</select></div>
+          <div class="row"><button type="button" class="btn primary" id="coachSend" disabled aria-describedby="coachManualState">Send check-in</button><button type="button" class="btn" id="coachStatusRefresh" hidden>Refresh status</button></div>
+          <p id="coachManualState" class="small" role="status" aria-live="polite">${sellers.length?'Choose someone above to see the message and send availability.':'No active sellers or managers yet. Add them under Users & teams.'}</p>
+          <div id="coachManual"></div>
+        </section>
         <form id="coachSettings"><label class="check"><input id="coachEnabled" type="checkbox" ${s.enabled?'checked':''}> Enable seller coaching</label>
           <div class="fix-grid" style="margin-top:.8rem"><div><label for="coachTime">Weekday check-in time</label><input type="time" id="coachTime" value="${esc(s.time)}" required></div>
           <div><label for="coachDays">Minimum days between check-ins</label><input type="number" id="coachDays" min="1" max="30" value="${s.days}" required></div>
           <div class="full"><label for="coachReviewer">Owner who approves difficult answers</label><select id="coachReviewer">${s.reviewers.map((r)=>`<option value="${r.id}" ${r.id===(s.reviewer_id||state.me.id)?'selected':''}>${esc(r.full_name)}</option>`).join('')}</select></div></div>
-          <p class="small muted">${esc(s.tz)} · weekdays during business hours. Automatic check-ins only go to active sellers with WhatsApp alerts on who have not entered a lead in ${s.days} days. No check-ins while an answer awaits review. Sellers can reply STOP / ALTO and START / REANUDAR. Manual check-ins can include active sellers, but keep the same cooldown.</p>
+          <p class="small muted">${esc(s.tz)} · weekdays during business hours. Automatic check-ins go to active sellers and managers who opted in under My account → Notification preferences and have WhatsApp alerts on, and who have not entered a lead in ${s.days} days. No check-ins while an answer awaits review. Sellers can reply STOP / ALTO and START / REANUDAR. Manual check-ins can include active sellers, but keep the same cooldown.</p>
           <div class="field"><label for="coachKnowledge">Approved seller knowledge: product pricing and FAQ</label><textarea id="coachKnowledge" rows="6" maxlength="6000" placeholder="Add approved products, prices, qualification rules, promo dates, taxes and fees, and how to enter leads. Exclude all compensation information.">${esc(s.knowledge)}</textarea>
             <p class="small muted">The coach quotes only documented offers. Missing prices, exceptions, unclear terms and difficult questions need owner review.</p></div>
           ${!s.ai||!s.connected?'<p class="alert warn small">Coaching needs the assistant enabled with its API key and WhatsApp connected. Settings can be saved now.</p>':''}
           <p id="coachSaveState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save coaching settings</button></form>
-        <h3 style="margin-top:1.5rem">Manual check-in</h3><div class="row"><select id="coachSeller" aria-label="Seller for check-in" style="flex:1;width:auto;min-width:0"><option value="">Choose a seller</option>${sellers.map((u)=>`<option value="${u.id}" ${u.blocked?'disabled':''}>${esc(u.full_name)}${u.blocked?' — '+esc(u.blocked):''}</option>`).join('')}</select><button type="button" class="btn" id="coachPreview">Preview check-in</button></div>
-        <div id="coachManual"></div><p class="small muted">${sellers.length} active seller${sellers.length===1?'':'s'}. ${sellers.filter((u)=>!u.blocked).length} eligible for a manual check-in. Only accepted sends are recorded; check WhatsApp diagnostics for failures.</p>
-        <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">Approval inbox</h3><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div>
+        <div class="row between" style="margin-top:1.5rem"><h3 style="margin:0">${hiddenDrafts?'Hidden coaching drafts':'Approval inbox'}</h3><div class="row"><button type="button" class="btn small" id="coachHidden">${hiddenDrafts?'Back to inbox':'View hidden drafts'}</button><button type="button" class="btn small" id="coachRefresh">Refresh inbox</button></div></div>
+        <p class="small muted">Hide completed test drafts to clear the inbox. Hidden drafts can be restored. Pending or failed replies must be approved or rejected first.</p>
         <p class="small muted">Up to 100 recent drafts, with pending reviews first. Only the configured reviewer can approve or reject. “Sent” means accepted by WhatsApp, not confirmed read.</p>
         <div class="stack">${drafts.map((d)=>`<article class="coach-draft" data-coach-draft="${d.id}"><div class="row between"><b>${esc(d.seller_name)}</b><span class="tag">${esc(d.status)}</span></div><p class="small muted">${esc(fullDate(d.created_at))} · Reviewer: ${esc(d.reviewer_name||'Choose a reviewer')} · ${esc(d.reason)}</p>
           <p class="small" style="white-space:pre-wrap"><b>Seller asked:</b> ${esc(d.question)}</p>${d.error?`<p class="alert err small">${esc(d.error)}</p>`:''}
           <label for="coachReply${d.id}">Draft reply</label><textarea id="coachReply${d.id}" rows="3" maxlength="2000" ${!['pending','failed'].includes(d.status)?'readonly':''}>${esc(d.draft)}</textarea>
-          ${['pending','failed'].includes(d.status)&&state.me.id===s.reviewer_id?`<div class="row" style="margin-top:.6rem"><button type="button" class="btn primary" data-coach-approve="${d.id}">${d.status==='failed'?'Approve retry':'Approve & send'}</button><button type="button" class="btn danger" data-coach-reject="${d.id}">Reject</button></div>`:''}</article>`).join('')||'<p class="muted small">No seller replies waiting for approval.</p>'}</div>`;
+          ${['pending','failed'].includes(d.status)&&state.me.id===s.reviewer_id?`<div class="row" style="margin-top:.6rem"><button type="button" class="btn primary" data-coach-approve="${d.id}">${d.status==='failed'?'Approve retry':'Approve & send'}</button><button type="button" class="btn danger" data-coach-reject="${d.id}">Reject</button></div>`:''}
+          ${['sent','rejected'].includes(d.status)?`<button type="button" class="btn small" style="margin-top:.6rem" data-coach-hide="${d.id}">${hiddenDrafts?'Restore draft':'Hide draft'}</button>`:''}</article>`).join('')||'<p class="muted small">No drafts in this view.</p>'}</div>`;
       card.querySelector('#coachSettings').onsubmit=async(e)=>{
         e.preventDefault();const form=e.target;const btn=form.querySelector('.primary');btn.disabled=true;
         const result=card.querySelector('#coachSaveState');result.textContent='Saving…';
         try{await api('/coach/settings',{method:'PATCH',body:{enabled:card.querySelector('#coachEnabled').checked,time:card.querySelector('#coachTime').value,days:Number(card.querySelector('#coachDays').value),reviewer_id:Number(card.querySelector('#coachReviewer').value),knowledge:card.querySelector('#coachKnowledge').value}});toast('Coaching settings saved');drawCoachCard();}
         catch(err){result.textContent=err.message;result.classList.add('err-text');}finally{btn.disabled=false;}
       };
-      card.querySelector('#coachPreview').onclick=async()=>{
-        const id=card.querySelector('#coachSeller').value;if(!id){toast('Choose an eligible seller first');return;}
-        try{const p=await api(`/coach/sellers/${id}/preview`);const box=card.querySelector('#coachManual');box.innerHTML=`<pre class="wa-preview" style="margin-top:.8rem">${esc(p.text)}</pre><button type="button" class="btn primary" id="coachSend" ${p.blocked||!s.enabled||!s.ai||!s.connected?'disabled':''}>Send check-in</button>${p.blocked?`<p class="small muted">${esc(p.blocked)}</p>`:''}`;
-          box.querySelector('#coachSend').onclick=async(e)=>{e.target.disabled=true;try{await api(`/coach/sellers/${id}/checkin`,{method:'POST',body:{}});toast('Check-in queued');drawCoachCard();}catch(err){toast(err.message);e.target.disabled=false;}};
-        }catch(err){toast(err.message);}
+      const select=card.querySelector('#coachSeller'),send=card.querySelector('#coachSend'),refresh=card.querySelector('#coachStatusRefresh');
+      const manual=card.querySelector('#coachManual'),status=card.querySelector('#coachManualState');
+      let previewId='',requestId=0;
+      const showManualStatus=(message,kind='')=>{status.textContent=message;status.className=kind?`small alert ${kind}`:'small';};
+      const loadPreview=async()=>{
+        const id=select.value,request=++requestId;
+        previewId='';send.disabled=true;send.textContent='Send check-in';refresh.hidden=!id;refresh.disabled=true;manual.innerHTML='';
+        if(!id){showManualStatus('Choose someone above to see the message and send availability.');return;}
+        showManualStatus('Loading message and checking availability…');
+        try{
+          const p=await api(`/coach/sellers/${id}/preview`);
+          if(!card.isConnected||request!==requestId)return;
+          previewId=id;send.disabled=!!p.blocked;
+          manual.innerHTML=`<details open style="margin-top:1rem"><summary>Message preview for ${esc(p.name)}</summary><pre class="wa-preview">${esc(p.text)}</pre></details>`;
+          if(p.send_status==='failed')showManualStatus(`Last check-in failed: ${p.last_error}${p.blocked?' '+p.blocked:' You can try sending again.'}`,'err');
+          else if(p.send_status==='queued'){send.disabled=true;showManualStatus(`Check-in queued for ${p.name}. Click Refresh status to check whether WhatsApp has accepted it.`,'warn');}
+          else if(p.blocked)showManualStatus(`${p.blocked}${p.last_sent_at?' Last accepted by WhatsApp: '+fullDate(p.last_sent_at)+'.':''}`,'warn');
+          else showManualStatus(`Ready to send to ${p.name}.${p.last_sent_at?' Last accepted by WhatsApp: '+fullDate(p.last_sent_at)+'.':''}`);
+          if(p.send_status==='sent')manual.insertAdjacentHTML('afterbegin',`<p class="small">Last check-in accepted by WhatsApp: ${esc(fullDate(p.last_sent_at))}. Delivery and reading are not confirmed.</p>`);
+        }catch(err){if(card.isConnected&&request===requestId)showManualStatus(`Could not load the message: ${err.message} Click Retry to try again.`,'err');}
+        finally{if(card.isConnected&&request===requestId){refresh.disabled=false;refresh.textContent=previewId?'Refresh status':'Retry';}}
       };
-      card.querySelector('#coachSeller').onchange=()=>{card.querySelector('#coachManual').innerHTML='';};
+      select.onchange=loadPreview;refresh.onclick=loadPreview;
+      send.onclick=async()=>{
+        const id=select.value;if(!id||previewId!==id||send.disabled)return;
+        const name=sellers.find((u)=>String(u.id)===id)?.full_name||'this person';
+        send.disabled=true;select.disabled=true;refresh.disabled=true;send.textContent='Sending…';
+        showManualStatus(`Sending check-in to ${name}…`);
+        try{
+          await api(`/coach/sellers/${id}/checkin`,{method:'POST',body:{}});
+          if(!card.isConnected)return;
+          send.textContent='Check-in queued';
+          showManualStatus(`Check-in queued for ${name}. Click Refresh status to check whether WhatsApp has accepted it.`,'ok');
+        }catch(err){if(card.isConnected){send.textContent='Send check-in';showManualStatus(`Could not queue the check-in: ${err.message} Refresh status before trying again.`,'err');}}
+        finally{if(card.isConnected){select.disabled=false;refresh.disabled=false;refresh.hidden=false;}}
+      };
       card.querySelector('#coachRefresh').onclick=drawCoachCard;
+      card.querySelector('#coachHidden').onclick=()=>{state.coachHiddenDrafts=!hiddenDrafts;drawCoachCard();};
+      card.querySelectorAll('[data-coach-hide]').forEach((b)=>{b.onclick=async()=>{
+        b.disabled=true;
+        try{await api(`/coach/drafts/${b.dataset.coachHide}/visibility`,{method:'PATCH',body:{hidden:!hiddenDrafts}});b.closest('[data-coach-draft]').remove();toast(hiddenDrafts?'Draft restored to the inbox':'Draft hidden. Use View hidden drafts to restore it.');}
+        catch(err){toast(err.message);b.disabled=false;}
+      };});
       for(const action of ['approve','reject'])card.querySelectorAll(`[data-coach-${action}]`).forEach((b)=>{b.onclick=async()=>{
         const id=b.getAttribute(`data-coach-${action}`);const article=b.closest('[data-coach-draft]');article.querySelectorAll('button').forEach((x)=>{x.disabled=true;});
         try{await api(`/coach/drafts/${id}/review`,{method:'POST',body:{action,text:article.querySelector('textarea').value}});toast(action==='approve'?'Approved reply queued':'Draft rejected');drawCoachCard();}
@@ -1706,16 +2190,16 @@
           ${info.ai ? '' : `<div class="alert warn small" style="margin-top:.6rem">The AI assistant is off.${isAdmin() ? ' Switch it on in <a href="#/team?tab=settings">Admin → Settings</a> (it needs <code>ANTHROPIC_API_KEY</code> in Render).' : ' Ask an admin to switch it on.'} Reminders work without it.</div>`}
           <div class="chat-log" id="chatLog">${state.chat.length ? state.chat.map((m) => `<div class="bubble ${m.role}">${m.role === 'assistant' ? waText(m.content) : esc(m.content)}</div>`).join('') : `<p class="muted small">Ask about leads, numbers or reminders — in English or Spanish. It acts as you, with your permissions. Also on WhatsApp: start a message in the dispatch group with <b>bot</b>, or message the alerts number privately.</p>
             <div class="chips">${ideas.map((t) => `<button type="button" class="chip" data-idea="${esc(t)}">${esc(t)}</button>`).join('')}</div>`}</div>
-          <form id="chatForm" class="chat-form"><textarea id="chatIn" rows="2" placeholder="${es ? 'Escribe tu pregunta…' : 'Ask anything…'}" ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Send</button></form>
+          <form id="chatForm" class="chat-form"><textarea id="chatIn" rows="2" aria-label="${es ? 'Pregunta para el asistente' : 'Question for the assistant'}" placeholder="${es ? 'Escribe tu pregunta…' : 'Ask anything…'}" ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Send</button></form>
         </div>
         <div class="card">
           <h2 style="margin-top:0">⏰ Reminders</h2>
           <form id="remForm" class="rem-form">
-            <input id="remText" placeholder="Call back Maria about the TV package" maxlength="300" required>
+            <label for="remText">What do you need to do?</label><input id="remText" placeholder="Call back Maria about the TV package" maxlength="300" required>
             <div class="row" style="flex-wrap:wrap;gap:.5rem">
-              <input id="remAt" type="datetime-local" required style="flex:1;min-width:190px">
-              <select id="remFor">${forOpts}</select>
-              <select id="remRepeat"><option value="">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select>
+              <div class="rem-when"><label for="remAt">When</label><input id="remAt" type="datetime-local" required></div>
+              <div class="rem-choice"><label for="remFor">For</label><select id="remFor">${forOpts}</select></div>
+              <div class="rem-choice"><label for="remRepeat">Repeat</label><select id="remRepeat"><option value="">Once</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Every week</option></select></div>
               <button class="btn primary">Add</button>
             </div>
           </form>
@@ -1727,11 +2211,7 @@
         <div class="card">
           <h2 style="margin-top:0">📄 Ask about a PDF</h2>
           <p class="small muted" style="margin-top:0">Upload an offer, product guide or policy PDF and ask a question. The assistant can read scanned pages and tables too. The file is used for this answer and is not saved in the app.</p>
-          <form id="pdfForm" class="stack" style="gap:.65rem">
-            <input id="pdfFile" type="file" accept="application/pdf,.pdf" required ${info.ai ? '' : 'disabled'}>
-            <textarea id="pdfQuestion" rows="2" maxlength="2000" placeholder="What does the PDF say about eligibility?" required ${info.ai ? '' : 'disabled'}></textarea>
-            <button class="btn primary" ${info.ai ? '' : 'disabled'}>Read PDF and answer</button>
-          </form>
+          <form id="pdfForm" class="stack" style="gap:.65rem"><input id="pdfFile" type="file" accept="application/pdf,.pdf" required ${info.ai ? '' : 'disabled'}><textarea id="pdfQuestion" rows="2" maxlength="2000" placeholder="What does the PDF say about eligibility?" required ${info.ai ? '' : 'disabled'}></textarea><button class="btn primary" ${info.ai ? '' : 'disabled'}>Read PDF and answer</button></form>
           <div id="pdfAnswer" class="small" style="margin-top:.7rem"></div>
         </div>
       </div>`);
@@ -1764,7 +2244,7 @@
     };
     document.getElementById('chatForm').onsubmit = (e) => { e.preventDefault(); send(input.value); };
     input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.value); } };
-    document.querySelectorAll('[data-idea]').forEach((b) => { b.onclick = () => send(b.dataset.idea); });
+    document.querySelectorAll('[data-idea]').forEach((b) => { b.disabled = !info.ai; b.onclick = () => send(b.dataset.idea); });
     const pdfForm = document.getElementById('pdfForm');
     if (pdfForm) pdfForm.onsubmit = async (e) => {
       e.preventDefault();
@@ -1774,8 +2254,7 @@
       const button = pdfForm.querySelector('button');
       if (!file || !question) return;
       if (file.size > 10 * 1024 * 1024) { answer.innerHTML = '<div class="alert err small">Choose a PDF smaller than 10 MB.</div>'; return; }
-      button.disabled = true;
-      answer.innerHTML = '<p class="muted">Reading the PDF…</p>';
+      button.disabled = true; answer.innerHTML = '<p class="muted">Reading the PDF…</p>';
       try {
         const data_base64 = await fileToBase64(file);
         const result = await api('/assistant/pdf', { method: 'POST', body: { data_base64, question } });
@@ -1819,6 +2298,7 @@
     const shown = users.filter((u) => (filter === 'all' ? true : filter === 'inactive' ? !u.active : u.active));
 
     shell(`
+      ${tab==='users'?`<header class="page-heading"><div><p class="eyebrow">People</p><h1>${isAdmin()?'Users & teams':'My team'}</h1><p class="muted">Find a teammate, open their profile or manage access.</p></div><button type="button" class="btn primary" data-section-jump="addUser" aria-controls="addUser">Add ${isAdmin()?'a user':'a rep'}</button></header>`:''}
       ${flash ? `<div class="card flash">
         <div class="alert ok" style="margin-bottom:.6rem">${esc(flash.title)}</div>
         ${flash.emailed ? `<p style="margin:0">✉ We emailed the sign-in details to <b>${esc(flash.emailed)}</b>.</p>`
@@ -1858,6 +2338,13 @@
         <div id="inviteNew"></div>
         <div id="inviteList" class="small muted">Loading invites…</div>
       </div>` : ''}
+      ${isAdmin() && tab === 'usage' ? `
+      <div class="card" id="usageCard">
+        <div class="row between"><h2 style="margin:0">Customer usage upload</h2><span class="tag">Admin only</span></div>
+        <p class="small muted" style="margin:.45rem 0 .8rem">Upload the current usage workbook (.xlsx) or a CSV exported from its <b>Usage</b> tab. Customers on that tab with Internet Usage marked Y will be matched to existing records by account number and marked active. Connect date becomes the active date; Internet Usage Date becomes the usage date. This does not create customers or change customers missing from the Usage tab.</p>
+        <form class="history-form" id="usageForm"><div><label for="usage_file">Usage workbook or CSV</label><input type="file" id="usage_file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required></div><div class="iv-go"><button class="btn" id="usageCheck">Check file</button></div></form>
+        <div id="usagePreview"></div>
+      </div>` : ''}
       ${isAdmin() && tab === 'past-sales' ? `
       <div class="card" id="historyCard">
         <div class="row between"><h2 style="margin:0">Past sales</h2><span class="small muted">Blocks old customers as duplicates. Never shown in the portal.</span></div>
@@ -1869,16 +2356,6 @@
         </form>
         <div id="historyPreview"></div>
         <div id="historyList" class="small muted">Loading uploads…</div>
-      </div>` : ''}
-      ${isAdmin() && tab === 'usage' ? `
-      <div class="card" id="usageCard">
-        <div class="row between"><h2 style="margin:0">Customer usage upload</h2><span class="tag">Admin only</span></div>
-        <p class="small muted" style="margin:.45rem 0 .8rem">Upload the current usage workbook (.xlsx) or a CSV exported from its <b>Usage</b> tab. Customers on that tab with Internet Usage marked Y will be matched to existing records by account number and marked active. Connect date becomes the active date; Internet Usage Date becomes the usage date. This does not create customers or change customers missing from the Usage tab.</p>
-        <form class="history-form" id="usageForm">
-          <div><label for="usage_file">Usage workbook or CSV</label><input type="file" id="usage_file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required></div>
-          <div class="iv-go"><button class="btn" id="usageCheck">Check file</button></div>
-        </form>
-        <div id="usagePreview"></div>
       </div>` : ''}
       ${tab === 'users' ? `
       <div class="grid-2">
@@ -1901,22 +2378,34 @@
         <div class="card">
           <h2>Teams</h2>
           <ul class="lead-list">${teams.map((t) => `<li style="cursor:default"><div class="who"><b>${esc(t.name)}</b><span>${t.members} active member${t.members === 1 ? '' : 's'}</span></div><button class="btn small" data-rename="${t.id}" data-name="${esc(t.name)}">Rename</button></li>`).join('') || '<li class="muted">No teams yet — add one below.</li>'}</ul>
-          <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
+          <form class="row" id="addTeam" style="margin-top:.8rem"><input name="name" aria-label="New team name" placeholder="New team name" style="flex:1;width:auto;min-width:0" required><button class="btn">Add team</button></form>
         </div>` : `
         <div class="card"><h2>Tips</h2><p class="muted small">Add each rep's email so they get a welcome email, alerts, and can reset their own password with an emailed code.<br><br>If someone is locked out, hit <b>Reset password</b>. You can email them the new temporary password or read it to them.<br><br>Deactivated users can't sign in, but their sales stay on the books.</p></div>`}
       </div>` : ''}
       ${isAdmin() && tab === 'settings' ? `
+      <section class="card settings-overview">
+        <h1>Settings</h1><p class="muted">Manage lead routing, team support and connected services. Save changes within each section.</p>
+        <div class="settings-actions" aria-label="Settings shortcuts">
+          <button type="button" class="btn" data-settings-jump="manualCoaching" data-settings-fallback="coachCard">Send a manual check-in</button>
+          <button type="button" class="btn" data-settings-jump="waTestHeading" data-settings-fallback="waLinkCard">Test a WhatsApp group</button>
+          <a class="btn" href="#/account">My notification preferences</a>
+        </div>
+        <nav class="settings-links" aria-label="Jump to a settings section">
+          ${[['settingsForm','Lead routing'],['emailForm','Email & backups'],['waLinkCard','WhatsApp groups'],['aiCard','Assistant'],['coachCard','Coaching'],['energySettings','Energy options'],['waForm','Message template'],['speedForm','Speed to lead']].map(([id,label])=>`<button type="button" class="settings-link" data-settings-jump="${id}">${label}</button>`).join('')}
+        </nav>
+      </section>
       <div class="grid-2">
         <form class="card" id="settingsForm">
-          <h2>Settings</h2>
+          <h2>Lead routing &amp; entry</h2>
           <label class="check"><input type="checkbox" name="auto_assign" ${settings.auto_assign === '1' ? 'checked' : ''}> Automatically assign new leads to dispatch</label>
           <p class="small muted" style="margin:.2rem 0 1rem">Each new lead goes to the active dispatcher with the fewest open leads. Off: leads wait in <b>Unassigned</b> until someone takes them.</p>
           <label class="check"><input type="checkbox" name="new_lead_alert" ${settings.new_lead_alert !== '0' ? 'checked' : ''}> Alert every dispatcher the moment a new lead comes in</label>
-          <p class="small muted" style="margin:.2rem 0 1rem">In the app, on their phone, and on WhatsApp for anyone who turned WhatsApp alerts on.</p>
+          <p class="small muted" style="margin:.2rem 0 1rem">In the app, with email and phone push delivery based on each person’s notification preferences. WhatsApp is reserved for orders and owner mentions.</p>
           <label for="tpl">Entry template</label>
           <textarea id="tpl" name="entry_template" rows="7" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem">${esc(settings.entry_template)}</textarea>
-          <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
+          <p class="small muted" style="margin:.3rem 0 .8rem">Reps can tap <b>Use template</b> to fill the entry box with this. Use labels like Name:, Phone:, Email:, Address:, City:, State:, Zip:, Services:, Notes: — any other label is kept in the notes.</p>
           <button class="btn primary">Save settings</button>
+          ${settings.location_repair_summary ? `<p class="small muted" id="locationRepairSummary"><b>Past lead locations:</b> recovered missing fields on ${settings.location_repair_summary.leads} earlier leads.${settings.location_repair_summary.conflicts ? ` ${settings.location_repair_summary.conflicts} conflicting addresses need review.` : ''} Open a lead → Edit Record to correct its city, state or ZIP.</p>` : ''}
         </form>
         <form class="card" id="emailForm">
           <h2>Email</h2>
@@ -1935,12 +2424,13 @@
       <div class="card" id="waLinkCard"><h2>WhatsApp alerts</h2><p class="small muted">Loading…</p></div>
       <div class="card" id="aiCard"><h2>🤖 Assistant</h2><p class="small muted">Loading…</p></div>
       <div class="card" id="coachCard"><h2>Seller coach</h2><p class="small muted">Loading…</p></div>
+      <div class="card" id="energySettings"><h2>Energy options</h2><p class="small muted">Loading…</p></div>
       <form class="card" id="waForm">
         <h2>WhatsApp message for dispatch</h2>
         <p class="small muted" style="margin-top:0">What <b>Copy for WhatsApp</b> puts on the clipboard for every lead. Use <code>*bold*</code> like in WhatsApp. Fields:
           ${WaFormat.FIELDS.map((k) => `<code>{${k}}</code>`).join(' ')}</p>
         <div class="grid-2" style="gap:1rem">
-          <div><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
+          <div><label for="waTpl">Message template</label><textarea id="waTpl" rows="11" style="font-family:ui-monospace,Menlo,monospace;font-size:.88rem">${esc(settings.whatsapp_template)}</textarea>
             <div class="field"><label for="waNum">Dispatch WhatsApp number <span class="muted small">(optional — Open WhatsApp goes straight to this chat)</span></label><input id="waNum" inputmode="tel" value="${esc(settings.whatsapp_number)}" placeholder="1 512 555 0142"></div></div>
           <div><label class="small">Preview</label><pre class="wa-preview" id="waPreview"></pre></div>
         </div>
@@ -1955,16 +2445,17 @@
           <div class="field"><label for="sp_esc">Alert admins after (minutes)</label><input id="sp_esc" name="escalate" type="number" min="2" max="2880" value="${speedCfg.escalate}"></div>
           <div class="field"><label for="sp_from">Working hours</label>
             <div class="row" style="flex-wrap:nowrap;gap:.4rem"><select id="sp_from">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${+speedCfg.hours.split('-')[0] === h ? 'selected' : ''}>${new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select>
-            <span class="muted">to</span><select id="sp_to">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${+speedCfg.hours.split('-')[1] === h ? 'selected' : ''}>${h === 24 ? 'midnight' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select></div></div>
+            <span class="muted">to</span><select id="sp_to" aria-label="Working hours end">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${+speedCfg.hours.split('-')[1] === h ? 'selected' : ''}>${h === 24 ? 'midnight' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>`).join('')}</select></div></div>
           <div class="field"><label for="sp_tz">Time zone</label><select id="sp_tz">${[['America/New_York', 'Eastern'], ['America/Chicago', 'Central'], ['America/Denver', 'Mountain'], ['America/Phoenix', 'Arizona'], ['America/Los_Angeles', 'Pacific'], ['America/Anchorage', 'Alaska'], ['Pacific/Honolulu', 'Hawaii'], ['America/Puerto_Rico', 'Atlantic (Puerto Rico)']].map(([z, l]) => `<option value="${z}" ${speedCfg.tz === z ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         </div>
         <label class="check" style="margin-top:.6rem"><input type="checkbox" name="auto_reassign" ${speedCfg.autoReassign ? 'checked' : ''}> When admins are alerted, hand the lead to the least-busy other dispatcher</label>
         <div style="margin-top:.9rem"><button class="btn primary">Save</button></div>
       </form>` : ''}
       ${tab === 'users' ? `
-      <div class="card">
+      <div class="card" id="peopleDirectory">
         <div class="row between"><h2 style="margin:0">${isAdmin() ? 'All users' : 'Team members'}</h2>
           <div class="seg" id="showSeg">${[['active', 'Active'], ['inactive', 'Deactivated'], ['all', 'All']].map(([k, l]) => `<button data-k="${k}" class="${filter === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="directory-search"><label for="peopleSearch">Find a person</label><input id="peopleSearch" type="search" placeholder="Search name, username, team or role…" autocomplete="off"><p id="peopleSearchCount" class="small muted" role="status" aria-live="polite"></p></div>
         <div class="table-wrap" style="margin-top:.6rem"><table class="rtable users-table">
           <thead><tr><th>Name</th><th>Role</th>${isAdmin() ? '<th>Team</th>' : ''}<th>Last active</th><th>Password changed</th><th class="num">Referrals</th><th class="num">Ordered</th><th></th></tr></thead>
           <tbody>${shown.map((u) => {
@@ -1972,12 +2463,12 @@
             const self = u.id === state.me.id;
             const pwOld = !u.must_change_password && daysSince(u.password_changed_at) > 90;
             return `<tr class="${u.active ? '' : 'inactive'}">
-              <td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
-                <div class="small">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
-                <div class="small">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div></td>
-              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
+              <td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.active ? '' : ' · deactivated'}${u.must_change_password ? ' · <span class="warn-text">temp password</span>' : ''}</div>
+                <div class="small user-contact">${u.email ? esc(u.email) : '<span class="muted">no email</span>'}${manageable ? ` <button class="link-btn small" data-email="${u.id}" data-current="${esc(u.email)}">edit</button>` : ''}</div>
+                <div class="small user-contact">${u.whatsapp ? `<span class="via-wa" title="${u.whatsapp_alerts ? 'Alerts go to WhatsApp' : 'Number saved, WhatsApp alerts off'}">💬 ${esc(u.whatsapp)}${u.whatsapp_alerts ? '' : ' (off)'}</span>` : '<span class="muted">no WhatsApp</span>'}${manageable ? ` <button class="link-btn small" data-wa="${u.id}" data-current="${esc(u.whatsapp || '')}" data-name="${esc(u.full_name)}">${u.whatsapp ? 'edit' : 'add'}</button>` : ''}</div><div class="user-mobile-summary small muted">${roleLabel(u.role)}${u.team_name?' · '+esc(u.team_name):''}<br>${u.referral_count} referrals · ${u.ordered_count} ordered</div><button type="button" class="user-row-toggle" data-user-details aria-expanded="false">Details & actions <span aria-hidden="true">⌄</span></button></td>
+              <td data-label="Role">${isAdmin() && !self ? `<select data-role="${u.id}" aria-label="Role for ${esc(u.full_name)}" style="width:auto">${roles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}</select>` : roleLabel(u.role)}
                 ${isAdmin() && ['rep', 'dispatch'].includes(u.role) ? `<label class="check small pay-toggle"><input type="checkbox" data-pay="${u.id}" ${u.payments_enabled ? 'checked' : ''}> Payments tab</label>` : ''}</td>
-              ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
+              ${isAdmin() ? `<td data-label="Team"><select data-team="${u.id}" aria-label="Team for ${esc(u.full_name)}" style="width:auto"><option value="">—</option>${teams.map((t) => `<option value="${t.id}" ${u.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td>` : ''}
               <td data-label="Last active">${ago(u.last_seen_at || u.last_login_at)}<div class="small muted">${u.login_count} sign-in${u.login_count === 1 ? '' : 's'}${u.failed_7d ? ` · <span class="warn-text">${u.failed_7d} failed</span>` : ''}</div></td>
               <td data-label="Password changed">${u.password_changed_at ? `${ago(u.password_changed_at)}${pwOld ? ' <span class="tag">90+ days</span>' : ''}` : '<span class="muted">never</span>'}</td>
               <td data-label="Referrals" class="num"><a href="#/referrals?scope=${isAdmin() ? 'all' : 'team'}&user_id=${u.id}">${u.referral_count}</a>${u.role === 'dispatch' || u.open_assigned ? `<div class="small muted">${u.open_assigned} in queue</div>` : ''}</td>
@@ -1990,6 +2481,24 @@
         </table></div>
       </div>` : ''}`);
 
+    const directory=document.getElementById('peopleDirectory');
+    if(directory){
+      const heading=document.querySelector('.page-heading'),flashCard=document.querySelector('.flash');
+      (flashCard || heading).after(directory);
+      const rows=[...directory.querySelectorAll('tbody tr')],search=document.getElementById('peopleSearch'),count=document.getElementById('peopleSearchCount');
+      const searchable=shown.map(u=>[u.full_name,u.username,u.team_name,roleLabel(u.role),u.email,u.whatsapp].filter(Boolean).join(' ').toLocaleLowerCase());
+      rows.forEach((row,index)=>{
+        const toggle=row.querySelector('[data-user-details]');if(!toggle)return;
+        const controls=[...row.querySelectorAll('td:not(:first-child), .user-contact')];
+        controls.forEach((control,n)=>{control.id=`person-${shown[index].id}-detail-${n}`;});
+        toggle.setAttribute('aria-controls',controls.map(c=>c.id).join(' '));
+        toggle.onclick=()=>{const open=row.classList.toggle('user-expanded');toggle.setAttribute('aria-expanded',String(open));toggle.innerHTML=open?'Hide details <span aria-hidden="true">⌃</span>':'Details & actions <span aria-hidden="true">⌄</span>';};
+      });
+      const filterPeople=()=>{const term=search.value.trim().toLocaleLowerCase();let visible=0;
+        rows.forEach((row,index)=>{const match=index<shown.length && (!term || searchable[index].includes(term));row.hidden=!match;if(match)visible++;});
+        count.textContent=visible?`${visible} ${visible===1?'person':'people'} shown`:'No people match. Try another name or change the status filter.';
+      };search.oninput=filterPeople;filterPeople();
+    }
     document.querySelectorAll('#showSeg button').forEach((b) => { b.onclick = () => { location.hash = `#/team?show=${b.dataset.k}`; }; });
     const copy = document.getElementById('copyPw');
     if (copy) copy.onclick = () => { navigator.clipboard?.writeText(flash.password); toast('Copied'); };
@@ -2072,9 +2581,19 @@
         try { await api('/users/' + b.dataset.email, { method: 'PATCH', body: { email } }); toast('Email saved'); renderTeam(); } catch (err) { toast(err.message); }
       };
     });
+    document.querySelectorAll('[data-settings-jump]').forEach((button) => {
+      button.onclick = () => {
+        const target = document.getElementById(button.dataset.settingsJump) || document.getElementById(button.dataset.settingsFallback);
+        if (!target) return;
+        target.setAttribute('tabindex', '-1');
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+        target.focus({ preventScroll: true });
+      };
+    });
     if (document.getElementById('waLinkCard')) drawWaLink();
     if (document.getElementById('aiCard')) drawAiCard();
     if (document.getElementById('coachCard')) drawCoachCard();
+    if (document.getElementById('energySettings')) drawEnergySettings();
     const waForm = document.getElementById('waForm');
     if (waForm) {
       const tpl = document.getElementById('waTpl');
@@ -2233,9 +2752,9 @@
       ${waNudge()}
       <div class="dash-filters">
         <div class="seg" id="periodSeg">${PERIODS.map(([k, l]) => `<button data-k="${k}" class="${period === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-        ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" value="${esc(range.to || '')}"></span>` : ''}
-        ${seesAll() ? `<select id="dTeam"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
-        ${worksLeads() ? `<select id="dUser"><option value="">${isManager() ? 'Whole team' : 'Everyone'}</option>${ppl.credit.filter((p) => !params.team_id || String(p.team_id) === params.team_id).map((p) => `<option value="${p.id}" ${params.user_id === String(p.id) ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>` : ''}
+        ${period === 'custom' ? `<span class="row" style="gap:.4rem"><input type="date" id="cFrom" aria-label="Period start" value="${esc(range.from || '')}"><span class="muted">to</span><input type="date" id="cTo" aria-label="Period end" value="${esc(range.to || '')}"></span>` : ''}
+        ${seesAll() ? `<select id="dTeam" aria-label="Dashboard team"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${params.team_id === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+        ${worksLeads() ? `<select id="dUser" aria-label="Dashboard opportunity owner"><option value="">${isManager() ? 'Whole team' : 'Everyone'}</option>${ppl.credit.filter((p) => !params.team_id || String(p.team_id) === params.team_id).map((p) => `<option value="${p.id}" ${params.user_id === String(p.id) ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>` : ''}
       </div>
       ${editing ? `<div class="card edit-bar"><b>Customize your dashboard.</b> <span class="muted small">Use ↑ ↓ to reorder and ✕ to remove. Add widgets below. Your layout is saved to your account.</span>
         <div class="row" style="margin-top:.6rem"><button class="btn small" id="resetLayout">Reset to default</button></div></div>` : ''}
@@ -2375,7 +2894,7 @@
         ['Entered', fmt(k.entered), delta(k.entered, p.entered)],
         ['Ordered', fmt(k.ordered), delta(k.ordered, p.ordered)],
         ['Conversion', `${k.conversion}%`, delta(k.conversion, p.conversion, { points: true })],
-        ['Open', fmt(k.open), delta(k.open, p.open, { better: 'none' }), 'New + Passed'],
+        ['Open', fmt(k.open), delta(k.open, p.open, { better: 'none' }), 'New + Working + Passed'],
         ['Days to order', k.avg_days_to_order == null ? '—' : k.avg_days_to_order, delta(k.avg_days_to_order, p.avg_days_to_order, { better: 'down' }), 'average'],
       ];
       el.innerHTML = `<div class="kpis">${tiles.map(([l, v, dl, sub]) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div><div class="kd">${dl || (sub ? `<span class="muted small">${sub}</span>` : '&nbsp;')}</div></div>`).join('')}</div>`;
@@ -2617,21 +3136,20 @@
         preview.innerHTML = `<div class="invite-new">
           <div><b>${esc(r.file_name)}</b>: ${n(r.rows)} active usage rows, ${n(r.matched)} matched to existing customer records, ${n(r.unmatched)} not found${r.ambiguous ? `, ${n(r.ambiguous)} account numbers matched more than one record` : ''}.</div>
           <div class="small muted" style="margin:.35rem 0 .6rem">${n(r.unique_accounts)} unique account numbers; ${n(r.duplicate_rows)} duplicate rows skipped. Only exact account-number matches will be updated.</div>
-          ${r.unmatched_samples.length ? `<p class="small muted">A few not found: ${r.unmatched_samples.map((x) => `${esc(x.customer_name || 'Unnamed')} (…${esc(x.account_last4)})`).join(' · ')}</p>` : ''}
-          ${r.ambiguous_samples.length ? `<p class="small warn-text">Ambiguous accounts were skipped: ${r.ambiguous_samples.map((x) => `…${esc(x.account_last4)}`).join(' · ')}</p>` : ''}
+          ${r.unmatched_samples?.length ? `<p class="small muted">A few not found: ${r.unmatched_samples.map((x) => `${esc(x.customer_name || 'Unnamed')} (…${esc(x.account_last4)})`).join(' · ')}</p>` : ''}
+          ${r.ambiguous_samples?.length ? `<p class="small warn-text">Ambiguous accounts were skipped: ${r.ambiguous_samples.map((x) => `…${esc(x.account_last4)}`).join(' · ')}</p>` : ''}
           <div class="row"><button class="btn primary" id="usageSave" ${r.matched ? '' : 'disabled'}>Mark ${n(r.matched)} customers active</button><button class="btn" id="usageCancel">Cancel</button></div></div>`;
         document.getElementById('usageCancel').onclick = () => { preview.innerHTML = ''; pending = null; };
         document.getElementById('usageSave').onclick = async (ev) => {
           ev.target.disabled = true;
           try {
             const saved = await api('/usage/import', { method: 'POST', body: { ...pending, commit: true } });
-            preview.innerHTML = `<div class="alert ok small">✓ Updated ${n(saved.updated)} existing customer records from ${esc(saved.file_name)}. Active date and usage date are saved on each matched record.</div>`;
+            preview.innerHTML = `<div class="alert ok small">Updated ${n(saved.updated)} existing customer records from ${esc(saved.file_name)}. Active date and usage date are saved on each matched record.</div>`;
             form.reset(); pending = null;
           } catch (err) { ev.target.disabled = false; toast(err.message); }
         };
-      } catch (err) {
-        preview.innerHTML = `<div class="alert err small">${esc(err.message)}</div>`;
-      } finally { btn.disabled = false; btn.textContent = 'Check file'; }
+      } catch (err) { preview.innerHTML = `<div class="alert err small">${esc(err.message)}</div>`; }
+      finally { btn.disabled = false; btn.textContent = 'Check file'; }
     };
   }
 
@@ -2697,14 +3215,14 @@
       </div>
       ${adm.pending.length ? `<div class="card"><h2>Waiting for approval (${adm.pending.length})</h2>
         <div class="table-wrap"><table class="rtable"><thead><tr><th>Name</th><th>Contact</th><th>Invited by</th><th>Signed up</th><th></th></tr></thead><tbody>
-        ${adm.pending.map((u) => `<tr><td data-label="Name"><b>${esc(u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</div></td>
+        ${adm.pending.map((u) => `<tr><td data-label="Name"><b>${personLink(u.id,u.full_name)}</b><div class="small muted">@${esc(u.username)}${u.team_name ? ` · ${esc(u.team_name)}` : ''}</div></td>
           <td data-label="Contact" class="small">${esc(u.email)}${u.phone ? `<div>${esc(u.phone)}</div>` : ''}</td><td data-label="Invited by">${esc(u.sponsor_name || '—')}</td><td data-label="Signed up">${when(u.created_at)}</td>
           <td class="actions"><button class="btn small primary" data-approve="${u.id}">Approve</button> <button class="btn small danger" data-reject="${u.id}" data-name="${esc(u.full_name)}">Reject</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
       <div class="card"><div class="row between"><h2 style="margin:0">Affiliate earnings by person</h2><span class="small muted">“Mark paid” after you've sent the money.</span></div>
         <div class="table-wrap" style="margin-top:.6rem"><table class="rtable"><thead><tr><th>Person</th><th>Invited by</th><th class="num">Recruits</th><th class="num">Owed</th><th class="num">All-time</th><th></th></tr></thead><tbody>
         ${adm.members.map((m) => `<tr class="${m.active ? '' : 'inactive'}"><td data-label="Person"><b>${esc(m.full_name)}</b><div class="small muted">${roleLabel(m.role)}${m.last_paid ? ` · last paid ${when(m.last_paid)}` : ''}</div></td>
-          <td data-label="Invited by"><select data-sponsor="${m.id}" style="width:auto;max-width:180px"><option value="">— nobody —</option>${adm.members.filter((x) => x.id !== m.id).map((x) => `<option value="${x.id}" ${m.sponsor_id === x.id ? 'selected' : ''}>${esc(x.full_name)}</option>`).join('')}</select></td>
+          <td data-label="Invited by"><select data-sponsor="${m.id}" aria-label="Invited by for ${esc(m.full_name)}" style="width:auto;max-width:180px"><option value="">— nobody —</option>${adm.members.filter((x) => x.id !== m.id).map((x) => `<option value="${x.id}" ${m.sponsor_id === x.id ? 'selected' : ''}>${esc(x.full_name)}</option>`).join('')}</select></td>
           <td data-label="Recruits" class="num">${m.recruits}</td><td data-label="Owed" class="num"><b class="${m.owed < 0 ? 'warn-text' : ''}">${usd(m.owed)}</b></td><td data-label="All-time" class="num">${usd(m.lifetime)}</td>
           <td class="actions">${m.owed > 0 ? `<button class="btn small" data-paid="${m.id}" data-name="${esc(m.full_name)}" data-amt="${m.owed}">Mark paid</button>${m.has_payout_details ? '' : '<div class="small warn-text">no payout details</div>'}` : ''}</td></tr>`).join('')}
         </tbody></table></div></div>
@@ -2975,7 +3493,7 @@
     };
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const btn = form.querySelector('button');
+      const btn = form.querySelector('button:not(.select-value)');
       btn.disabled = true;
       try {
         const emails = document.getElementById('iv_emails').value;
@@ -3122,7 +3640,7 @@
       <li><b>Notifications:</b> go to ${isAdmin() ? '<a href="#/account">Admin → My account</a>' : '<a href="#/account">Account → Profile</a>'} → <b>Phone notifications</b> and tap <b>Turn on</b>. You'll get alerts for orders 🎉, leads assigned to you, @mentions and call-back reminders, even when the app is closed. On iPhone this works once the app is on your Home Screen.</li>
       <li><b>No signal?</b> Enter the lead as usual. It's <b>saved on your phone</b> and sent automatically when you're back online. The New Referral page shows anything still waiting.</li>
       <li><b>Address suggestions:</b> as you type an address, the app suggests the full one with city and zip. Tap it to use it. Complete addresses mean better duplicate checks and a higher lead score.</li>
-      <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on to get your alerts there too${role() === 'dispatch' ? ', including every new lead the moment it comes in' : ''}.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; every new lead is then posted there automatically.' : ''}</li>
+      <li><b>WhatsApp alerts:</b> add your WhatsApp number under ${isAdmin() ? 'Admin → My account' : 'Account → Profile'} → <b>WhatsApp alerts</b> and switch it on for urgent orders and owner mentions; choose email and phone push by event under Notification preferences.${isAdmin() ? ' <b>Admins:</b> link the alerts phone under Admin → Settings → WhatsApp alerts (scan the QR code with a separate number) and pick the dispatch group; new leads post to that group and replies update the CRM, independently of personal notification preferences.' : ''}</li>
       <li><b>🤖 Assistant</b> (menu → Assistant): ask in English or Spanish about leads and numbers (<i>what's waiting for a call?</i>, <i>how did we do this week?</i>), or have it add a note, change a status or set a reminder (<i>remind me tomorrow at 9 to call #12</i>). It acts as you, with your permissions. On WhatsApp, start a message in the group with <b>bot</b>, reply to its answer to keep talking, or message the alerts number privately. Reminders can also be added by hand on the same page.</li>
       <li><b>Working leads from the WhatsApp group:</b> <b>reply</b> to a lead's post to add a note (it shows on the lead as <i>via WhatsApp</i>). The first dispatcher to reply takes the lead. Words like <i>approved / aprobado</i>, <i>passed / pasó</i>, <i>DNQ / no califica</i> or <i>cancelled / cancelado</i> change its status. Add <b>@owner</b> (or <b>@dueño</b>) to send the note to the rep who entered it. No post to reply to? Start with the lead number: <i>#123 approved</i>. Type <b>help</b> or <b>ayuda</b> in the group for the full instructions${isAdmin() ? '; admins can also post them from Admin → Settings → WhatsApp alerts' : ''}.</li>
       <li><b>Call-back reminders:</b> on any lead, tap <b>In 1 hour</b>, <b>Tomorrow 10am</b> or pick a time. You'll get a notification when it's time to call, and your call-backs show on Home.</li></ul>` });
@@ -3141,6 +3659,7 @@
     S.push({ id: 'track', title: 'Following your leads', roles: 'all', body: `
       <table class="help-table"><thead><tr><th>Status</th><th>What it means</th></tr></thead><tbody>
       <tr><td>${pill('New')}</td><td>Just entered; not worked yet.</td></tr>
+      <tr><td>${pill('Working')}</td><td>Being contacted or followed up; qualification is still in progress.</td></tr>
       <tr><td>${pill('Passed')}</td><td>Checked and qualified; being worked.</td></tr>
       <tr><td>${pill('DNQ')}</td><td>Did not qualify.</td></tr>
       <tr><td>${pill('Ordered')}</td><td>The customer ordered. An account number and install date may be added.</td></tr>
@@ -3443,7 +3962,7 @@
     if (me.whatsapp) return '';
     const until = lsGet(`eo-wa-nudge-${me.id}`, 0);
     if (until > Date.now()) return '';
-    return `<div class="help-nudge" id="waNudge"><span>💬 <b>Get your alerts on WhatsApp</b> — ${role() === 'dispatch' ? 'every new lead the second it comes in' : 'orders on your leads, @mentions and reminders'}. Add your number in 30 seconds.</span>
+    return `<div class="help-nudge" id="waNudge"><span>💬 <b>Get your alerts on WhatsApp</b> — orders on your opportunities and owner @mentions. Add your number in 30 seconds.</span>
       <a class="btn small primary" href="#/account">Add my WhatsApp</a><button class="link-btn small" id="waNudgeX" aria-label="Dismiss">Later</button></div>`;
   }
   document.addEventListener('click', (e) => {
@@ -3469,19 +3988,36 @@
 
   // ---------- my account ----------
 
+  async function renderPerson(id) {
+    const data=await api(`/people/${id}`),p=data.person;
+    shell(`<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${managesUsers()?'#/team':'#/referrals'}">${managesUsers()?'People':'Customers'}</a><span aria-hidden="true">/</span><span class="crumb-active">${esc(p.full_name)}</span></nav>
+      <div class="card profile-hero"><div class="profile-avatar" aria-hidden="true">${esc(p.full_name.split(/\s+/).map(n=>n[0]).slice(0,2).join('').toUpperCase())}</div><div class="profile-identity"><p class="eyebrow">Team profile</p><h1>${esc(p.full_name)}</h1><p class="muted profile-handle">@${esc(p.username)}</p><div class="row"><span class="profile-chip">${roleLabel(p.role)}</span>${p.team_name?`<span class="profile-chip">${esc(p.team_name)}</span>`:''}${p.active?'':'<span class="profile-chip">Inactive</span>'}</div></div>${p.id===state.me.id?'<a class="btn small profile-account" href="#/account">Account & preferences</a>':''}</div>
+      <div class="stats profile-stats"><div class="stat"><div class="n">${data.summary.opportunities}</div><div class="l">Opportunities owned</div></div><div class="stat"><div class="n">${data.summary.open}</div><div class="l">Open opportunities</div></div><div class="stat"><div class="n">${data.summary.ordered}</div><div class="l">Ordered</div></div></div>
+      ${sectionLinks([['personActivity','Activity wall'],['personOpportunities','Owned opportunities']],'Profile sections')}
+      <div class="grid-2 profile-layout"><section class="card" id="personActivity"><h2>Activity wall</h2><p class="small muted">Activity on opportunities you can view.</p><ol class="person-feed">${data.activity.map(a=>`<li><div class="feed-marker" aria-hidden="true">${a.kind==='status'?'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 17 17 5M5 5h12v12"/></svg>':'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v12H9l-4 4V4Z"/></svg>'}</div><div class="feed-content"><p class="small muted">${esc(fullDate(a.created_at))}</p><a class="feed-customer" href="#/r/${a.referral_id}">${esc(a.customer_name)}</a><div class="feed-detail">${a.kind==='status'?a.from_status?`<span class="small muted">Status updated</span><div class="row">${pill(a.from_status)}<span aria-label="to">→</span>${pill(a.to_status)}</div>`:'<p class="small muted">Opportunity entered</p>':`<p class="feed-note">${esc(a.body)}</p>`}</div></div></li>`).join('')||'<li class="muted">No visible activity yet.</li>'}</ol></section>
+      <section class="card" id="personOpportunities"><h2>Owned opportunities</h2><p class="small muted">Open a customer to see details and follow up.</p><div class="opportunity-list">${data.leads.map(r=>`<a class="opportunity-row" href="#/r/${r.id}"><span><b>${esc(r.name)}</b><span class="small muted">Customer #${r.id}</span></span>${pill(r.status)}<span aria-hidden="true" class="opportunity-arrow">›</span></a>`).join('')||'<p class="muted">No visible opportunities yet.</p>'}</div></section></div>`);
+  }
+
   async function renderAccount() {
     const me = state.me;
     shell(`
       <div class="narrow narrow-title"><h1 style="margin:0">My account</h1>
-        <p class="muted" style="margin:.2rem 0 0">${esc(me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p></div>
+        <p class="muted" style="margin:.2rem 0 0">${personLink(me.id,me.full_name)} · @${esc(me.username)} · ${roleLabel(me.role)}${me.team_name ? ` · ${esc(me.team_name)}` : ''}</p></div>
       <form class="card narrow" id="waMeForm">
         <h2>💬 WhatsApp alerts</h2>
-        <p class="small muted" style="margin-top:0">Get your alerts as WhatsApp messages too: ${role() === 'dispatch' ? 'every new lead, leads assigned to you' : 'orders on your leads'}, @mentions and call-back reminders.</p>
+        <p class="small muted" style="margin-top:0">WhatsApp alerts are reserved for orders on your opportunities and messages that @mention you as the owner. Routine updates remain in the app. Choose your channels below.</p>
         <div class="field"><label for="waMe">Your WhatsApp number</label><input id="waMe" type="tel" inputmode="tel" autocomplete="tel" placeholder="(512) 555-0142" value="${esc(me.whatsapp || '')}"></div>
         <label class="check" style="margin-top:.6rem"><input type="checkbox" id="waMeOn" ${me.whatsapp_alerts || !me.whatsapp ? 'checked' : ''}> Send my alerts to WhatsApp</label>
         ${me.whatsapp_ready ? '' : '<p class="small muted" style="margin:.4rem 0 0">WhatsApp alerts aren\'t switched on for the app yet. Your number is saved, and alerts start as soon as your admin connects WhatsApp.</p>'}
         <div class="row" style="margin-top:.9rem"><button class="btn primary">Save</button>${me.whatsapp_ready && me.whatsapp ? '<button type="button" class="btn" id="waMeTest">Send me a test</button>' : ''}</div>
       </form>
+      <form class="card narrow" id="notificationPrefsForm">
+        <h2>Notification preferences</h2><p class="small muted">All events stay in your in-app bell. Choose email and phone push alerts by event. WhatsApp is available for urgent owner events only; its number and master switch are above.</p>
+        <div class="table-wrap"><table class="preferences-table"><thead><tr><th scope="col">Event</th><th scope="col">Email</th><th scope="col">Phone push</th><th scope="col">WhatsApp</th></tr></thead><tbody>${Object.entries({ordered:'Lead ordered',owner_mention:'Owner @mentioned',lead_updates:'Other status changes',assignments:'Assignments / entered for you',comments:'Comments / other mentions',new_leads:'New leads',reminders:'Reminders',escalations:'Waiting-lead alerts',coaching_review:'Coaching approvals',general:'Other alerts'}).map(([event,label])=>`<tr><th scope="row">${label}</th>${['email','push','whatsapp'].map((channel)=>{const channelLabel={email:'Email',push:'Phone push',whatsapp:'WhatsApp'}[channel];return `<td data-label="${channelLabel}">${channel!=='whatsapp'||['ordered','owner_mention'].includes(event)?`<label class="pref-choice"><input type="checkbox" data-pref-event="${event}" data-pref-channel="${channel}" aria-label="${label}: ${channelLabel}" ${me.notification_preferences?.events?.[event]?.[channel]?'checked':''}></label>`:'<span class="pref-unavailable muted" aria-label="Not sent on WhatsApp">—</span>'}</td>`;}).join('')}</tr>`).join('')}</tbody></table></div>
+        <label class="check" style="margin-top:1rem"><input id="automaticCoaching" type="checkbox" ${me.notification_preferences?.automatic_coaching?'checked':''}> Opt in to automatic WhatsApp coaching check-ins</label><p class="small muted">Off by default. Manual check-ins and replies to questions you send still work. STOP / ALTO also pauses coaching.</p>
+        <p id="prefsState" class="small" role="status" aria-live="polite"></p><button class="btn primary">Save notification preferences</button>
+      </form>
+      <form class="card narrow" id="energyTrackingForm"><h2>Energy referral attribution</h2><p class="small muted">Your ComparePower team tracking ID credits checkouts for opportunities you own. Leave blank to use the organization default.</p><label for="energyTrackingId">Team tracking ID (cp_afuid)</label><input id="energyTrackingId" maxlength="80" value="${esc(me.comparepower_afuid||'')}"><button class="btn" style="margin-top:.8rem">Save tracking ID</button><p id="energyTrackingState" class="small" role="status"></p></form>
       <form class="card narrow" id="acctForm">
         <h2>Email</h2>
         <div class="field"><label for="em">Email</label><input id="em" type="email" autocapitalize="none" placeholder="you@example.com" value="${esc(me.email)}"></div>
@@ -3501,6 +4037,13 @@
       </div>`);
     document.getElementById('pwBtn').onclick = () => renderChangePassword(false);
     drawPushCard();
+    document.getElementById('notificationPrefsForm').onsubmit=async(e)=>{
+      e.preventDefault();const btn=e.target.querySelector('button:not(.select-value)'),feedback=document.getElementById('prefsState');btn.disabled=true;feedback.textContent='Saving preferences…';
+      const prefs={events:{},automatic_coaching:document.getElementById('automaticCoaching').checked};
+      e.target.querySelectorAll('[data-pref-event]').forEach((el)=>{(prefs.events[el.dataset.prefEvent]||={})[el.dataset.prefChannel]=el.checked;});
+      try{await api('/me/notification-preferences',{method:'PATCH',body:prefs});await refreshMe();feedback.textContent='Notification preferences saved.';}catch(err){feedback.textContent=err.message;}finally{btn.disabled=false;}
+    };
+    document.getElementById('energyTrackingForm').onsubmit=async(e)=>{e.preventDefault();const feedback=document.getElementById('energyTrackingState');try{await api('/me',{method:'PATCH',body:{comparepower_afuid:document.getElementById('energyTrackingId').value}});await refreshMe();feedback.textContent='Tracking ID saved.';}catch(err){feedback.textContent=err.message;}};
     document.getElementById('waMeForm').onsubmit = async (e) => {
       e.preventDefault();
       try {
@@ -3605,8 +4148,8 @@
       <div class="card" style="margin-bottom: 1.2rem;">
         <div class="row between">
           <div>
-            <h1 style="margin:0">Analytics &amp; Intelligence</h1>
-            <p class="muted small" style="margin:.2rem 0 0">Salesforce-inspired reporting engine, custom builder, and automated schedule deliveries.</p>
+            <h1 style="margin:0">Analytics &amp; reports</h1>
+            <p class="muted small" style="margin:.2rem 0 0">Track sales performance, build reports and schedule updates.</p>
           </div>
           <div class="seg" id="analyticsTabSeg">
             <button data-tab="overview" class="${activeTab === 'overview' ? 'on' : ''}">📊 Overview</button>
@@ -3768,212 +4311,127 @@
   }
 
   async function renderReportBuilder(container, opts, reportId) {
-    let report = null;
-    let config = {
-      group_by: query().group_by || 'state',
-      secondary_group_by: '',
-      relative_date: query().relative_date || 'this_month',
-      columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
-      filters: [],
-    };
-
-    if (reportId && Number(reportId) > 0) {
-      try {
-        report = await api(`/reports/${reportId}`);
-        config = report.config || config;
-      } catch (err) { toast(err.message); }
+    let report=null;
+    let config={group_by:query().group_by || 'state',relative_date:query().relative_date || 'this_month',filters:[],columns:['customer_name','status','created_by_name','team_name','current_stage_minutes','new_minutes','working_minutes','passed_minutes']};
+    if (reportId && Number(reportId)>0) {
+      try {report=await api(`/reports/${reportId}`);config={...config,...report.config};}
+      catch(error){container.innerHTML=`<div class="alert err">${esc(error.message)}</div>`;return;}
     }
-
-    container.innerHTML = `
-      <div class="report-builder-layout">
-        <form class="report-config-panel" id="reportBuilderForm">
-          <h2>Report Configuration</h2>
-          <div class="field">
-            <label for="rb_name">Report Name</label>
-            <input id="rb_name" value="${esc(report ? report.name : 'Untitled Sales Report')}" required>
-          </div>
-          <div class="field">
-            <label for="rb_desc">Description</label>
-            <input id="rb_desc" value="${esc(report ? report.description : '')}" placeholder="Optional purpose notes">
-          </div>
-          <div class="field">
-            <label for="rb_group">Primary Grouping</label>
-            <select id="rb_group">
-              <option value="">None (Flat List)</option>
-              <option value="state" ${config.group_by === 'state' ? 'selected' : ''}>State / Territory</option>
-              <option value="status" ${config.group_by === 'status' ? 'selected' : ''}>Status</option>
-              <option value="created_by_name" ${config.group_by === 'created_by_name' ? 'selected' : ''}>Sales Representative</option>
-              <option value="team_name" ${config.group_by === 'team_name' ? 'selected' : ''}>Team</option>
-              <option value="services" ${config.group_by === 'services' ? 'selected' : ''}>Service Type</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="rb_sec_group">Secondary Grouping</label>
-            <select id="rb_sec_group">
-              <option value="">None</option>
-              <option value="status" ${config.secondary_group_by === 'status' ? 'selected' : ''}>Status</option>
-              <option value="state" ${config.secondary_group_by === 'state' ? 'selected' : ''}>State</option>
-              <option value="services" ${config.secondary_group_by === 'services' ? 'selected' : ''}>Service Type</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="rb_rel_date">Date Range Preset</label>
-            <select id="rb_rel_date">
-              <option value="">All Time</option>
-              ${opts.date_presets.map((p) => `<option value="${p.id}" ${config.relative_date === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
-            </select>
-          </div>
-          <label class="check" style="margin-top:.8rem;">
-            <input type="checkbox" id="rb_public" ${report && report.is_public ? 'checked' : ''}> Make report visible to team (Public)
-          </label>
-          <div class="row" style="margin-top:1.2rem">
-            <button type="submit" class="btn primary">Run &amp; Update Preview</button>
-            <button type="button" class="btn" id="saveReportBtn">Save Report</button>
-          </div>
-        </form>
-        <div class="report-preview-panel">
-          <div class="row between" style="margin-bottom:1rem">
-            <div>
-              <h2 id="prevTitle" style="margin:0">${esc(report ? report.name : 'Report Preview')}</h2>
-              <span class="small muted" id="prevSubtitle">Run query to view matrix output</span>
-            </div>
-            <div class="row">
-              <button class="btn small" id="exportReportCsv">⬇ Export CSV</button>
-              ${report ? `<button class="btn small primary" id="scheduleReportBtn">📅 Schedule Delivery</button>` : ''}
-            </div>
-          </div>
-          <div id="reportPreviewResults">
-            <p class="muted">Click "Run &amp; Update Preview" to execute custom aggregation query.</p>
-          </div>
-        </div>
-      </div>
-    `;
-
-    const form = document.getElementById('reportBuilderForm');
-    const prevResults = document.getElementById('reportPreviewResults');
-
-    const runPreview = async () => {
-      const cfg = {
-        group_by: document.getElementById('rb_group').value,
-        secondary_group_by: document.getElementById('rb_sec_group').value,
-        relative_date: document.getElementById('rb_rel_date').value,
-        columns: ['id', 'created_at', 'customer_name', 'phone', 'email', 'address', 'state', 'services', 'status', 'created_by_name', 'team_name'],
-      };
-
+    const fields=opts.report_fields || [];
+    if (!container.isConnected) return;
+    const byKey=new Map(fields.map(f=>[f.key,f]));
+    let columns=[...(config.columns || [])].filter(key=>byKey.has(key));
+    let filters=(config.filters || []).map(f=>({...f,field:f.field==='service'?'services':f.field,op:f.op || (Array.isArray(f.value)?'in':f.field==='service'?'contains':'eq')}));
+    const fieldOptions=(chosen,predicate=()=>true)=>fields.filter(predicate).map(f=>`<option value="${f.key}" ${chosen===f.key?'selected':''}>${esc(f.label)}</option>`).join('');
+    const mobileBuilder=window.matchMedia('(max-width: 960px)').matches;
+    container.innerHTML=`<div class="report-builder-layout">
+      <details class="report-config-disclosure" id="rb_disclosure" ${mobileBuilder?'':'open'}><summary>Configure report · fields and filters</summary>
+      <form class="report-config-panel" id="reportBuilderForm">
+        <h2>Build your report</h2><p class="small muted">Customer, opportunity, owner, order, and activity fields in one view.</p>
+        <div class="field"><label for="rb_name">Report name</label><input id="rb_name" required maxlength="150" value="${esc(report?.name || 'Opportunity stage report')}"></div>
+        <details class="report-section"><summary>Description &amp; sharing</summary><div class="field"><label for="rb_desc">Description</label><input id="rb_desc" value="${esc(report?.description || '')}" maxlength="500"></div><label class="check"><input type="checkbox" id="rb_public" ${report?.is_public?'checked':''}>Share this report definition</label><p class="small muted">Each person sees only the records their permissions allow.</p></details>
+        <div class="report-run-actions"><button class="btn primary" type="submit">Run report</button><button class="btn" type="button" id="saveReportBtn">Save report</button></div><p id="rb_action_status" class="small" role="status" aria-live="polite"></p>
+        <details class="report-section" open><summary>Columns <span id="rb_column_count"></span></summary><label class="small" for="rb_field_search">Find a field</label><input type="search" id="rb_field_search" placeholder="Try owner, account, or minutes"><div id="rb_available_fields" class="report-field-picker"></div><p class="small muted">Column order</p><ol id="rb_selected_fields" class="report-selected-fields"></ol></details>
+        <details class="report-section" open><summary>Filters</summary><div class="field"><label for="rb_filter_logic">Match</label><select id="rb_filter_logic"><option value="all">All filters</option><option value="any" ${config.filter_logic==='any'?'selected':''}>Any filter</option></select></div><div id="rb_filters"></div><button class="btn small" type="button" id="rb_add_filter">+ Add filter</button></details>
+        <details class="report-section"><summary>Dates</summary><div class="field"><label for="rb_date_field">Date field</label><select id="rb_date_field">${fieldOptions(config.date_field || 'created_at',f=>f.type==='date')}</select></div><div class="field"><label for="rb_rel_date">Date range</label><select id="rb_rel_date"><option value="">All time / custom range</option>${opts.date_presets.map(p=>`<option value="${p.id}" ${p.id===config.relative_date?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="report-date-range" id="rb_custom_dates"><div class="field"><label for="rb_from">From</label><input id="rb_from" type="date" value="${esc(config.from || '')}"></div><div class="field"><label for="rb_to">Through</label><input id="rb_to" type="date" value="${esc(config.to || '')}"></div></div></details>
+        <details class="report-section"><summary>Grouping &amp; sorting</summary><div class="field"><label for="rb_group">Group by</label><select id="rb_group"><option value="">No grouping</option>${fieldOptions(config.group_by,f=>f.type==='text')}</select></div><div class="field"><label for="rb_sec_group">Then group by</label><select id="rb_sec_group"><option value="">None</option>${fieldOptions(config.secondary_group_by,f=>f.type==='text')}</select></div><div class="field"><label for="rb_sort">Sort records by</label><select id="rb_sort">${fieldOptions(config.sort_by || 'created_at')}</select></div><div class="field"><label for="rb_direction">Direction</label><select id="rb_direction"><option value="desc">Descending / newest first</option><option value="asc" ${config.sort_direction==='asc'?'selected':''}>Ascending / oldest first</option></select></div><div class="field"><label for="rb_measure">Calculate a field (optional)</label><select id="rb_measure"><option value="">No additional calculation</option>${fieldOptions(config.calc_field,f=>f.type==='number')}</select></div><div class="field"><label for="rb_calc">Calculation</label><select id="rb_calc">${[['sum','Sum'],['avg','Average'],['min','Minimum'],['max','Maximum']].map(([value,label])=>`<option value="${value}" ${(config.calc_function || 'sum')===value?'selected':''}>${label}</option>`).join('')}</select></div></details>
+      </form></details>
+      <section class="report-preview-panel" aria-label="Report preview"><div class="row between"><div><h2 id="prevTitle">${esc(report?.name || 'Report preview')}</h2><p class="small muted" id="prevSubtitle" role="status" aria-live="polite">Preparing preview…</p></div><div class="row"><button class="btn small" id="exportReportCsv">Download CSV</button>${report?'<button class="btn small" id="scheduleReportBtn">Schedule delivery</button>':''}</div></div><div id="reportPreviewResults"></div></section>
+    </div>`;
+    const find=id=>container.querySelector('#'+id);
+    reportMediaCleanup?.();
+    const reportMedia=window.matchMedia('(max-width: 960px)');
+    const adaptReport=event=>{if(!event.matches && container.isConnected)find('rb_disclosure').open=true;};
+    reportMedia.addEventListener('change',adaptReport);
+    reportMediaCleanup=()=>reportMedia.removeEventListener('change',adaptReport);
+    const status=message=>{find('rb_action_status').textContent=message;};
+    const drawColumns=()=>{
+      const term=find('rb_field_search').value.toLowerCase();
+      const groups=[...new Set(fields.map(f=>f.group))];
+      find('rb_available_fields').innerHTML=groups.map(group=>{
+        const visible=fields.filter(f=>f.group===group && `${f.label} ${f.group}`.toLowerCase().includes(term));
+        return visible.length?`<fieldset><legend>${esc(group)}</legend>${visible.map(f=>`<label class="check"><input type="checkbox" data-report-field="${f.key}" ${columns.includes(f.key)?'checked':''}>${esc(f.label)}</label>`).join('')}</fieldset>`:'';
+      }).join('') || '<p class="small muted">No matching fields.</p>';
+      find('rb_column_count').textContent=`(${columns.length})`;
+      find('rb_selected_fields').innerHTML=columns.map((key,i)=>`<li><span>${esc(byKey.get(key).label)}</span><div><button type="button" class="icon-btn" data-column-move="${i}" data-dir="-1" ${i===0?'disabled':''} aria-label="Move ${esc(byKey.get(key).label)} up">↑</button><button type="button" class="icon-btn" data-column-move="${i}" data-dir="1" ${i===columns.length-1?'disabled':''} aria-label="Move ${esc(byKey.get(key).label)} down">↓</button></div></li>`).join('') || '<li>Select at least one field above.</li>';
+      find('rb_available_fields').querySelectorAll('[data-report-field]').forEach(input=>input.onchange=()=>{
+        columns=input.checked?[...columns,input.dataset.reportField]:columns.filter(key=>key!==input.dataset.reportField);drawColumns();status('Columns changed. Run report to refresh the preview.');
+      });
+      find('rb_selected_fields').querySelectorAll('[data-column-move]').forEach(button=>button.onclick=()=>{
+        const i=Number(button.dataset.columnMove),j=i+Number(button.dataset.dir);[columns[i],columns[j]]=[columns[j],columns[i]];drawColumns();status('Column order changed.');
+      });
+    };
+    const operators=[['eq','Equals'],['ne','Does not equal'],['contains','Contains'],['not_contains','Does not contain'],['gt','Greater than / after'],['gte','At least / on or after'],['lt','Less than / before'],['lte','At most / on or before'],['empty','Is empty'],['not_empty','Is not empty'],['in','Is one of (comma separated)']];
+    const drawFilters=()=>{
+      find('rb_filters').innerHTML=filters.map((f,i)=>{
+        const def=byKey.get(f.field), blank=['empty','not_empty'].includes(f.op);
+        const choices=f.field==='status'?opts.statuses:f.field==='created_by_name'?opts.reps.map(p=>p.full_name):f.field==='team_name'?opts.teams.map(t=>t.name):f.field==='services'?opts.services:[];
+        return `<fieldset class="report-filter"><legend>Filter ${i+1}</legend><label for="filter_field_${i}">Field</label><select id="filter_field_${i}" data-filter-field="${i}">${fieldOptions(f.field)}</select><label for="filter_op_${i}">Condition</label><select id="filter_op_${i}" data-filter-op="${i}">${operators.filter(([op])=>def?.type==='text' || !['contains','not_contains'].includes(op)).map(([op,label])=>`<option value="${op}" ${op===f.op?'selected':''}>${label}</option>`).join('')}</select><label for="filter_value_${i}" ${blank?'hidden':''}>Value${f.op==='in'?'s':''}</label><input id="filter_value_${i}" data-filter-value="${i}" ${blank?'hidden':''} type="${f.op==='in'?'text':def?.type==='number'?'number':def?.type==='date'?'date':'text'}" ${def?.type==='number'?'step="any"':''} value="${esc(Array.isArray(f.value)?f.value.join(', '):f.value ?? '')}" list="filter_choices_${i}"><datalist id="filter_choices_${i}">${choices.map(v=>`<option value="${esc(v)}">`).join('')}</datalist><button type="button" class="btn small" data-filter-remove="${i}" aria-label="Remove filter ${i+1}">Remove</button></fieldset>`;
+      }).join('') || '<p class="small muted">No field filters. All permitted records in the date range are included.</p>';
+      find('rb_filters').querySelectorAll('[data-filter-field]').forEach(input=>input.onchange=()=>{const f=filters[input.dataset.filterField];f.field=input.value;f.value='';f.op=f.field==='services'?'contains':'eq';drawFilters();});
+      find('rb_filters').querySelectorAll('[data-filter-op]').forEach(input=>input.onchange=()=>{filters[input.dataset.filterOp].op=input.value;drawFilters();});
+      find('rb_filters').querySelectorAll('[data-filter-value]').forEach(input=>input.oninput=()=>{filters[input.dataset.filterValue].value=input.value;});
+      find('rb_filters').querySelectorAll('[data-filter-remove]').forEach(button=>button.onclick=()=>{filters.splice(Number(button.dataset.filterRemove),1);drawFilters();});
+    };
+    const getConfig=()=>{
+      if (!columns.length) throw new Error('Choose at least one report column.');
+      return {data_source:'referrals',columns:[...columns],filters:filters.map(f=>({...f,value:f.op==='in'?(Array.isArray(f.value)?f.value:String(f.value).split(',').map(v=>v.trim()).filter(Boolean)):f.value})),filter_logic:find('rb_filter_logic').value,
+        date_field:find('rb_date_field').value,relative_date:find('rb_rel_date').value,from:find('rb_rel_date').value?null:find('rb_from').value || null,to:find('rb_rel_date').value?null:find('rb_to').value || null,
+        group_by:find('rb_group').value,secondary_group_by:find('rb_sec_group').value,sort_by:find('rb_sort').value,sort_direction:find('rb_direction').value,calc_field:find('rb_measure').value,calc_function:find('rb_calc').value};
+    };
+    const formatCell=(r,key)=>{
+      const value=r[key];
+      if (value==null || value==='') return '<span class="muted">—</span>';
+      if (key==='status') return pill(value);
+      if (key==='customer_name') return `<a href="#/r/${r.id}">${esc(value)}</a>`;
+      if (key==='created_by_name') return personLink(r.created_by,value);
+      if (key==='assigned_name') return personLink(r.assigned_to,value);
+      if (key.endsWith('_minutes')) return `<span title="${esc(value)} minutes">${stageDuration(value)}</span>`;
+      if (byKey.get(key)?.type==='date') return esc(/^\d{4}-\d{2}-\d{2}$/.test(value)?usDate(value):fullDate(value));
+      return esc(value);
+    };
+    const metricText=metric=>metric?`${metric.operation==='avg'?'Average':metric.operation==='min'?'Minimum':metric.operation==='max'?'Maximum':'Sum'} · ${byKey.get(metric.field)?.label || metric.field}`:'';
+    const metricValue=metric=>metric?.value==null?'—':metric.field.endsWith('_minutes')?stageDuration(metric.value):metric.value.toLocaleString();
+    let previewSequence=0;
+    const runPreview=async()=>{
+      const sequence=++previewSequence;
+      find('prevSubtitle').textContent='Running report…';find('reportPreviewResults').setAttribute('aria-busy','true');
       try {
-        const res = await api(reportId ? `/reports/${reportId}/run` : '/reports/0/run', {
-          method: 'POST',
-          body: { config: cfg },
-        });
-
-        document.getElementById('prevSubtitle').textContent = `Matched ${res.total_records} records · Overall Conversion: ${res.totals.conversion_rate}%`;
-
-        if (cfg.group_by && res.summary) {
-          prevResults.innerHTML = `
-            <div class="table-wrap">
-              <table class="matrix-table">
-                <thead>
-                  <tr>
-                    <th>${esc(cfg.group_by.toUpperCase())}</th>
-                    <th class="num">TOTAL LEADS</th>
-                    <th class="num">ORDERED</th>
-                    <th class="num">CONVERSION</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${res.summary.map((g) => `
-                    <tr>
-                      <td><b>${esc(g.group)}</b></td>
-                      <td class="num">${g.count}</td>
-                      <td class="num"><b>${g.ordered}</b></td>
-                      <td class="num">${g.conversion_rate}%</td>
-                    </tr>
-                    ${(g.subgroups || []).map((s) => `
-                      <tr class="matrix-subrow">
-                        <td style="padding-left: 1.8rem;">↳ ${esc(s.group)}</td>
-                        <td class="num">${s.count}</td>
-                        <td class="num">${s.ordered}</td>
-                        <td class="num">${s.conversion_rate}%</td>
-                      </tr>
-                    `).join('')}
-                  `).join('')}
-                  <tr class="matrix-total">
-                    <td>GRAND TOTAL</td>
-                    <td class="num">${res.totals.total_records}</td>
-                    <td class="num">${res.totals.ordered_count}</td>
-                    <td class="num">${res.totals.conversion_rate}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          `;
-        } else {
-          prevResults.innerHTML = `
-            <div class="table-wrap">
-              <table class="rtable">
-                <thead><tr><th>Customer</th><th>Status</th><th>State</th><th>Rep</th><th>Services</th></tr></thead>
-                <tbody>
-                  ${res.rows.map((r) => `
-                    <tr>
-                      <td><b>${esc(leadName(r))}</b></td>
-                      <td>${pill(r.status)}</td>
-                      <td>${esc(r.state)}</td>
-                      <td>${esc(r.created_by_name)}</td>
-                      <td>${svcTags(r.services)}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          `;
-        }
-      } catch (err) {
-        prevResults.innerHTML = `<div class="alert err">${esc(err.message)}</div>`;
-      }
+        const cfg=getConfig();
+        const result=await api(reportId?`/reports/${reportId}/run`:'/reports/0/run',{method:'POST',body:{config:cfg}});
+        if(sequence!==previewSequence || !container.isConnected)return;
+        find('prevTitle').textContent=find('rb_name').value || 'Report preview';
+        find('prevSubtitle').textContent=`${result.total_records.toLocaleString()} matched · ${result.rows.length.toLocaleString()} shown${result.query_truncated?' · Query capped at 10,000; narrow the filters':''}${result.total_records>result.rows.length?' · CSV includes up to 10,000 records':''}`;
+        find('reportPreviewResults').innerHTML=`<div class="report-metrics"><div><strong>${result.total_records.toLocaleString()}</strong><span>Opportunities</span></div><div><strong>${result.totals.ordered_count.toLocaleString()}</strong><span>Ordered</span></div><div><strong>${result.totals.conversion_rate}%</strong><span>Conversion</span></div><div><strong>${stageDuration(result.totals.avg_open_minutes)}</strong><span>Average open time</span></div></div>
+          ${result.totals.metric?`<p class="report-measure"><b>${esc(metricText(result.totals.metric))}: ${esc(metricValue(result.totals.metric))}</b><span class="small muted"> · ${result.totals.metric.sample_count} measured records</span></p>`:''}
+          ${cfg.group_by && result.summary?`<details open class="report-section"><summary>Summary by ${esc(byKey.get(cfg.group_by)?.label || cfg.group_by)}</summary><div class="table-wrap" tabindex="0" role="region" aria-label="Grouped report summary"><table class="matrix-table"><thead><tr><th>Group</th><th>Leads</th><th>Ordered</th><th>Conversion</th><th>Avg. open time</th>${cfg.calc_field?`<th>${esc(metricText(result.totals.metric))}</th>`:''}</tr></thead><tbody>${result.summary.map(g=>`<tr><td>${esc(g.group)}</td><td>${g.count}</td><td>${g.ordered}</td><td>${g.conversion_rate}%</td><td>${stageDuration(g.avg_open_minutes)}</td>${cfg.calc_field?`<td>${esc(metricValue(g.metric))}</td>`:''}</tr>${(g.subgroups || []).map(s=>`<tr class="matrix-subrow"><td>↳ ${esc(s.group)}</td><td>${s.count}</td><td>${s.ordered}</td><td>${s.conversion_rate}%</td><td>—</td>${cfg.calc_field?'<td>—</td>':''}</tr>`).join('')}`).join('')}</tbody></table></div></details>`:''}
+          ${result.totals.incomplete_history_count?`<p class="alert warn small">${result.totals.incomplete_history_count} records have incomplete stage history and are excluded from timing averages.</p>`:''}<h3>Records</h3><div class="table-wrap report-records" tabindex="0" role="region" aria-label="Selected report columns"><table class="report-data-table"><thead><tr>${cfg.columns.map(key=>`<th scope="col">${esc(byKey.get(key).label)}</th>`).join('')}</tr></thead><tbody>${result.rows.map(r=>`<tr>${cfg.columns.map(key=>`<td>${formatCell(r,key)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cfg.columns.length}">No records match these filters.</td></tr>`}</tbody></table></div><p class="small muted">Stage times use elapsed minutes. Missing historical time cannot be reconstructed. CSV keeps the numeric minute values.</p>`;
+        status('Preview is up to date.');
+      } catch(error) {if(sequence===previewSequence){find('prevSubtitle').textContent='Report needs attention';find('reportPreviewResults').innerHTML=`<div class="alert err">${esc(error.message)}</div>`;}}
+      finally {if(sequence===previewSequence && container.isConnected)find('reportPreviewResults').removeAttribute('aria-busy');}
     };
-
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      runPreview();
-    };
-
-    document.getElementById('saveReportBtn').onclick = async () => {
-      const body = {
-        name: document.getElementById('rb_name').value,
-        description: document.getElementById('rb_desc').value,
-        is_public: document.getElementById('rb_public').checked,
-        config: {
-          group_by: document.getElementById('rb_group').value,
-          secondary_group_by: document.getElementById('rb_sec_group').value,
-          relative_date: document.getElementById('rb_rel_date').value,
-        },
-      };
-
-      try {
-        if (reportId) {
-          await api(`/reports/${reportId}`, { method: 'PATCH', body });
-          toast('Report updated');
-        } else {
-          const r = await api('/reports', { method: 'POST', body });
-          toast('Report created');
-          location.hash = `#/analytics?tab=builder&report_id=${r.id}`;
-        }
-      } catch (err) { toast(err.message); }
-    };
-
-    document.getElementById('exportReportCsv').onclick = () => {
-      if (reportId) location.href = `/api/reports/${reportId}/export`;
-      else toast('Please save the report first to export CSV.');
-    };
-
-    const schedBtn = document.getElementById('scheduleReportBtn');
-    if (schedBtn) {
-      schedBtn.onclick = () => {
-        openScheduleModal(reportId, opts);
-      };
-    }
-
-    runPreview();
+    const busy=async(button,work)=>{button.disabled=true;try {await work();}catch(error){status(error.message);toast(error.message);}finally{button.disabled=false;}};
+    find('reportBuilderForm').onsubmit=e=>{e.preventDefault();busy(find('reportBuilderForm').querySelector('[type="submit"]'),async()=>{await runPreview();if(window.matchMedia('(max-width: 960px)').matches){find('rb_disclosure').open=false;find('prevTitle').scrollIntoView({block:'start'});}});};
+    find('saveReportBtn').onclick=()=>busy(find('saveReportBtn'),async()=>{
+      if(!find('reportBuilderForm').reportValidity())return;
+      status('Saving report…');
+      const body={name:find('rb_name').value,description:find('rb_desc').value,is_public:find('rb_public').checked,config:getConfig()};
+      if(reportId){await api(`/reports/${reportId}`,{method:'PATCH',body});status('Report saved, including columns and filters.');toast('Report saved');}
+      else{const saved=await api('/reports',{method:'POST',body});toast('Report saved');location.hash=`#/analytics?tab=builder&report_id=${saved.id}`;}
+    });
+    find('exportReportCsv').onclick=()=>busy(find('exportReportCsv'),async()=>{
+      status('Preparing CSV with your current columns and filters…');
+      const response=await fetch('/api/reports/export',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:getConfig()})});
+      if(!response.ok){const error=await response.json();throw new Error(error.error || 'Export failed.');}
+      const url=URL.createObjectURL(await response.blob()),anchor=document.createElement('a');anchor.href=url;anchor.download='opportunity_report.csv';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);status('CSV downloaded with your current settings.');
+    });
+    const toggleDates=()=>{find('rb_custom_dates').hidden=!!find('rb_rel_date').value;};
+    find('rb_rel_date').onchange=toggleDates;toggleDates();
+    find('rb_field_search').oninput=drawColumns;
+    find('rb_add_filter').onclick=()=>{if(filters.length>=30){toast('Use up to 30 filters.');return;}filters.push({field:'status',op:'eq',value:''});drawFilters();find(`filter_field_${filters.length-1}`).focus();};
+    find('scheduleReportBtn')?.addEventListener('click',()=>openScheduleModal(reportId,opts));
+    find('reportBuilderForm').addEventListener('change',()=>status('Settings changed. Run report to refresh the preview.'));
+    drawColumns();drawFilters();runPreview();
   }
 
   function renderScheduledReports(container, schedules, reports) {
@@ -4171,6 +4629,7 @@
     try {
       let m;
       if ((m = h.match(/^#\/r\/(\d+)$/))) return await renderReferral(m[1]);
+      if ((m = h.match(/^#\/people\/(\d+)$/))) return await renderPerson(m[1]);
       if (h === '#/referrals') return await renderReferrals();
       if (h === '#/board') return await renderBoard();
       if (h === '#/duplicates') return await renderDuplicates();

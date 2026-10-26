@@ -20,6 +20,7 @@
     "@anthropic-ai/sdk": "0.131.0",
     "@whiskeysockets/baileys": "6.7.24",
     "express": "^4.22.3",
+    "pdfjs-dist": "6.3.289",
     "qrcode": "1.5.4",
     "web-push": "^3.6.7"
   },
