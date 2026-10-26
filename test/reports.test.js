@@ -163,3 +163,49 @@ test('scheduled reports await delivery, keep CSV attachments, and restrict test/
   assert.equal(failure.body.recipients, 0);
   assert.match(failure.body.error, /Domain is not verified/);
 });
+
+test('all business report fields support filters, sorting, saved settings, and current-config exports', async(t)=>{
+  const s=await setup();t.after(()=>s.server.close());
+  const first=await s.admin.post('/referrals',{name:'Alice Smith',phone:'5125559000',address:'100 Main St Austin TX 78701',services:['Internet'],company:'Growth 100%_Company',est_monthly_value:0});
+  const second=await s.admin.post('/referrals',{name:'Bob Jones',phone:'5125559001',address:'200 Oak St Austin TX 78701',services:['TV'],company:'Growth other Company',est_monthly_value:95});
+  assert.equal(first.status,201,JSON.stringify(first.body));assert.equal(second.status,201,JSON.stringify(second.body));
+  const opts=await s.admin.get('/filter-options');
+  assert.ok(opts.body.report_fields.length>50);assert.ok(opts.body.report_fields.some(f=>f.key==='working_minutes'));
+  assert.ok(opts.body.report_fields.every(f=>!f.sql));
+  const cfg={columns:['order_reference','customer_name','est_monthly_value','working_minutes','created_by_name','document_count'],sort_by:'est_monthly_value',sort_direction:'asc',filters:[{field:'est_monthly_value',op:'gte',value:0}]};
+  let result=await s.admin.post('/reports/0/run',{config:cfg});assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.rows[0].id,first.body.id);assert.equal(result.body.rows[1].id,second.body.id);
+  result=await s.admin.post('/reports/0/run',{config:{...cfg,filters:[{field:'company',op:'contains',value:'100%_'}]}});
+  assert.equal(result.body.total_records,1);assert.equal(result.body.rows[0].id,first.body.id);
+  result=await s.admin.post('/reports/0/run',{config:{...cfg,filter_logic:'any',filters:[{field:'est_monthly_value',value:0},{field:'customer_name',value:'Bob Jones'}]}});assert.equal(result.body.total_records,2);
+  result=await s.admin.post('/reports/0/run',{config:{...cfg,filters:[{field:'account_number',op:'empty'}]}});assert.equal(result.body.total_records,2);
+  result=await s.admin.post('/reports/0/run',{config:{...cfg,group_by:'status',calc_field:'est_monthly_value',calc_function:'avg'}});
+  assert.equal(result.body.totals.metric.value,47.5);assert.equal(result.body.totals.metric.sample_count,2);assert.equal(result.body.summary[0].metric.value,47.5);
+  result=await s.admin.post('/reports/0/run',{config:{...cfg,group_by:'est_monthly_value'}});assert.deepEqual(result.body.summary.map(g=>g.group),['0','95']);
+  const saved=await s.admin.post('/reports',{name:'Full field report',config:cfg});assert.equal(saved.status,201);
+  const reloaded=await s.admin.get(`/reports/${saved.body.id}`);assert.deepEqual(reloaded.body.config,cfg);
+  const base=`http://127.0.0.1:${s.server.address().port}`;
+  const download=await fetch(base+'/api/reports/export',{method:'POST',headers:{Cookie:s.admin.getCookie(),'Content-Type':'application/json'},body:JSON.stringify({config:{...cfg,filters:[{field:'est_monthly_value',value:0}]}})});
+  assert.equal(download.status,200);const csv=await download.text();assert.ok(csv.startsWith('"order_reference","customer_name","est_monthly_value","working_minutes","created_by_name","document_count"'));
+  assert.ok(csv.includes('Alice Smith'));assert.ok(!csv.includes('Bob Jones'));
+  const detail=await s.admin.get(`/referrals/${first.body.id}`);assert.ok(detail.body.stage_timing.running);const entered=detail.body.stage_timing.current_started_at;
+  await s.admin.patch(`/referrals/${first.body.id}`,{notes:'Contact after 5'});assert.equal((await s.admin.get(`/referrals/${first.body.id}`)).body.stage_timing.current_started_at,entered);
+});
+
+test('report validation rejects unsafe identifiers and preserves scoping for any filters and public definitions',async(t)=>{
+  const s=await setup();t.after(()=>s.server.close());
+  const team=await s.admin.post('/teams',{name:'Scoped team'});
+  const user=await s.admin.post('/users',{username:'scoped',full_name:'Scoped Seller',role:'rep',team_id:team.body.id});
+  const rep=s.client();await rep.login('scoped',user.body.temp_password,'scoped-pass-123');
+  const other=await s.admin.post('/referrals',{name:'Other customer',phone:'5125559100'});
+  const own=await rep.post('/referrals',{name:'My customer',phone:'5125559101'});assert.equal(own.status,201);
+  for(const config of [
+    {data_source:'users'},{date_field:"created_at) OR 1=1 --"},{columns:['password_hash']},{sort_by:'raw_text'},
+    {filters:[{field:'status',op:'sql',value:'New'}]},{filters:[{field:'working_minutes',value:'abc'}]},
+    {calc_field:'customer_name'},{calc_field:'working_minutes',calc_function:'invalid'},
+    {filters:[null]},{from:'2026-02-30'},{from:'2026-10-10',to:'2026-10-01'},
+  ]){const res=await rep.post('/reports/0/run',{config});assert.equal(res.status,400,JSON.stringify(res.body));}
+  const bad=await rep.post('/reports',{name:'Bad source',config:{data_source:'users'}});assert.equal(bad.status,400);
+  const shared=await s.admin.post('/reports',{name:'Shared opportunities',is_public:true,config:{filter_logic:'any',filters:[{field:'customer_name',value:'Other customer'},{field:'customer_name',value:'My customer'}]}});
+  const result=await rep.post(`/reports/${shared.body.id}/run`);assert.equal(result.status,200);assert.deepEqual(result.body.rows.map(r=>r.id),[own.body.id]);assert.ok(!result.body.rows.some(r=>r.id===other.body.id));
+  const options=await rep.get('/filter-options');const all=await rep.post('/reports/0/run',{config:{columns:options.body.report_fields.map(f=>f.key)}});assert.equal(all.status,200);assert.equal(all.body.total_records,1);assert.ok(!('password_hash' in all.body.rows[0]));
+});

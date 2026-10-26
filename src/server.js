@@ -18,9 +18,16 @@ setInterval(() => {
 }, 60000).unref();
 // WhatsApp alerts reconnect by themselves if an admin linked a phone.
 app.locals.whatsapp.start();
-const stopAll = () => { app.locals.whatsapp.stop(); process.exit(0); };
+let stopping=false;
+const stopAll = async () => {
+  if(stopping)return;stopping=true;server.close();
+  const deadline=setTimeout(()=>process.exit(1),8000);deadline.unref();
+  try{await app.locals.whatsapp.stop();}
+  catch(e){console.error('WhatsApp shutdown could not finish:',e.message);}
+  finally{clearTimeout(deadline);process.exit(0);}
+};
 process.on('SIGTERM', stopAll);
 process.on('SIGINT', stopAll);
-app.listen(port, () => {
+const server=app.listen(port, () => {
   console.log(`E&O Spectrum Referrals running on http://localhost:${port}`);
 });

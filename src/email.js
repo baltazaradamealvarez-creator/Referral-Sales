@@ -110,7 +110,7 @@ function quickStart(role) {
   const tips = [
     'Include at least a <b>phone, email or address</b> — that’s how duplicates are checked.',
     'If the lead already exists anywhere in the company, you’ll see <i>“This lead is a duplicate and cannot be entered.”</i>',
-    'Follow each lead’s status (New → Passed → Ordered, or DNQ / Cancelled) under <b>My Referrals</b>, and watch the bell for updates.',
+    'Follow each lead’s status (New → Working → Passed → Ordered, or DNQ / Cancelled) under <b>My Referrals</b>, and watch the bell for updates.',
     'Use <b>@name</b> in a lead’s comments to flag something to a manager or dispatcher.',
     'On your phone, open the link and choose <b>Add to Home Screen</b> so it opens like an app.',
   ];

@@ -36,6 +36,7 @@ async function setup(t) {
   const make=async(role='rep',number)=>{
     const username=`person${++n}`;const u=(await a.post('/users',{username,full_name:`Person ${n}`,role,team_id:team})).body;
     const c=client();await c.post('/login',{username,password:u.temp_password});await c.post('/me/password',{current:u.temp_password,next:'seller-password-123'});
+    await c.patch('/me/notification-preferences',{automatic_coaching:true});
     if(number)await c.patch('/me',{whatsapp:number,whatsapp_alerts:true});
     return {id:u.id,c,u:db.prepare('SELECT * FROM users WHERE id=?').get(u.id)};
   };
@@ -48,18 +49,22 @@ async function setup(t) {
 test('coaching cadence: weekdays, inactivity, opt-in, cooldown; manual preview and queued sends',async(t)=>{
   const {db,app,a,wa,make,settle}=await setup(t);
   const inactive=await make('rep','512-555-0191');const recent=await make('rep','512-555-0192');const noAlerts=await make('rep','512-555-0193');
-  await noAlerts.c.patch('/me',{whatsapp_alerts:false});await make('manager','512-555-0194');
+  await noAlerts.c.patch('/me',{whatsapp_alerts:false});const manager=await make('manager','512-555-0194');await make('dispatch','512-555-0195');
+  const noCoaching=await make('rep','512-555-0196');await noCoaching.c.patch('/me/notification-preferences',{automatic_coaching:false});
   const now=zonedToUtc(2026,10,5,11,'America/Chicago');
   const lead=(await recent.c.post('/referrals',{name:'Jane Smith',phone:'512-867-5309'})).body;
   db.prepare('UPDATE referrals SET created_at=? WHERE id=?').run(new Date(now-3600000).toISOString().slice(0,19).replace('T',' '),lead.id);
   assert.deepEqual(app.locals.coach.tick(zonedToUtc(2026,10,4,11,'America/Chicago')),[],'no Sunday check-ins');
   assert.deepEqual(app.locals.coach.tick(zonedToUtc(2026,10,5,10,'America/Chicago')),[],'not before scheduled time');
-  assert.deepEqual(app.locals.coach.tick(now),[inactive.id]);
+  assert.deepEqual(app.locals.coach.tick(now),[inactive.id,manager.id]);
   assert.deepEqual(app.locals.coach.tick(now+60000),[],'no duplicate tick sends');
   await settle();
   assert.ok(wa.sent.some((m)=>m.jid==='15125550191@s.whatsapp.net'&&m.text.includes('Have any customer leads ready?')));
   assert.ok(db.prepare('SELECT last_sent_at FROM coach_contacts WHERE user_id=?').get(inactive.id).last_sent_at);
+  assert.ok(!wa.sent.some(m=>m.jid==='15125550196@s.whatsapp.net'),'automatic check-ins need the separate personal opt-in');
   t.mock.method(Date,'now',()=>now);
+  assert.equal((await a.get(`/coach/sellers/${noCoaching.id}/preview`)).body.blocked,'');
+  assert.equal((await a.post(`/coach/sellers/${noCoaching.id}/checkin`)).body.queued,true,'manual check-ins remain available without an automatic opt-in');
   const preview=await a.get(`/coach/sellers/${recent.id}/preview`);assert.equal(preview.status,200);assert.ok(!containsComp(preview.body.text));
   const sent=await a.post(`/coach/sellers/${recent.id}/checkin`);assert.equal(sent.body.queued,true,'manual can contact a recently active seller');
   assert.equal((await a.post(`/coach/sellers/${recent.id}/checkin`)).status,409,'manual respects cooldown');
@@ -140,4 +145,68 @@ test('seller coaching extends existing WhatsApp operations without intercepting 
   await settle();
   assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'seller_coach');
   assert.equal(typeof ai.calls.at(-1),'object','approved pricing uses coaching');
+});
+
+test('managers have manual coaching, owner approval, opt-out and existing operations',async(t)=>{
+  const {db,app,a,wa,ai,make,settle}=await setup(t);
+  const manager=await make('manager','512-555-0194');
+  t.mock.method(Date,'now',()=>zonedToUtc(2026,10,5,11,'America/Chicago'));
+  const listed=(await a.get('/coach/sellers')).body.find((u)=>u.id===manager.id);
+  assert.equal(listed.role,'manager');assert.equal(listed.blocked,'');
+  const preview=(await a.get(`/coach/sellers/${manager.id}/preview`)).body;
+  assert.match(preview.text,/you and your team/);assert.ok(!containsComp(preview.text));
+  assert.equal((await a.post(`/coach/sellers/${manager.id}/checkin`)).body.queued,true);
+  await settle();assert.ok(wa.sent.some((m)=>m.jid==='15125550194@s.whatsapp.net'&&m.text.includes('help your sellers')));
+  ai.output={action:'review',reply:'',draft:'We will check that offer with the team lead.',reason:'Exception needs review'};
+  await app.locals.whatsapp.receive({id:'manager-price',chat:'15125550194@s.whatsapp.net',isGroup:false,senderPhone:'15125550194',senderJid:'15125550194@s.whatsapp.net',text:'Can my team offer a discount?',ts:Date.now()});
+  await settle();assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'seller_coach');
+  assert.equal(ai.calls.at(-1).role,'manager');
+  const draft=(await a.get('/coach/drafts')).body[0];assert.equal(draft.seller_id,manager.id);
+  assert.equal((await manager.c.post(`/coach/drafts/${draft.id}/review`,{action:'approve'})).status,403);
+  assert.equal((await a.post(`/coach/drafts/${draft.id}/review`,{action:'approve'})).body.status,'queued');
+  await settle();assert.equal(db.prepare('SELECT status FROM coach_drafts WHERE id=?').get(draft.id).status,'sent');
+  await app.locals.whatsapp.receive({id:'manager-tools',chat:'15125550194@s.whatsapp.net',isGroup:false,senderPhone:'15125550194',senderJid:'15125550194@s.whatsapp.net',text:'bot show my team leads',ts:Date.now()});
+  await settle();assert.equal((await a.get('/whatsapp/status')).body.diagnostics.last_result,'assistant');
+  const before=ai.calls.length;await app.locals.coach.handle(manager.u,'What is my commission?');assert.equal(ai.calls.length,before);
+  await app.locals.coach.handle(manager.u,'STOP');assert.equal((await a.get(`/coach/sellers/${manager.id}/preview`)).body.blocked,'Seller stopped coaching');
+});
+
+test('manual preview explains the same send blockers and reports accepted and failed check-ins',async(t)=>{
+  const {db,a,wa,ai,make,settle}=await setup(t);const rep=await make('rep','512-555-0191');
+  let now=zonedToUtc(2026,10,5,11,'America/Chicago');t.mock.method(Date,'now',()=>now);
+  const set=(key,value)=>db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+  const preview=async()=>(await a.get(`/coach/sellers/${rep.id}/preview`)).body;
+  const checkBlocked=async(pattern)=>{
+    const p=await preview();assert.match(p.blocked,pattern);assert.ok(p.text);assert.equal(p.name,rep.u.full_name);
+    const sent=await a.post(`/coach/sellers/${rep.id}/checkin`);assert.equal(sent.status,409);assert.equal(sent.body.error,p.blocked);
+  };
+  set('coach_enabled','0');await checkBlocked(/Enable seller coaching/);set('coach_enabled','1');
+  set('wa_two_way','0');await checkBlocked(/two-way replies/);set('wa_two_way','1');
+  ai.enabled=()=>false;await checkBlocked(/Enable the assistant/);ai.enabled=()=>true;
+  now=zonedToUtc(2026,10,4,11,'America/Chicago');await checkBlocked(/Monday–Friday.*America\/Chicago/);
+  now=zonedToUtc(2026,10,5,11,'America/Chicago');assert.equal((await preview()).blocked,'');
+  await a.post(`/coach/sellers/${rep.id}/checkin`);await settle();
+  assert.equal((await preview()).send_status,'sent');assert.ok((await preview()).last_sent_at);
+  await checkBlocked(/cooldown/);
+  now+=3*86400000;wa.error='Connection lost';await a.post(`/coach/sellers/${rep.id}/checkin`);await settle();
+  const failed=await preview();assert.equal(failed.send_status,'failed');assert.match(failed.last_error,/Connection lost/);assert.equal(failed.blocked,'','failed manual check-in can be retried');
+});
+
+test('admins can hide and restore completed coaching drafts without bypassing review or losing history',async(t)=>{
+  const {db,app,a,make,wa}=await setup(t);const rep=await make('rep','512-555-0191');
+  await app.locals.coach.handle(rep.u,'Tell me about commissions',{chat:'cleanup',messageId:'draft-1'});
+  const d=(await a.get('/coach/drafts')).body[0],url=`/coach/drafts/${d.id}/visibility`;
+  assert.equal((await rep.c.patch(url,{hidden:true})).status,403);
+  assert.equal((await a.patch(url,{hidden:true})).status,409,'pending review cannot be hidden');
+  await a.post(`/coach/drafts/${d.id}/review`,{action:'reject'});
+  assert.equal((await a.patch(url,{hidden:'yes'})).status,400);
+  assert.equal((await a.patch(url,{hidden:true})).status,200);
+  assert.equal((await a.get('/coach/drafts')).body.length,0);
+  assert.equal((await a.get('/coach/drafts?hidden=1')).body[0].id,d.id);
+  assert.equal(db.prepare('SELECT status FROM coach_drafts WHERE id=?').get(d.id).status,'rejected');
+  assert.equal((await a.patch(url,{hidden:false})).status,200);
+  assert.equal((await a.get('/coach/drafts')).body[0].id,d.id);
+  assert.equal((await a.get('/coach/drafts?hidden=1')).body.length,0);
+  assert.equal(wa.sent.length,0,'cleanup sends no messages');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action IN ('coach.hide','coach.restore')").get().n,2);
 });

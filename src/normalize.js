@@ -5,7 +5,6 @@
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const PHONE_RE = /(?:\+?1[\s.-]*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}\b/;
-const ZIP_RE = /\b(\d{5})(?:-\d{4})?\b/g;
 
 const STREET_SUFFIXES = {
   street: 'st', st: 'st', str: 'st',
@@ -87,13 +86,8 @@ function addressKey(address) {
   if (!address) return { street: '', zip: '' };
   const raw = String(address);
 
-  let zip = '';
-  const zips = [...raw.matchAll(ZIP_RE)];
-  if (zips.length) {
-    const last = zips[zips.length - 1];
-    // Ignore a 5-digit house number at the very start.
-    if (last.index > 0 || zips.length > 1) zip = last[1];
-  }
+  // Use the postal suffix, not a five-digit house or apartment number.
+  const zip = parseAddressLocation(raw).zip.slice(0, 5);
 
   // Use the first comma-separated segment that starts with a house number.
   const segments = raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
@@ -222,7 +216,7 @@ function parseDob(value) {
 // Accepts labelled lines ("Name: Jane") or plain text in any order. Nothing is thrown away:
 // anything it can't place ends up in notes.
 function parseLeadText(text) {
-  const result = { name: '', phone: '', email: '', address: '', notes: '', dob: '', services: [] };
+  const result = { name: '', phone: '', email: '', address: '', city: '', state: '', zip: '', notes: '', dob: '', services: [] };
   if (!text) return result;
 
   const labelled = {};
@@ -279,10 +273,13 @@ function parseLeadText(text) {
       const m = lines[i].match(ADDRESS_IN_LINE_RE);
       if (!m) continue;
       const rest = lines[i].slice(m.index);
-      const withZip = rest.match(/^.*?\b\d{5}(?:-\d{4})?\b/);
-      result.address = (withZip ? withZip[0] : rest).trim();
+      // Search after the street: a five-digit house number is not the ZIP.
+      const zipMatch = [...rest.slice(m[0].length).matchAll(/\b\d{5}(?:-\d{4})?\b/g)]
+        .find(z => !/(?:\b(?:apt|apartment|unit|suite|ste|lot)|#)\s*$/i.test(rest.slice(0,m[0].length+z.index)));
+      const withZip = zipMatch ? rest.slice(0,m[0].length+zipMatch.index+zipMatch[0].length) : '';
+      result.address = (withZip || rest).trim();
       const before = lines[i].slice(0, m.index).replace(/\s+(at|@|address|lives at)\s*$/i, '');
-      const after = withZip ? rest.slice(withZip[0].length) : '';
+      const after = withZip ? rest.slice(withZip.length) : '';
       lines.splice(i, 1, ...[before, after].map((x) => x.replace(/^[\s,;\-]+|[\s,;\-]+$/g, '')).filter(Boolean));
       break;
     }
@@ -294,14 +291,15 @@ function parseLeadText(text) {
       result.address = line;
       continue;
     }
+    // City/state/zip continuation of an address on its own line
+    if (result.address && /(?:\d{5}(?:-\d{4})?|,\s*[A-Za-z .]+)\s*$/.test(line)
+      && !/\d/.test(line.replace(/\d{5}(?:-\d{4})?\s*$/, '')) && parseAddressLocation(line).state) {
+      result.address += ', ' + line;
+      continue;
+    }
     if (!result.name && /^[A-Za-z][A-Za-z.'\- ]+$/.test(line) && line.split(/\s+/).length <= 4
       && !detectServices(line).length) {
       result.name = line;
-      continue;
-    }
-    // City/state/zip continuation of an address on its own line
-    if (result.address && /^[A-Za-z .'-]+,?\s+[A-Za-z]{2}\s*\d{5}(-\d{4})?$/.test(line)) {
-      result.address += ', ' + line;
       continue;
     }
     leftovers.push(line);
@@ -309,6 +307,10 @@ function parseLeadText(text) {
 
   result.notes = [result.notes, ...extraNotes, ...leftovers].filter(Boolean).join('\n');
   result.services = detectServices([labelled.services || '', result.notes].join(' '));
+  const location = parseAddressLocation(result.address);
+  result.city = labelled.city || location.city;
+  result.state = normalizeState(labelled.state)?.code || labelled.state || location.state;
+  result.zip = normalizeZip(labelled.zip) || labelled.zip || location.zip;
   for (const k of ['name', 'phone', 'email', 'address', 'notes']) result[k] = String(result[k] || '').trim();
   if (result.name && result.name === result.name.toLowerCase()) {
     result.name = result.name.replace(/(^|[\s'-])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
@@ -333,6 +335,7 @@ const STATE_MAP = {
 const STATE_NAMES = Object.fromEntries(
   Object.entries(STATE_MAP).map(([code, name]) => [name.toLowerCase(), code])
 );
+const STATE_SUFFIX_RE = new RegExp(`(?:^|[,\\s]+)(${Object.values(STATE_MAP).sort((a, b) => b.length - a.length).join('|')}|${Object.keys(STATE_MAP).join('|')})$`, 'i');
 
 function normalizeState(input) {
   if (!input) return null;
@@ -348,23 +351,62 @@ function normalizeState(input) {
   return null;
 }
 
-function extractStateFromAddress(address) {
-  if (!address) return null;
-  const str = String(address);
-  // Match state code e.g. "Austin, TX 78701" or "Dallas TX"
-  const codeMatch = str.match(/\b([A-Z]{2})\b(?:\s+\d{5})?/i);
-  if (codeMatch && STATE_MAP[codeMatch[1].toUpperCase()]) {
-    const code = codeMatch[1].toUpperCase();
-    return { code, name: STATE_MAP[code] };
-  }
-  // Match state full name
-  const lower = str.toLowerCase();
-  for (const [name, code] of Object.entries(STATE_NAMES)) {
-    if (new RegExp(`\\b${name}\\b`, 'i').test(lower)) {
-      return { code, name: STATE_MAP[code] };
+function normalizeZip(value) {
+  const str = String(value ?? '').trim();
+  if (!/^\d{5}(?:[ -]?\d{4})?$/.test(str)) return '';
+  const digits = str.replace(/[ -]/g, '');
+  return digits.length === 9 ? `${digits.slice(0,5)}-${digits.slice(5)}` : digits;
+}
+
+// Read a postal locality at the end of an address, not a state-like word in
+// a street name. Unknown city/state remains blank; no ZIP geography is guessed.
+function parseAddressLocation(address) {
+  const out = { city: '', state: '', zip: '' };
+  let rest = String(address || '').trim().replace(/\r?\n/g, ', ').replace(/\s+/g, ' ');
+  rest = rest.replace(/(?:,\s*|\s+)(?:USA|United States(?: of America)?)\s*$/i, '').trim();
+  const z = rest.match(/(?:,\s*|\s+)(\d{5}(?:-\d{4})?)\s*$/);
+  if (z) {
+    const before = rest.slice(0, z.index).trim();
+    if (!/(?:\b(?:apt|apartment|unit|suite|ste|lot|room|floor)|#)\s*$/i.test(before)) {
+      out.zip = z[1];rest = before.replace(/,\s*$/, '').trim();
     }
   }
-  return null;
+  const s = rest.match(STATE_SUFFIX_RE);
+  let before = rest;
+  if (s) before = rest.slice(0, s.index).trim().replace(/,\s*$/, '').trim();
+  function cityFrom(value) {
+    const parts = value.split(',').map(x => x.trim()).filter(Boolean);
+    let candidate = parts.at(-1) || '';
+    if (parts.length === 1 && /^\d/.test(candidate)) {
+      const street = ADDRESS_IN_LINE_RE.exec(candidate);
+      if (!street || street.index !== 0) return '';
+      candidate = candidate.slice(street[0].length).trim();
+      candidate = candidate.replace(/^(?:(?:apt|apartment|unit|suite|ste|lot|bldg|building|room|floor|#)\s*#?\s*[A-Za-z0-9-]+[ ,]*)+/i, '').trim();
+    }
+    if (!/^[\p{L}][\p{L} .'-]{0,99}$/u.test(candidate)) return '';
+    const words = candidate.toLowerCase().replace(/\./g, '').split(/\s+/);
+    if (UNIT_WORDS.has(words[0]) || words.some((word, i) => STREET_SUFFIXES[word] && !(i === 0 && word === 'st'))) return '';
+    const last = words.at(-1);
+    if (STREET_SUFFIXES[last] || DIRECTIONS[last] || /^(apt|unit|suite|ste|bldg|building)$/i.test(last)) return '';
+    return candidate;
+  }
+  if (s) {
+    const state = normalizeState(s[1]);
+    const city = cityFrom(before);
+    const ambiguous = STREET_SUFFIXES[s[1].toLowerCase()] || DIRECTIONS[s[1].toLowerCase()] || ['IN','OR','ME'].includes(s[1].toUpperCase());
+    const separated = /,/.test(rest.slice(s.index));
+    const streetBeforeState = ADDRESS_IN_LINE_RE.test(before);
+    if (state && (city || separated || (out.zip && !ambiguous && (!before || streetBeforeState)))) {
+      out.state = state.code;out.city = city;return out;
+    }
+  }
+  // A distinct city segment can be recovered without assuming its state.
+  if (out.zip && rest.includes(',')) out.city = cityFrom(rest);
+  return out;
+}
+
+function extractStateFromAddress(address) {
+  return normalizeState(parseAddressLocation(address).state);
 }
 
 module.exports = {
@@ -379,6 +421,7 @@ module.exports = {
   detectServices,
   normalizeState,
   extractStateFromAddress,
+  normalizeZip,
+  parseAddressLocation,
   STATE_MAP,
 };
-
