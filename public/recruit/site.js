@@ -3,6 +3,33 @@
   const year = document.querySelector("#year");
   if (year) year.textContent = new Date().getFullYear();
 
+  // Use IntersectionObserver instead of a scroll listener. Each section enters once,
+  // and CSS only animates opacity/transform so the effects stay inexpensive.
+  const motionTargets = [
+    ".hero-lede", ".hero-actions", ".hero-proof", ".hero-visual", ".ticker",
+    ".opportunity-heading", ".field-image", ".field-copy .section-kicker",
+    ".field-copy h2", ".field-copy > p", ".steps", ".photo-grid figure",
+    ".quote-band > *", ".faq-intro > *", ".faq-list details",
+    ".connect > *:not(.connect-orb)", "footer > *",
+  ];
+  motionTargets.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((element) => element.setAttribute("data-reveal", ""));
+  });
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!reduceMotion && "IntersectionObserver" in window) {
+    document.body.classList.add("motion-ready");
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-visible");
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -36px 0px" });
+    document.querySelectorAll("[data-reveal]").forEach((element) => observer.observe(element));
+  } else {
+    document.querySelectorAll("[data-reveal]").forEach((element) => element.classList.add("is-visible"));
+  }
+
   const menuButton = document.querySelector(".menu-toggle");
   const menu = document.querySelector(".desktop-nav");
   menuButton?.addEventListener("click", () => {
