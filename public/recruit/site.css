@@ -37,7 +37,6 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: #000; box-shadow: 0 0 0 5px #0000000c; }
 .hero h1 { max-width: 640px; margin: 28px 0 23px; font: 800 clamp(58px, 7.5vw, 100px)/.91 var(--display); letter-spacing: -.095em; }
 .hero h1 em { display: inline-block; padding: 0 .12em .07em; color: #fff; background: #000; font: 600 .86em/.98 Georgia, serif; letter-spacing: -.075em; }
-.drop-word { display: inline-block; }
 .hero-lede { max-width: 440px; margin: 0; color: #5d5d5d; font-size: 15px; line-height: 1.8; }
 .hero-actions { display: flex; align-items: center; gap: 24px; margin-top: 30px; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 26px; padding: 16px 20px; border-radius: 2px; font-size: 11px; font-weight: 700; transition: transform .2s ease, background .2s ease; }
@@ -165,23 +164,12 @@ footer small { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid #e3
 /* Scroll reveals animate only opacity and transform, driven by IntersectionObserver. */
 .motion-ready [data-reveal] { opacity: 0; transform: translateY(-18px); transition: opacity .5s ease, transform .6s cubic-bezier(.2,.7,.2,1); }
 .motion-ready [data-reveal].is-visible { opacity: 1; transform: translateY(0); }
-.motion-ready .drop-word { opacity: 0; transform: translateY(-.65em); transition: opacity .45s ease, transform .55s cubic-bezier(.18,.68,.2,1); }
-.motion-ready .is-visible .drop-word { opacity: 1; transform: translateY(0); }
+.motion-ready [data-letter-drop] .letter-drop-char { display: inline-block; opacity: 0; transform: translateY(-.9em) rotate(-5deg); transition: opacity .42s ease, transform .56s cubic-bezier(.18,.68,.2,1); transition-delay: calc(var(--letter-index) * 18ms + 45ms); }
+.motion-ready [data-letter-drop].is-visible .letter-drop-char,
+.motion-ready [data-reveal].is-visible [data-letter-drop] .letter-drop-char { opacity: 1; transform: translateY(0) rotate(0); }
 .motion-ready .benefit-card:nth-child(2) { transition-delay: 70ms; }
 .motion-ready .benefit-card:nth-child(3) { transition-delay: 140ms; }
 .motion-ready .benefit-card:nth-child(4) { transition-delay: 210ms; }
-.motion-ready .benefit-card .drop-word:nth-child(1) { transition-delay: 70ms; }
-.motion-ready .benefit-card .drop-word:nth-child(2) { transition-delay: 120ms; }
-.motion-ready .benefit-card .drop-word:nth-child(3) { transition-delay: 170ms; }
-.motion-ready .benefit-card .drop-word:nth-child(4) { transition-delay: 220ms; }
-.motion-ready .benefit-card .drop-word:nth-child(5) { transition-delay: 270ms; }
-.motion-ready .benefit-card .drop-word:nth-child(6) { transition-delay: 320ms; }
-.motion-ready .benefit-card .drop-word:nth-child(7) { transition-delay: 370ms; }
-.motion-ready .hero h1 .drop-word:nth-child(1) { transition-delay: 80ms; }
-.motion-ready .hero h1 .drop-word:nth-child(2) { transition-delay: 140ms; }
-.motion-ready .hero h1 .drop-word:nth-child(3) { transition-delay: 200ms; }
-.motion-ready .hero h1 .drop-word:nth-child(4) { transition-delay: 260ms; }
-.motion-ready .hero h1 .drop-word:nth-child(5) { transition-delay: 320ms; }
 .motion-ready .ticker-track { animation-play-state: paused; }
 .motion-ready .ticker.is-visible .ticker-track { animation-play-state: running; }
 

@@ -15,6 +15,32 @@
   motionTargets.forEach((selector) => {
     document.querySelectorAll(selector).forEach((element) => element.setAttribute("data-reveal", ""));
   });
+
+  // Give each visible character its own lightweight transform so headings can
+  // fall in one letter at a time. The original accessible label stays intact.
+  document.querySelectorAll("[data-letter-drop]").forEach((heading) => {
+    const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    let letterIndex = 0;
+    textNodes.forEach((textNode) => {
+      const fragment = document.createDocumentFragment();
+      Array.from(textNode.nodeValue).forEach((character) => {
+        if (/\s/.test(character)) {
+          fragment.append(document.createTextNode(character));
+          return;
+        }
+        const letter = document.createElement("span");
+        letter.className = "letter-drop-char";
+        letter.setAttribute("aria-hidden", "true");
+        letter.style.setProperty("--letter-index", letterIndex++);
+        letter.textContent = character;
+        fragment.append(letter);
+      });
+      textNode.replaceWith(fragment);
+    });
+  });
+
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (!reduceMotion && "IntersectionObserver" in window) {
     document.body.classList.add("motion-ready");
