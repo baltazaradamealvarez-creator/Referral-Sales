@@ -6,10 +6,10 @@
   // Use IntersectionObserver instead of a scroll listener. Each section enters once,
   // and CSS only animates opacity/transform so the effects stay inexpensive.
   const motionTargets = [
-    ".hero-lede", ".hero-actions", ".hero-proof", ".hero-visual", ".ticker",
-    ".opportunity-heading", ".field-image", ".field-copy .section-kicker",
+    ".eyebrow", ".hero-lede", ".hero-actions", ".hero-proof", ".hero-visual", ".ticker",
+    ".opportunity > .section-kicker", ".opportunity-heading", ".field-image", ".field-copy .section-kicker",
     ".field-copy h2", ".field-copy > p", ".steps", ".photo-grid figure",
-    ".quote-band > *", ".faq-intro > *", ".faq-list details",
+    ".strip-heading h2", ".quote-band > *", ".faq-intro > *", ".faq-list details",
     ".connect > *:not(.connect-orb)", "footer > *",
   ];
   motionTargets.forEach((selector) => {
